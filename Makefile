@@ -15,7 +15,7 @@ doc:
 
 release:
 	python3 setup.py sdist bdist_wheel
-	python3 -m twine upload --repository testpypi dist/*
+	python3 -m twine upload --repository pypi dist/*
 
 clean:
 	@rm -rf build dist
