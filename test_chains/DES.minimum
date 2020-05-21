@@ -1,0 +1,113 @@
+ -log(Like) =    250.196760580223     
+  chi-sq    =    500.393521160447     
+ 
+    1  0.6666450E-01   omegabh2              \Omega_b h^2
+    2  0.1817315E+00   omegach2              \Omega_c h^2
+    3  0.1052918E+01   theta                 100\theta_{MC}
+    4  0.4598647E+00   tau                   \tau
+   17  0.3031986E+01   logA                  {\rm{ln}}(10^{10} A_s)
+   18  0.9337424E+00   ns                    n_s
+   25  0.1361785E+01   DES_b1                b^1_{\rm DES}
+   26  0.1558765E+01   DES_b2                b^2_{\rm DES}
+   27  0.1544526E+01   DES_b3                b^3_{\rm DES}
+   28  0.1864317E+01   DES_b4                b^4_{\rm DES}
+   29  0.1931886E+01   DES_b5                b^5_{\rm DES}
+   30  0.1314746E-01   DES_m1                m^1_{\rm DES}
+   31  0.1502463E-01   DES_m2                m^2_{\rm DES}
+   32  0.8712385E-02   DES_m3                m^3_{\rm DES}
+   33  0.1036039E-01   DES_m4                m^4_{\rm DES}
+   34  0.5143932E+00   DES_AIA               A_{\rm IA,DES}
+   35 -0.7966009E+00   DES_alphaIA           \alpha_{\rm IA, DES}
+   37  0.4477255E-02   DES_DzL1              \Delta z_{\rm l, DES}^1
+   38  0.1915534E-02   DES_DzL2              \Delta z_{\rm l, DES}^2
+   39  0.4508526E-02   DES_DzL3              \Delta z_{\rm l, DES}^3
+   40  0.2619477E-02   DES_DzL4              \Delta z_{\rm l, DES}^4
+   41  0.6198109E-03   DES_DzL5              \Delta z_{\rm l, DES}^5
+   42 -0.1934861E-02   DES_DzS1              \Delta z_{\rm s, DES}^1
+   43 -0.2893621E-01   DES_DzS2              \Delta z_{\rm s, DES}^2
+   44  0.6536238E-02   DES_DzS3              \Delta z_{\rm s, DES}^3
+   45 -0.2533402E-01   DES_DzS4              \Delta z_{\rm s, DES}^4
+ 
+    5  0.0000000E+00   omegak                \Omega_K
+    6  0.6000000E-01   mnu                   \Sigma m_\nu
+    7  0.0000000E+00   meffsterile           m_{\nu,{\rm{sterile}}}^{\rm{eff}}
+    8 -0.1000000E+01   w                     w
+    9  0.0000000E+00   wa                    w_a
+   10  0.3046000E+01   nnu                   N_{eff}
+   11  0.2400000E+00   yhe                   Y_{He}
+   12  0.0000000E+00   alpha1                \alpha_{-1}
+   13  0.5000000E+00   deltazrei             {\Delta}z_{\rm re}
+   14  0.1000000E+01   Alens                 A_{L}
+   15 -0.1000000E+01   Alensf                A^f_L
+   16  0.0000000E+00   fdm                   \epsilon_0 f_d
+   19  0.0000000E+00   nrun                  n_{\rm run}
+   20  0.0000000E+00   nrunrun               n_{\rm run, run}
+   21  0.0000000E+00   r                     r
+   22  0.0000000E+00   nt                    n_t
+   23  0.0000000E+00   ntrun                 n_{t,{\rm run}}
+   24  0.1000000E+01   Aphiphi               A^{\phi\phi}_L
+   36  0.6200000E+00   DES_z0AI              z_{0 {\rm IA, DES}}
+ 
+   46  0.9943604E+02   H0                    H_0
+   47  0.7481259E+00   omegal                \Omega_\Lambda
+   48  0.2518741E+00   omegam                \Omega_m
+   49  0.2490412E+00   omegamh2              \Omega_m h^2
+   50  0.6451439E-03   omeganuh2             \Omega_\nu h^2
+   51  0.2476367E+00   omegamh3              \Omega_m h^3
+   52  0.8692604E+00   sigma8                \sigma_8
+   53  0.7964913E+00   S8                    S_8
+   54  0.4362563E+00   s8omegamp5            \sigma_8 \Omega_m^{0.5}
+   55  0.6158086E+00   s8omegamp25           \sigma_8 \Omega_m^{0.25}
+   56  0.8717220E+00   s8h5                  \sigma_8/h^{0.5}
+   57  0.1047652E+03   rdragh                r_{\rm drag} h
+   58  0.2586442E+01   rmsdeflect            \langle d^2\rangle^{1/2}
+   59  0.1965141E+02   zrei                  z_{\rm re}
+   60  0.2073837E+01   A                     10^9 A_s
+   61  0.8266871E+00   clamp                 10^9 A_s e^{-2\tau}
+   62  0.1026005E+04   DL40                  D_{40}
+   63  0.4014428E+04   DL220                 D_{220}
+   64  0.1015131E+04   DL810                 D_{810}
+   65  0.2967555E+03   DL1420                D_{1420}
+   66  0.8769187E+02   DL2000                D_{2000}
+   67  0.9337424E+00   ns02                  n_{s,0.002}
+   68  0.2551658E+00   yheused               Y_P
+   69  0.2565271E+00   YpBBN                 Y_P^{\rm{BBN}}
+   70 -0.2573057E+00   DHBBN                 10^5D/H
+   71  0.9946605E+01   age                   {\rm{Age}}/{\rm{Gyr}}
+   72  0.1072327E+04   zstar                 z_*
+   73  0.1081559E+03   rstar                 r_*
+   74  0.1050126E+01   thetastar             100\theta_*
+   75  0.1029932E+02   DAstar                D_{\rm{M}}(z_*)/{\rm{Gpc}}
+   76  0.1126213E+04   zdrag                 z_{\rm{drag}}
+   77  0.1053594E+03   rdrag                 r_{\rm{drag}}
+   78  0.2068761E+00   kd                    k_{\rm D}
+   79  0.1474453E+00   thetad                100\theta_{\rm{D}}
+   80  0.5936646E+04   zeq                   z_{\rm{eq}}
+   81  0.1811664E-01   keq                   k_{\rm{eq}}
+   82  0.6278928E+00   thetaeq               100\theta_{\rm{eq}}
+   83  0.3373917E+00   thetarseq             100\theta_{\rm{s,eq}}
+   84  0.1057608E+03   Hubble015             H(0.15)
+   85  0.4389245E+03   DM015                 D_{\rm{M}}(0.15)
+   86  0.1180822E+03   Hubble038             H(0.38)
+   87  0.1057062E+04   DM038                 D_{\rm{M}}(0.38)
+   88  0.1263858E+03   Hubble051             H(0.51)
+   89  0.1376226E+04   DM051                 D_{\rm{M}}(0.51)
+   90  0.1333894E+03   Hubble061             H(0.61)
+   91  0.1607168E+04   DM061                 D_{\rm{M}}(0.61)
+   92  0.3152820E+03   Hubble233             H(2.33)
+   93  0.4146867E+04   DM233                 D_{\rm{M}}(2.33)
+   94  0.4450816E+00   fsigma8z015           f\sigma_8(0.15)
+   95  0.8099352E+00   sigma8z015            \sigma_8(0.15)
+   96  0.4786704E+00   fsigma8z038           f\sigma_8(0.38)
+   97  0.7255287E+00   sigma8z038            \sigma_8(0.38)
+   98  0.4849506E+00   fsigma8z051           f\sigma_8(0.51)
+   99  0.6822046E+00   sigma8z051            \sigma_8(0.51)
+  100  0.4850826E+00   fsigma8z061           f\sigma_8(0.61)
+  101  0.6511599E+00   sigma8z061            \sigma_8(0.61)
+  102  0.3307812E+00   fsigma8z233           f\sigma_8(2.33)
+  103  0.3447696E+00   sigma8z233            \sigma_8(2.33)
+  104  0.4991537E+03   chi2_DES              \chi^2_{\rm DES}
+  105  0.1239781E+01   chi2_prior            \chi^2_{\rm prior}
+ 
+ -log(Like)     chi-sq   data
+    249.577    499.154   WL: DES = DES_1YR_final

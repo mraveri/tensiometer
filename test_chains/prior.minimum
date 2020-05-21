@@ -1,0 +1,89 @@
+ -log(Like) =   0.000000000000000E+000
+  chi-sq    =   0.000000000000000E+000
+ 
+    1  0.5379141E-01   omegabh2              \Omega_b h^2
+    2  0.3306667E+00   omegach2              \Omega_c h^2
+    3  0.1073956E+01   theta                 100\theta_{MC}
+    4  0.2876567E+00   tau                   \tau
+   17  0.3143333E+01   logA                  {\rm{ln}}(10^{10} A_s)
+   18  0.9333333E+00   ns                    n_s
+ 
+    5  0.0000000E+00   omegak                \Omega_K
+    6  0.6000000E-01   mnu                   \Sigma m_\nu
+    7  0.0000000E+00   meffsterile           m_{\nu,{\rm{sterile}}}^{\rm{eff}}
+    8 -0.1000000E+01   w                     w
+    9  0.0000000E+00   wa                    w_a
+   10  0.3046000E+01   nnu                   N_{eff}
+   11  0.2400000E+00   yhe                   Y_{He}
+   12  0.0000000E+00   alpha1                \alpha_{-1}
+   13  0.5000000E+00   deltazrei             {\Delta}z_{\rm re}
+   14  0.1000000E+01   Alens                 A_{L}
+   15 -0.1000000E+01   Alensf                A^f_L
+   16  0.0000000E+00   fdm                   \epsilon_0 f_d
+   19  0.0000000E+00   nrun                  n_{\rm run}
+   20  0.0000000E+00   nrunrun               n_{\rm run, run}
+   21  0.0000000E+00   r                     r
+   22  0.0000000E+00   nt                    n_t
+   23  0.0000000E+00   ntrun                 n_{t,{\rm run}}
+   24  0.1000000E+01   Aphiphi               A^{\phi\phi}_L
+ 
+   25  0.7298096E+02   H0                    H_0
+   26  0.2769671E+00   omegal                \Omega_\Lambda
+   27  0.7230329E+00   omegam                \Omega_m
+   28  0.3851032E+00   omegamh2              \Omega_m h^2
+   29  0.6451439E-03   omeganuh2             \Omega_\nu h^2
+   30  0.2810520E+00   omegamh3              \Omega_m h^3
+   31  0.1249837E+01   sigma8                \sigma_8
+   32  0.1940313E+01   S8                    S_8
+   33  0.1062753E+01   s8omegamp5            \sigma_8 \Omega_m^{0.5}
+   34  0.1152505E+01   s8omegamp25           \sigma_8 \Omega_m^{0.25}
+   35  0.1463014E+01   s8h5                  \sigma_8/h^{0.5}
+   36  0.7007778E+02   rdragh                r_{\rm drag} h
+   37  0.0000000E+00   rmsdeflect            \langle d^2\rangle^{1/2}
+   38  0.0000000E+00   zrei                  z_{\rm re}
+   39  0.2318101E+01   A                     10^9 A_s
+   40  0.1303998E+01   clamp                 10^9 A_s e^{-2\tau}
+   41  0.0000000E+00   DL40                  D_{40}
+   42  0.0000000E+00   DL220                 D_{220}
+   43  0.0000000E+00   DL810                 D_{810}
+   44  0.0000000E+00   DL1420                D_{1420}
+   45  0.0000000E+00   DL2000                D_{2000}
+   46  0.9333333E+00   ns02                  n_{s,0.002}
+   47  0.2530202E+00   yheused               Y_P
+   48  0.2543741E+00   YpBBN                 Y_P^{\rm{BBN}}
+   49  0.3194087E+00   DHBBN                 10^5D/H
+   50  0.9926882E+01   age                   {\rm{Age}}/{\rm{Gyr}}
+   51  0.1079307E+04   zstar                 z_*
+   52  0.9777318E+02   rstar                 r_*
+   53  0.1071837E+01   thetastar             100\theta_*
+   54  0.9122018E+01   DAstar                D_{\rm{M}}(z_*)/{\rm{Gpc}}
+   55  0.1117439E+04   zdrag                 z_{\rm{drag}}
+   56  0.9602200E+02   rdrag                 r_{\rm{drag}}
+   57  0.2348494E+00   kd                    k_{\rm D}
+   58  0.1466457E+00   thetad                100\theta_{\rm{D}}
+   59  0.9189066E+04   zeq                   z_{\rm{eq}}
+   60  0.2804012E-01   keq                   k_{\rm{eq}}
+   61  0.4580360E+00   thetaeq               100\theta_{\rm{eq}}
+   62  0.2542149E+00   thetarseq             100\theta_{\rm{s,eq}}
+   63  0.8563153E+02   Hubble015             H(0.15)
+   64  0.5691307E+03   DM015                 D_{\rm{M}}(0.15)
+   65  0.1076907E+03   Hubble038             H(0.38)
+   66  0.1287442E+04   DM038                 D_{\rm{M}}(0.38)
+   67  0.1213919E+03   Hubble051             H(0.51)
+   68  0.1628307E+04   DM051                 D_{\rm{M}}(0.51)
+   69  0.1324729E+03   Hubble061             H(0.61)
+   70  0.1864710E+04   DM061                 D_{\rm{M}}(0.61)
+   71  0.3791083E+03   Hubble233             H(2.33)
+   72  0.4140165E+04   DM233                 D_{\rm{M}}(2.33)
+   73  0.9805032E+00   fsigma8z015           f\sigma_8(0.15)
+   74  0.1108126E+01   sigma8z015            \sigma_8(0.15)
+   75  0.8723939E+00   fsigma8z038           f\sigma_8(0.38)
+   76  0.9392290E+00   sigma8z038            \sigma_8(0.38)
+   77  0.8154507E+00   fsigma8z051           f\sigma_8(0.51)
+   78  0.8633616E+00   sigma8z051            \sigma_8(0.51)
+   79  0.7748174E+00   fsigma8z061           f\sigma_8(0.61)
+   80  0.8124519E+00   sigma8z061            \sigma_8(0.61)
+   81  0.3966888E+00   fsigma8z233           f\sigma_8(2.33)
+   82  0.3987458E+00   sigma8z233            \sigma_8(2.33)
+ 
+ -log(Like)     chi-sq   data

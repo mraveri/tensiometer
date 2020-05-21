@@ -1,0 +1,7 @@
+GetDist>=1.1.2
+numpy
+matplotlib>=2.2.0
+scipy>=1.0.0
+joblib
+coverage
+tqdm
