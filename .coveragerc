@@ -3,6 +3,7 @@ branch = True
 
 omit =
     */.local/*
+    */.virtualenv/*
     /usr/*
     tensiometer/test*
 
