@@ -4,7 +4,6 @@ dist: bionic
 git:
   depth: false
 
-
 jobs:
   include:
     - env:
@@ -32,7 +31,6 @@ install:
     fi
   - python --version
   - pip install .
-  - pip install PyYAML
   - pip install coveralls
 
 script:

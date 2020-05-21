@@ -55,7 +55,7 @@ setuptools.setup(name='tensiometer',
                     'Source': 'https://github.com/mraveri/tensiometer',
                     'Tracker': 'https://github.com/mraveri/tensiometer/issues',
                     'Reference': 'https://arxiv.org/abs/1806.04649',
-                    'Licensing': 'https://github.com/mraveri/tensiometer/blob/master/LICENCE'
+                    'Licensing': 'https://raw.githubusercontent.com/mraveri/tensiometer/master/LICENSE'
                     },
                  packages=setuptools.find_packages(),
                  platforms='any',
