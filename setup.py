@@ -61,7 +61,6 @@ setuptools.setup(name='tensiometer',
                  platforms='any',
                  install_requires=[
                     'GetDist (>=1.1.2)',
-                    'camb (>=1.1.3)',
                     'numpy',
                     'matplotlib (>=2.2.0)',
                     'scipy (>=1.0.0)',

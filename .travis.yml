@@ -10,30 +10,12 @@ jobs:
         - CHANNEL="defaults"
         - PYDIST="ANACONDA"
       python: "3.6"
-      addons:
-        apt:
-          sources:
-            - sourceline: "ppa:ubuntu-toolchain-r/test"
-          packages:
-            - gfortran-9
     - env:
         - CHANNEL="conda-forge"
         - PYDIST="ANACONDA"
       python: "3.8"
-      addons:
-        apt:
-          sources:
-            - sourceline: "ppa:ubuntu-toolchain-r/test"
-          packages:
-            - gfortran-9
     - name: "3.7 with bionic"
       python: "3.7"
-      addons:
-        apt:
-          sources:
-            - sourceline: "ppa:ubuntu-toolchain-r/test"
-          packages:
-            - gfortran-9
 
 install:
   # Setup anaconda following http://conda.pydata.org/docs/travis.html
