@@ -18,7 +18,7 @@ The best place to start is by looking at the worked examples below.
    :caption: Specific examples
 
    Quantify measured parameters <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
-   Quantify convergence of chains <https://tensiometer.readthedocs.org/en/latest/chains_convergence.html>
+   Quantify convergence of chains <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
 
 Other examples are provided for specific tasks.
 
