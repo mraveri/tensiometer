@@ -245,3 +245,20 @@ def random_samples_reshuffle(chain):
     chain.updateBaseStatistics()
     #
     return chain
+
+# ***************************************************************************************
+
+
+def make_list(elements):
+    """
+    Checks if elements is a list.
+    If yes returns elements without modifying it.
+    If not creates and return a list with elements inside.
+
+    :param elements: an element or a list of elements
+    :return: a list containing elements.
+    """
+    if isinstance(elements, (list, tuple)):
+        return elements
+    else:
+        return [elements]

@@ -67,6 +67,8 @@ setuptools.setup(name='tensiometer',
                     'joblib',
                     'coverage',
                     'tqdm',
+                    'autograd',
+                    'pymanopt',
                     ],
                  classifiers=[
                     'Development Status :: 2 - Pre-Alpha',
