@@ -397,16 +397,8 @@ def GRn_test_from_samples(samples, weights, n, theta0=None, feedback=0,
     problem = Problem(manifold=manifold, cost=opt_helper, verbosity=feedback)
     # optimization:
     if optimizer == 'ParticleSwarm':
-        num_solutions = num_params*(2*n-1)**(num_params-1)
-        options = {
-            'populationsize': kwargs.pop('populationsize', num_solutions/10),
-            'maxcostevals': kwargs.pop('maxcostevals', 10*num_solutions),
-            'maxiter': kwargs.pop('maxiter', max(600, 4 * num_params)),
-            'nostalgia': kwargs.pop('nostalgia', 1.4),
-            'social': kwargs.pop('social', 1.4)
-            }
-        solver = pymanopt.solvers.ParticleSwarm(logverbosity=0,
-                                                **options, **kwargs)
+        # num_solutions = num_params*(2*n-1)**(num_params-1)
+        solver = pymanopt.solvers.ParticleSwarm(logverbosity=0, **kwargs)
         Xopt = solver.solve(problem)
     elif optimizer == 'TrustRegions':
         solver = pymanopt.solvers.TrustRegions(logverbosity=0, **kwargs)
