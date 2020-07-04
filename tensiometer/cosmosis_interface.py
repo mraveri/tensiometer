@@ -1,5 +1,5 @@
 """
-File with tools to interface Cosmosis runs with GetDist.
+File with tools to interface Cosmosis chains with GetDist.
 """
 
 """
@@ -92,7 +92,8 @@ def MCSamplesFromCosmosis(chain_root, param_label_dict=None, name_tag=None,
     # get the ranges:
     ranges = get_ranges(info, param_names)
     # initialize the samples:
-    mc_samples = MCSamples(samples=samples, weights=weights, loglikes=loglike,
+    mc_samples = MCSamples(samples=samples, weights=weights,
+                           loglikes=-2.*loglike,
                            sampler=sampler, names=param_names,
                            labels=param_labels, ranges=ranges,
                            ignore_rows=0, name_tag=name_tag,
@@ -182,6 +183,7 @@ def get_sampler_type(info):
     # define the dictionary with the mapping:
     sampler_dict = {
                     'polychord': 'nested',
+                    'multinest': 'nested',
                     'apriori': 'uncorrelated',
                     'pmaxlike': 'max_like'
                     }
@@ -210,6 +212,7 @@ def get_name_tag(info):
     temp = list(filter(lambda x: 'run_name' in x, info))
     if len(temp) > 0:
         name_tag = temp[0].split('=')[1].lower()
+        name_tag = name_tag.rstrip().lstrip()
     else:
         name_tag = None
     #
@@ -234,8 +237,8 @@ def get_ranges(info, param_names):
             temp = list(filter(lambda x:
                                pname in x[1] and x[0] > section_index,
                                enumerate(info)))[0][1]
-            _min = float(list(filter(None, temp.split(' ')))[2])
-            _max = float(list(filter(None, temp.split(' ')))[4])
+            _min = float(list(filter(None, temp.split()))[2])
+            _max = float(list(filter(None, temp.split()))[4])
             ranges[name] = [_min, _max]
         except:
             pass

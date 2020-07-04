@@ -13,6 +13,7 @@ param_names = None
 import tensiometer.utilities as utils
 import matplotlib.pyplot as plt
 import tensiometer.gaussian_tension as gtens
+import tensiometer.tensor_eigenvalues as teig
 """
 
 ###############################################################################
@@ -25,11 +26,7 @@ from getdist import MCSamples
 
 from . import utilities as utils
 from . import gaussian_tension as gtens
-
-import autograd.numpy as anp
-from pymanopt.manifolds import Sphere
-from pymanopt import Problem
-import pymanopt.solvers
+from . import tensor_eigenvalues as teig
 
 ###############################################################################
 # Helpers for input tests:
@@ -385,26 +382,12 @@ def GRn_test_from_samples(samples, weights, n, theta0=None, feedback=0,
         VM += np.multiply.outer(temp_EQ-temp, temp_EQ-temp)
     VM = VM/float(len(EQ))
     # do the tensor optimization:
-
-    def opt_helper(x):
-        in_x = np.tile(x, num_params**(n-1))
-        res1 = np.dot(np.dot(VM.reshape(num_params**n, num_params**n),
-                      in_x), in_x)
-        res2 = np.dot(np.dot(MV.reshape(num_params**n, num_params**n),
-                      in_x), in_x)
-        return -res1/res2
-    manifold = Sphere(num_params)
-    problem = Problem(manifold=manifold, cost=opt_helper, verbosity=feedback)
-    # optimization:
-    if optimizer == 'ParticleSwarm':
-        # num_solutions = num_params*(2*n-1)**(num_params-1)
-        solver = pymanopt.solvers.ParticleSwarm(logverbosity=0, **kwargs)
-        Xopt = solver.solve(problem)
-    elif optimizer == 'TrustRegions':
-        solver = pymanopt.solvers.TrustRegions(logverbosity=0, **kwargs)
-        Xopt = solver.solve(problem)
+    if optimizer == 'GEAP':
+        results = teig.max_GtRq_geap_power(VM, MV, **kwargs)
+    else:
+        results = teig.max_GtRq_brute(VM, MV, feedback=0,
+                                      optimizer=optimizer, **kwargs)
     # finalize:
-    results = -opt_helper(Xopt), Xopt
     final_time = time.time()
     if feedback > 0:
         print('Total time ', round(final_time-initial_time, 1), '(s)')
