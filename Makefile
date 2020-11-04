@@ -1,7 +1,12 @@
-# Simple make file to store commands that are used often:
+#
+# Simple make file to store commands that are used often
+#
 
 test:
 	@python -m unittest discover tensiometer/tests
+
+install:
+	@python setup.py install
 
 coverage_report:
 	@coverage report

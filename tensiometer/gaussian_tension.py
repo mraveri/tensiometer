@@ -336,7 +336,7 @@ def Q_UDM_KL_components(chain_1, chain_12, param_names=None):
     :param param_names: (optional) parameter names of the parameters to be used
         in the calculation. By default all running parameters.
     :return: the KL eigenvalues, the KL eigenvectors and the parameter names
-        that are used.
+        that are used, sorted in decreasing order.
     """
     # initialize param names:
     param_names_1 = _check_param_names(chain_1, param_names)
@@ -352,6 +352,10 @@ def Q_UDM_KL_components(chain_1, chain_12, param_names=None):
     C_p1, C_p12 = chain_1.cov(pars=param_names), chain_12.cov(pars=param_names)
     # perform the KL decomposition:
     KL_eig, KL_eigv = utils.KL_decomposition(C_p1, C_p12)
+    # sort:
+    idx = np.argsort(KL_eig)[::-1]
+    KL_eig = KL_eig[idx]
+    KL_eigv = KL_eigv[:, idx]
     #
     return KL_eig, KL_eigv, param_names
 
@@ -436,10 +440,9 @@ def Q_UDM_get_cutoff(chain_1, chain_2, chain_12,
 ###############################################################################
 
 
-def Q_UDM_fisher_components(chain_1, chain_12, param_names=None):
+def Q_UDM_fisher_components(chain_1, chain_12, param_names=None, which='1'):
     """
-    Compute the decomposition of the Fisher matrix for the first probe
-    in terms of KL modes.
+    Compute the decomposition of the Fisher matrix in terms of KL modes.
 
     :param chain_1: :class:`~getdist.mcsamples.MCSamples`
         the first input chain.
@@ -447,16 +450,27 @@ def Q_UDM_fisher_components(chain_1, chain_12, param_names=None):
         the joint input chain.
     :param param_names: (optional) parameter names of the parameters to be used
         in the calculation. By default all running parameters.
+    :param which: (optional) which decomposition to report. Possibilities are
+        '1' for the chain 1 Fisher matrix, '2' for the chain 2 Fisher matrix
+        and '12' for the joint Fisher matrix.
     :return: parameter names used in the calculation, values of improvement
         and the Fisher matrix.
     """
     KL_eig, KL_eigv, param_names = Q_UDM_KL_components(chain_1,
                                                        chain_12,
                                                        param_names=param_names)
-    # compute Fisher matrix:
-    fisher = np.sum(KL_eigv*KL_eigv/KL_eig, axis=1)
-    # compute fractional contribution to Fisher:
-    fractional_fisher = ((KL_eigv*KL_eigv/KL_eig).T/fisher).T
+    # compute Fisher and fractional fisher matrix:
+    if which == '1':
+        fisher = np.sum(KL_eigv*KL_eigv/KL_eig, axis=1)
+        fractional_fisher = ((KL_eigv*KL_eigv/KL_eig).T/fisher).T
+    elif which == '2':
+        fisher = np.sum(KL_eigv*KL_eigv*(KL_eig-1.)/(KL_eig), axis=1)
+        fractional_fisher = ((KL_eigv*KL_eigv*(KL_eig-1.)/(KL_eig)).T/fisher).T
+    elif which == '12':
+        fisher = np.sum(KL_eigv*KL_eigv, axis=1)
+        fractional_fisher = ((KL_eigv*KL_eigv).T/fisher).T
+    else:
+        raise ValueError('Input parameter which can only be: 1, 2, 12.')
     #
     return param_names, KL_eig, fractional_fisher
 
