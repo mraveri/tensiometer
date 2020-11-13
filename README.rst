@@ -31,11 +31,24 @@ The best way to get up to speed is to read through the worked example
 `full worked example <https://tensiometer.readthedocs.org/en/latest/tension_example.html>`_
 that you can `run online <https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb>`_!
 
-The tensiometer package is available on PyPI and can be installed with
+Installation
+=============
 
-.. code-block:: bash
+The tensiometer package is available on PyPI and can be easily installed with::
 
   pip install tensiometer
+
+Alternatively one can download the source code from github::
+
+  git clone https://github.com/mraveri/tensiometer.git
+
+and install with::
+
+  python setup.py install
+
+You can test that the code is working properly by using::
+
+  make test
 
 Dependencies
 =============
