@@ -6,31 +6,50 @@ File with tools to interface Cosmosis chains with GetDist.
 For testing purposes:
 
 chain = loadMCSamples('./../test_chains/1p2_SN1_zcut0p3_abs')
-chain_root = './../test_chains/d_1sigD_s8/d_TTlite_1sigD_s8_noisy_poly_chain'
-chain_root = './../test_chains/d_1sigD_s8'
+chain_root = './test_chains/DES_multinest_cosmosis'
+
+chain_root = './chains_lcdm/chain_1x2pt_lcdm'
+chain_min_root = './chains_lcdm/chain_1x2pt_lcdm_MAP.maxlike'
 param_label_dict=None
+param_name_dict=None
+settings = None
+
+# test that everything is working:
+test = MCSamplesFromCosmosis(chain_root, chain_min_root)
+
+print(test.bestfit)
+
 """
 
 import os
 import numpy as np
+import functools
+import types
+
 from getdist.chains import loadNumpyTxt
 from getdist.mcsamples import MCSamples
 from getdist.types import BestFit
 from getdist.paramnames import ParamInfo
 
 
-def MCSamplesFromCosmosis(chain_root, param_label_dict=None, name_tag=None,
-                          settings=None):
+def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
+                          param_name_dict=None, param_label_dict=None,
+                          name_tag=None, settings=None):
     """
     Function to import Cosmosis chains in GetDist.
 
     :param chain_root: the name and path to the chain or the path to the
         folder that contains it.
-    :param param_label_dict: dictionary with the mapping between parameter
-        names and parameter labels, since Cosmosis does not save the labels
-        in the chain.
-    :param name_tag: a string with the name tag for the chain.
-    :param settings: dictionary of analysis settings to override defaults
+    :param chain_min_root: (optional) name of the file containing the
+        explicit best fit.
+    :param param_name_dict: (optional) a dictionary with the mapping between
+        cosmosis names and reasonable names.
+    :param param_label_dict: (optional) dictionary with the mapping between
+        parameter names and parameter labels, since Cosmosis does not save
+        the labels in the chain.
+    :param name_tag: (optional) a string with the name tag for the chain.
+    :param settings: (optional) dictionary of analysis settings to override
+        getdist defaults
     :return: The :class:`~getdist.mcsamples.MCSamples` instance
     """
     # decide if the user passed a folder or a chain:
@@ -91,6 +110,15 @@ def MCSamplesFromCosmosis(chain_root, param_label_dict=None, name_tag=None,
         raise ValueError('Unknown sampler')
     # get the ranges:
     ranges = get_ranges(info, param_names)
+    # transform param names:
+    if param_name_dict is not None:
+        for i, name in enumerate(param_names):
+            if name in param_name_dict.keys():
+                param_names[i] = param_name_dict[name]
+                if name in ranges.keys():
+                    ranges[param_name_dict[name]] = ranges.pop(name)
+        #for i, name in enumerate(param_names):
+        #    if name in param_name_dict.keys():
     # initialize the samples:
     mc_samples = MCSamples(samples=samples, weights=weights,
                            loglikes=-2.*loglike,
@@ -108,11 +136,18 @@ def MCSamplesFromCosmosis(chain_root, param_label_dict=None, name_tag=None,
     # polish the samples removing nans:
     mc_samples = polish_samples(mc_samples)
     # get the best fit:
-    try:
-        mc_samples.bestfit = get_maximum_likelihood(chain_root,
-                                                    param_label_dict)
-    except ValueError:
-        pass
+    if chain_min_root is not None:
+        #mc_samples.bestfit = get_maximum_likelihood(chain_min_root,
+        #                                            param_name_dict,
+        #                                            param_label_dict)
+        # since getdist does not cache the best fit we have to override the
+        # method in this brute way:
+        funcType = types.MethodType
+        mc_samples.getBestFit = funcType(functools.partial(get_maximum_likelihood,
+                                                           chain_min_root=chain_min_root,
+                                                           param_name_dict=param_name_dict,
+                                                           param_label_dict=param_label_dict),
+                                                           mc_samples)
     # update statistics:
     mc_samples.updateBaseStatistics()
     #
@@ -185,7 +220,8 @@ def get_sampler_type(info):
                     'polychord': 'nested',
                     'multinest': 'nested',
                     'apriori': 'uncorrelated',
-                    'pmaxlike': 'max_like'
+                    'pmaxlike': 'max_like',
+                    'maxlike': 'max_like'
                     }
     # find the sampler in the parameters:
     temp = list(filter(lambda x: 'sampler' in x, info))
@@ -246,25 +282,61 @@ def get_ranges(info, param_names):
     return ranges
 
 
-def get_maximum_likelihood(chain_root, param_label_dict):
+def polish_samples(chain):
+    """
+    Remove fixed parameters and samples with some parameter that is Nan
+    from the input chain.
+
+    :param chain: :class:`~getdist.mcsamples.MCSamples` the input chain.
+    :return: :class:`~getdist.mcsamples.MCSamples` the polished chain.
+    """
+    # delete fixed parameters:
+    chain.deleteFixedParams()
+    # we need to delete nan columns:
+    fixed = []
+    values = []
+    for i in range(chain.samples.shape[1]):
+        if np.all(np.isnan(chain.samples[:, i])):
+            fixed.append(i)
+            values.append(chain.samples[0, i])
+    chain.changeSamples(np.delete(chain.samples, fixed, 1))
+    if hasattr(chain, 'ranges'):
+        for ix, value in zip(fixed, values):
+            chain.ranges.setFixed(chain.paramNames.names[ix].name,
+                                  value)
+    chain.paramNames.deleteIndices(fixed)
+    chain._getParamIndices()
+    # now we need to delete nan samples:
+    nan_filter = np.all(np.logical_not(np.isnan(chain.samples)), axis=1)
+    chain.filter(where=nan_filter)
+    #
+    return chain
+
+
+def get_maximum_likelihood(dummy, max_posterior, chain_min_root,
+                           param_name_dict, param_label_dict):
     """
     Import the maximum likelihood file for a Cosmosis run, if present.
 
-    :param chain_root: name of the chain file or the folder that contains it.
+    :param dummy: dummy argument for interfacing, not used in practice
+    :param chain_min_root: name of the minimum file or the folder that contains
+        it.
+    :param param_name_dict: a dictionary with the mapping between
+        cosmosis names and reasonable names.
     :param param_label_dict: dictionary with the mapping between the parameter
         names and the labels.
     :return: :class:`~getdist.types.BestFit` the best fit object.
     """
     # decide if the user passed a folder or a chain:
-    if os.path.isfile(chain_root+'.txt'):
-        minimum_file = chain_root+'.txt'
-    elif os.path.isdir(chain_root):
+    if os.path.isfile(chain_min_root+'.txt'):
+        minimum_file = chain_min_root+'.txt'
+    elif os.path.isdir(chain_min_root):
         # look for the chain file:
         temp = list(filter(lambda x: 'chain_pmaxlike.txt' in x,
-                    os.listdir(chain_root)))
+                    os.listdir(chain_min_root)))
         if len(temp) == 0:
-            raise ValueError('No minimum file found in folder', chain_root)
-        minimum_file = chain_root+'/'+temp[0]
+            raise ValueError('No minimum file found in folder', chain_min_root)
+        minimum_file = chain_min_root+'/'+temp[0]
     else:
         raise ValueError('Input chain root is not a folder nor a file.')
     # get the info:
@@ -281,7 +353,15 @@ def get_maximum_likelihood(chain_root, param_label_dict):
     # best fit:
     best_fit = BestFit()
     # set parameter names:
-    best_fit.names = [ParamInfo(name) for name in param_names]
+    if param_name_dict is not None:
+        best_fit.names = []
+        for name in param_names:
+            if name in param_name_dict.keys():
+                best_fit.names.append(ParamInfo(param_name_dict[name]))
+            else:
+                best_fit.names.append(ParamInfo(name))
+    else:
+        best_fit.names = [ParamInfo(name) for name in param_names]
     if param_labels is not None:
         for name, label in zip(best_fit.names, param_labels):
             name.label = label
@@ -318,34 +398,3 @@ def get_maximum_likelihood(chain_root, param_label_dict):
         param.best_fit = best_fit_params[ind]
     #
     return best_fit
-
-
-def polish_samples(chain):
-    """
-    Remove fixed parameters and samples with some parameter that is Nan
-    from the input chain.
-
-    :param chain: :class:`~getdist.mcsamples.MCSamples` the input chain.
-    :return: :class:`~getdist.mcsamples.MCSamples` the polished chain.
-    """
-    # delete fixed parameters:
-    chain.deleteFixedParams()
-    # we need to delete nan columns:
-    fixed = []
-    values = []
-    for i in range(chain.samples.shape[1]):
-        if np.all(np.isnan(chain.samples[:, i])):
-            fixed.append(i)
-            values.append(chain.samples[0, i])
-    chain.changeSamples(np.delete(chain.samples, fixed, 1))
-    if hasattr(chain, 'ranges'):
-        for ix, value in zip(fixed, values):
-            chain.ranges.setFixed(chain.paramNames.names[ix].name,
-                                  value)
-    chain.paramNames.deleteIndices(fixed)
-    chain._getParamIndices()
-    # now we need to delete nan samples:
-    nan_filter = np.all(np.logical_not(np.isnan(chain.samples)), axis=1)
-    chain.filter(where=nan_filter)
-    #
-    return chain

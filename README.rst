@@ -31,6 +31,12 @@ The best way to get up to speed is to read through the worked example
 `full worked example <https://tensiometer.readthedocs.org/en/latest/tension_example.html>`_
 that you can `run online <https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb>`_!
 
+The tensiometer package is available on PyPI and can be installed with
+
+.. code-block:: bash
+
+  pip install tensiometer
+
 Dependencies
 =============
 * Python 3.6+

@@ -157,7 +157,7 @@ def get_Neff(chain, prior_chain=None, param_names=None, prior_factor=1.0):
     _eigv[_eigv < 0.] = 0.
     #
     _Ntot = len(_eigv)
-    _Neff = _Ntot - np.sum(_eigv)
+    _Neff = _Ntot - np.real(np.sum(_eigv))
     #
     return _Neff
 
