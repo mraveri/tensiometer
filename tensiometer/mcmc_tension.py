@@ -282,7 +282,7 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
     _temp = diff_samples.getParamNames().list()
     _temp_paramnames = chain_1.getParamNames()
     for _nam in diff_samples.getParamNames().parsWithNames(_temp):
-        _temp_name = _nam.name.replace('delta_', '')
+        _temp_name = _nam.name.replace('delta_', '', 1)
         _nam.isDerived = _temp_paramnames.parWithName(_temp_name).isDerived
     # update and compute everything:
     diff_samples.updateBaseStatistics()
