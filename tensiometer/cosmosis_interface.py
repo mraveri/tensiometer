@@ -72,7 +72,8 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     # get the sampler:
     sampler = get_sampler_type(info)
     # get the name tag:
-    name_tag = get_name_tag(info)
+    if name_tag is None:
+        name_tag = get_name_tag(info)
     # get the samples weights and likelihood:
     chain = loadNumpyTxt(chain_file, skiprows=0)
     # parse the chain depending on the sampler that produced it:

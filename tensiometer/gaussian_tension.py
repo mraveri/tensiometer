@@ -12,13 +12,13 @@ and `arxiv 1912.04880 <https://arxiv.org/pdf/1912.04880.pdf>`_.
 For testing purposes:
 
 from getdist import loadMCSamples, MCSamples, WeightedSamples
-chain_1 = loadMCSamples('./test_chains/DES')
-chain_2 = loadMCSamples('./test_chains/Planck18TTTEEE')
-chain_12 = loadMCSamples('./test_chains/Planck18TTTEEE_DES')
-chain_prior = loadMCSamples('./test_chains/prior')
-
+chain_1 = loadMCSamples('./tensiometer/test_chains/DES')
+chain_2 = loadMCSamples('./tensiometer/test_chains/Planck18TTTEEE')
+chain_12 = loadMCSamples('./tensiometer/test_chains/Planck18TTTEEE_DES')
+chain_prior = loadMCSamples('./tensiometer/test_chains/prior')
+prior_chain = chain_prior
 chain = chain_1
-
+param_names = None
 import tensiometer.utilities as utils
 import matplotlib.pyplot as plt
 """
@@ -30,6 +30,7 @@ import scipy
 import numpy as np
 from getdist import MCSamples
 from getdist.gaussian_mixtures import GaussianND
+import matplotlib.pyplot as plt
 
 from . import utilities as utils
 
@@ -50,6 +51,19 @@ def _check_param_names(chain, param_names):
                              chain.name_tag, '\n'
                              'Input parameters ', param_names, '\n'
                              'Possible parameters', param_list)
+    #
+    return param_names
+
+
+def _check_common_names(param_names_1, param_names_2):
+    """
+    Utility to get the common param names between two chains.
+    """
+    param_names = [name for name in param_names_1 if name in param_names_2]
+    if len(param_names) == 0:
+        raise ValueError('Chains do not have shared parameters.\n',
+                         'Parameters for chain_1 ', param_names_1, '\n',
+                         'Parameters for chain_2 ', param_names_2, '\n')
     #
     return param_names
 
@@ -100,10 +114,63 @@ def get_prior_covariance(chain, param_names=None):
     #
     return np.diag((_prior_max-_prior_min)**2/12.)
 
+
+def get_localized_covariance(chain_1, chain_2, param_names,
+                             localize_params=None, scale=10.):
+    """
+    Get localized covariance of chain_1 localized with chain_2
+    """
+    # initialize param names:
+    param_names_1 = _check_param_names(chain_1, param_names)
+    param_names_2 = _check_param_names(chain_2, param_names)
+    param_names = _check_common_names(param_names_1, param_names_2)
+    # check localized parameters:
+    if localize_params is None:
+        localize_params = param_names
+    else:
+        if not np.all([name in param_names for name in localize_params]):
+            raise ValueError('Input localize_params is not in param_names')
+    # get mean and covariance of the chain that we use for localization:
+    mean = chain_2.getMeans(pars=[chain_2.index[name]
+                                  for name in localize_params])
+    cov = chain_2.cov(pars=localize_params)
+    inv_cov = np.linalg.inv(scale**2*cov)
+    sqrt_inv_cov = scipy.linalg.sqrtm(inv_cov)
+    # get the Gaussian chi2:
+    idx = [chain_1.index[name] for name in localize_params]
+    X = np.dot(sqrt_inv_cov, (chain_1.samples[:, idx] - mean).T).T
+    logLikes = (X*X).sum(axis=1)
+    max_logLikes = np.amin(logLikes)
+    # compute weights:
+    new_weights = chain_1.weights * np.exp(-(logLikes - max_logLikes))
+    # check that weights are reasonable:
+    old_neff_samples = np.sum(chain_1.weights)**2 / np.sum(chain_1.weights**2)
+    new_neff_samples = np.sum(new_weights)**2 / np.sum(new_weights**2)
+    if old_neff_samples / new_neff_samples > 10.:
+        print('WARNING: localization of covariance is resulting in too many '
+              + 'samples being under-weighted.\n'
+              + 'Neff original = ', round(old_neff_samples, 3), '\n'
+              + 'Neff new      = ', round(new_neff_samples, 3), '\n'
+              + 'this can result in large errors and can be improved with '
+              + 'more samples in chain_1.')
+    # compute covariance with all parameters:
+    idx_full = [chain_1.index[name] for name in param_names]
+    # compute covariance:
+    cov2 = np.cov(chain_1.samples[:, idx_full].T, aweights=new_weights)
+    # remove localization covariance:
+    idx_rel = [param_names.index(name) for name in localize_params]
+    inv_cov2 = np.linalg.inv(cov2)
+    inv_cov2[np.ix_(idx_rel, idx_rel)] = inv_cov2[np.ix_(idx_rel, idx_rel)] \
+        - inv_cov
+    cov2 = np.linalg.inv(inv_cov2)
+    #
+    return cov2
+
 ###############################################################################
 
 
-def get_Neff(chain, prior_chain=None, param_names=None, prior_factor=1.0):
+def get_Neff(chain, prior_chain=None, param_names=None,
+             prior_factor=1.0, localize=False, **kwargs):
     """
     Function to compute the number of effective parameters constrained by a
     chain over the prior.
@@ -142,7 +209,11 @@ def get_Neff(chain, prior_chain=None, param_names=None, prior_factor=1.0):
         # check parameter names:
         param_names = _check_param_names(prior_chain, param_names)
         # get the prior covariance:
-        C_Pi = prior_chain.cov(pars=param_names)
+        if localize:
+            C_Pi = get_localized_covariance(prior_chain, chain,
+                                            param_names, **kwargs)
+        else:
+            C_Pi = prior_chain.cov(pars=param_names)
     else:
         C_Pi = get_prior_covariance(chain, param_names=param_names)
     # multiply by prior factor:
@@ -191,7 +262,7 @@ def gaussian_approximation(chain, param_names=None):
                     in chain.getParamNames().parsWithNames(param_names)]
     # get label:
     if chain.label is not None:
-        label = 'Gaussian_'+chain.label
+        label = 'Gaussian '+chain.label
     elif chain.name_tag is not None:
         label = 'Gaussian_'+chain.name_tag
     else:
@@ -317,6 +388,319 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
     Q_DM = np.dot(np.dot(param_diff, utils.QR_inverse(temp_cov)), param_diff)
     #
     return Q_DM, dofs
+
+###############################################################################
+
+
+def KL_PCA(chain_1, chain_12, param_names=None,
+           conditional_params=[], param_map=None, normparam=None,
+           num_modes=None, localize=True, dimensional_reduce=True,
+           dimensional_threshold=0.1, verbose=True, **kwargs):
+    """
+    Perform the KL analysis of two chains.
+    Directions that chain_2 improves over chain_1.
+
+    chain_12 = chain_1.copy()
+    chain_1 = prior_chain.copy()
+    param_names = chain_1.getParamNames().getRunningNames()
+    conditional_params=[]
+    param_map='LNLNLN'
+    normparam=None
+    num_modes=None
+    localize=True
+    dimensional_reduce=True
+    dimensional_threshold=0.1
+    verbose=True
+
+    :param chain_1: :class:`~getdist.mcsamples.MCSamples` the first input chain.
+    :param chain_12: :class:`~getdist.mcsamples.MCSamples` the second input chain.
+    :param param_names: list of names of the parameters to use
+    :param param_names: (optional) parameter names to restrict the
+        calculation.
+        If none is given the default assumes that all running parameters
+    :param conditional_params: (optional) list of parameters to treat as fixed,
+        i.e. for KL_PCA conditional on fixed values of these parameters
+    :param param_map: (optional) a transformation to apply to parameter values;
+        A list or string containing either N (no transformation)
+        or L (for log transform) or M (for minus log transform of negative
+        parameters) for each parameter.
+        By default uses log if no parameter values cross zero.
+        The transformed parameters are added to the joint chain.
+    :param normparam: (optional) name of parameter to normalize result
+        (i.e. this parameter will have unit power)
+        By default scales to the parameter that has the largest impactr on the KL mode variance.
+    :param num_modes: (optional) only return the num_modes best modes.
+    :param localize: (optional) localize the first covariance with the second,
+        useful when chain_1 spans a much larger region with respect to chain_12.
+    :param dimensional_reduce: (optional) perform dimensional reduction of the KL modes considered
+        keeping only parameters with a large impact on KL mode variances.
+        Default is True.
+    :param dimensional_threshold: (optional) threshold for dimensional reducetion.
+        Default is 10% so that parameters with a contribution less than 10% of KL mode
+        variance are neglected from a specific KL mode.
+    :param verbose: (optional) chatty output. Default True.
+    """
+    # initialize param names:
+    param_names_1 = _check_param_names(chain_1, param_names)
+    param_names_12 = _check_param_names(chain_12, param_names)
+    param_names = _check_common_names(param_names_1, param_names_12)
+    num_params = len(param_names)
+    # initialize conditional parameters:
+    if len(conditional_params) > 0:
+        conditional_params_1 = _check_param_names(chain_1, conditional_params)
+        conditional_params_12 = _check_param_names(chain_12, conditional_params)
+        conditional_params = _check_common_names(conditional_params_1, conditional_params_12)
+    # other initialization:
+    labels = [chain_1.parLabel(chain_1.index[name]) for name in param_names]
+    if num_modes is not None:
+        num_modes = min(num_modes, num_params)
+    else:
+        num_modes = num_params
+    if normparam is not None:
+        normparam = param_names.index(normparam)
+    # initialize parameter map:
+    if param_map is None:
+        param_map = ''
+        for name in param_names:
+            idx_1, idx_12 = chain_1.index[name], chain_12.index[name]
+            # decide the mapping:
+            positive_1 = np.all(chain_1.samples[:, idx_1] > 0)
+            positive_12 = np.all(chain_12.samples[:, idx_12] > 0)
+            if not positive_1:
+                negative_1 = np.all(chain_1.samples[:, idx_1] < 0)
+            else:
+                negative_1 = False
+            if not positive_12:
+                negative_12 = np.all(chain_12.samples[:, idx_12] < 0)
+            else:
+                negative_12 = False
+            if positive_1 and positive_12:
+                param_map += 'L'
+            elif negative_1 and negative_12:
+                param_map += 'M'
+            else:
+                param_map += 'N'
+    else:
+        if len(param_map) == 1:
+            param_map = ''.join([param_map for name in param_names])
+        if len(param_map) != len(param_names):
+            raise ValueError('param_map can be either one element for all'
+                             + 'parameters or', num_params,
+                             'got', param_map, 'instead')
+        for map in param_map:
+            if map not in ['L', 'M', 'N']:
+                raise ValueError('param_map can contain only L, M, N values',
+                                 'got', param_map, 'instead')
+    doexp = 'L' in param_map or 'M' in param_map
+    # add the relevant derived parameters to the chains:
+    param_names_to_use = []
+    for i in range(num_params):
+        name, map = param_names[i], param_map[i]
+        idx_1, idx_12 = chain_1.index[name], chain_12.index[name]
+        if map == 'L':
+            # log parameter to chain 1:
+            try:
+                chain_1.addDerived(np.log(chain_1.samples[:, idx_1]),
+                                   name='log_'+name,
+                                   label='\\log '+labels[i])
+            except ValueError:
+                pass
+            # log parameter for chain 12:
+            try:
+                chain_12.addDerived(np.log(chain_12.samples[:, idx_12]),
+                                    name='log_'+name,
+                                    label='\\log '+labels[i])
+            except ValueError:
+                pass
+            # add names:
+            param_names_to_use.append('log_'+name)
+        elif map == 'M':
+            # - log parameter to chain 1:
+            try:
+                chain_1.addDerived(np.log(chain_1.samples[:, idx_1]),
+                                   name='log_m_'+name,
+                                   label='\\log -'+labels[i])
+            except ValueError:
+                pass
+            # - log parameter for chain 12:
+            try:
+                chain_12.addDerived(np.log(chain_12.samples[:, idx_12]),
+                                    name='log_m_'+name,
+                                    label='\\log -'+labels[i])
+            except ValueError:
+                pass
+            # add names:
+            param_names_to_use.append('log_m_'+name)
+        elif map == 'N':
+            # add names:
+            param_names_to_use.append(name)
+    # make sure chains are initialized:
+    if chain_1.needs_update:
+        chain_1.updateBaseStatistics()
+    if chain_12.needs_update:
+        chain_12.updateBaseStatistics()
+    # indexes to use:
+    idx_to_use = [chain_12.index[name] for name in param_names_to_use]
+    # get the posterior covariances:
+    if localize:
+        localize_params = kwargs.pop('localize_params', None)
+        if localize_params is not None:
+            idx = [param_names.index(name) for name in localize_params]
+            localize_params = [param_names_to_use[i] for i in idx]
+        C_p1 = get_localized_covariance(chain_1, chain_12,
+                                        param_names_to_use+conditional_params,
+                                        localize_params=localize_params,
+                                        **kwargs)
+    else:
+        C_p1 = chain_1.cov(pars=param_names_to_use+conditional_params)
+    C_p12 = chain_12.cov(pars=param_names_to_use+conditional_params)
+    # get the Fisher matrix: IW
+    if len(conditional_params) > 0:
+        F_p1 = utils.QR_inverse(C_p1)[:, :num_params][:num_params, :]
+        F_p12 = utils.QR_inverse(C_p12)[:, :num_params][:num_params, :]
+        C_p1 = utils.QR_inverse(F_p1)
+        C_p12 = utils.QR_inverse(F_p12)
+    # perform the KL decomposition:
+    KL_eig, KL_eigv = utils.KL_decomposition(C_p1, C_p12)
+    # sort:
+    idx = np.argsort(KL_eig)[::-1]
+    KL_eig, KL_eigv = KL_eig[idx], KL_eigv[:, idx]
+    # do initial calculations:
+    inv_KL_eigv = utils.QR_inverse(KL_eigv.T)
+    inv_cov_12 = utils.QR_inverse(C_p12)
+    # compute joint covariance contributions:
+    temp = inv_KL_eigv*np.dot(inv_cov_12, inv_KL_eigv.T).T
+    contributions = (np.abs(temp.T)/np.sum(np.abs(temp), axis=1)).T
+    # compute the dimensional reduction matrix:
+    if dimensional_reduce:
+        reduction_filter = contributions > dimensional_threshold
+    else:
+        reduction_filter = np.ones((num_params, num_params), dtype=bool)
+    if normparam is not None:
+        reduction_filter[:, normparam] = True
+    reduced_projector = KL_eigv.copy().T
+    reduced_projector[np.logical_not(reduction_filter)] = 0
+    # compute correlation matrix of parameters with KL components:
+    proj_samples = np.dot(reduced_projector, (chain_12.samples[:, idx_to_use]-chain_12.getMeans(idx_to_use)).T)
+    proj_cov = np.cov(np.vstack((proj_samples, chain_12.samples.T)),
+                      aweights=chain_12.weights)
+    temp = np.diag(1./np.sqrt(np.diag(proj_cov)))
+    proj_corr = np.dot(np.dot(temp, proj_cov), temp)[:num_params, :]
+    # prepare return of the function:
+    results_dict = {}
+    results_dict['kl_eig'] = KL_eig
+    results_dict['kl_eigv'] = KL_eigv
+    results_dict['kl_var_contributions'] = contributions
+    results_dict['kl_var_filter'] = reduction_filter
+    results_dict['reduced_kl_projector'] = reduced_projector
+    results_dict['param_names'] = param_names_to_use
+    results_dict['param_map'] = param_map
+    # all calculations are done, write out text:
+    PCAtext = 'KLCA for '+str(num_params)+' parameters:\n\n'
+    # parameter names:
+    if verbose:
+        for i in range(num_params):
+            if param_map[i] == 'L':
+                temp_lab = 'ln(' + labels[i] + ')'
+            elif param_map[i] == 'M':
+                temp_lab = 'ln(-' + labels[i] + ')'
+            else:
+                temp_lab = labels[i]
+            PCAtext += "%10s : %s\n" % (str(i + 1), temp_lab)
+        PCAtext += '\n'
+    # fixed parameter names:
+    if verbose:
+        if len(conditional_params) > 0:
+            PCAtext += 'With '+str(len(conditional_params))+' parameters fixed:\n'
+            for i, name in enumerate(conditional_params):
+                temp_lab = chain_12.parLabel(chain_12.index[name])
+                PCAtext += "%10s : %s\n" % (str(i + 1), temp_lab)
+            PCAtext += '\n'
+    # write out KL eigenvalues:
+    PCAtext += 'KL amplitudes - 1 (covariance/variance improvement per mode)\n'
+    for i in range(num_modes):
+        PCAtext += 'KLC%2i: %8.4f' % (i + 1, KL_eig[i]-1.)
+        if KL_eig[i]-1. > 0.:
+            PCAtext += ' (%8.1f %%)' % (np.sqrt(KL_eig[i]-1.)*100.)
+        PCAtext += '\n'
+    # write out KL eigenvectors:
+    if verbose:
+        PCAtext += '\n'
+        PCAtext += 'KL-modes\n'
+        for j in range(num_modes):
+            PCAtext += '%3i:' % (j + 1)
+            for i in range(num_modes):
+                PCAtext += '%8.3f' % (KL_eigv.T[j, i])
+            PCAtext += '\n'
+    # write out parameter contributions to KL mode variance:
+    PCAtext += '\n'
+    PCAtext += 'Parameter contribution to KL-mode variance\n'
+    PCAtext += '%12s :' % 'mode number'
+    for j in range(num_modes):
+        PCAtext += '%8i' % (j+1)
+    PCAtext += '\n'
+    for i in range(num_params):
+        PCAtext += '%12s :' % param_names_to_use[i]
+        for j in range(num_modes):
+            PCAtext += '%8.3f' % (contributions[j, i])
+        PCAtext += '\n'
+    # write out KL components:
+    PCAtext += '\n'
+    PCAtext += 'KL Principal Components\n'
+    for i in range(num_modes):
+        summary = 'KLC%2i: %8.4f' % (i + 1, KL_eig[i]-1.)
+        if KL_eig[i]-1. > 0.:
+            summary += ' (%8.1f %%)' % (np.sqrt(KL_eig[i]-1.)*100.)
+        summary += '\n'
+        if normparam is not None:
+            norm = KL_eigv.T[i, normparam]
+        else:
+            norm = KL_eigv.T[i, np.argmax(contributions[i, :])]
+        for j in range(num_params):
+            if reduction_filter[i, j]:
+                label = labels[j]
+                mean = chain_12.getMeans([idx_to_use[j]])
+                expo = "%f" % (KL_eigv.T[i, j]/norm)
+                if param_map[j] in ['L', 'M']:
+                    if param_map[j] == "M":
+                        div = "%f" % (-np.exp(mean))
+                    else:
+                        div = "%f" % (np.exp(mean))
+                    summary += '(%s/%s)^{%s}\n' % (label, div, expo)
+                else:
+                    if doexp:
+                        summary += 'exp((%s-%f)/%s)\n' % (label, mean, expo)
+                    else:
+                        summary += '(%s-%f)/%s)\n' % (label, mean, expo)
+        temp_mean = np.average((proj_samples[i, :]/norm), weights=chain_12.weights)
+        temp_var = np.sqrt(np.cov((proj_samples[i, :]/norm), aweights=chain_12.weights))
+        if doexp:
+            temp_mean = np.exp(temp_mean)
+            temp_var = np.exp(temp_mean)*temp_var
+        summary += '          = %f +- %f\n' % (temp_mean, temp_var)
+        summary += '\n'
+        PCAtext += summary
+    # Correlation with other parameters:
+    if verbose:
+        PCAtext += 'Correlations of KLPC\n'
+        PCAtext += '%5s :' % 'mode'
+        for i in range(num_modes):
+            PCAtext += '%8i' % (i+1)
+        PCAtext += '\n'
+        auto_block = proj_corr[:, :num_params]
+        for i in range(num_modes):
+            PCAtext += ' PC%2i :' % (i + 1)
+            for j in range(num_modes):
+                PCAtext += '%8.3f' % auto_block[i, j]
+            PCAtext += '\n'
+        auto_block = proj_corr[:, num_params:].T
+        for i in range(auto_block.shape[0]):
+            PCAtext += ' p %2i :' % (i + 1)
+            for j in range(num_modes):
+                PCAtext += '%8.3f' % auto_block[i, j]
+            PCAtext += '   (%s)\n' % (chain_12.parLabel(i))
+    #
+    return PCAtext, results_dict
 
 ###############################################################################
 
@@ -454,7 +838,7 @@ def Q_UDM_fisher_components(chain_1, chain_12, param_names=None, which='1'):
         '1' for the chain 1 Fisher matrix, '2' for the chain 2 Fisher matrix
         and '12' for the joint Fisher matrix.
     :return: parameter names used in the calculation, values of improvement
-        and the Fisher matrix.
+        and fractional Fisher matrix.
     """
     KL_eig, KL_eigv, param_names = Q_UDM_KL_components(chain_1,
                                                        chain_12,
@@ -472,7 +856,46 @@ def Q_UDM_fisher_components(chain_1, chain_12, param_names=None, which='1'):
     else:
         raise ValueError('Input parameter which can only be: 1, 2, 12.')
     #
-    return param_names, KL_eig, fractional_fisher
+    return param_names, KL_eig, fractional_fisher, fisher
+
+
+def Q_UDM_covariance_components(chain_1, chain_12, param_names=None,
+                                which='1'):
+    """
+    Compute the decomposition of the covariance matrix in terms of KL modes.
+
+    :param chain_1: :class:`~getdist.mcsamples.MCSamples`
+        the first input chain.
+    :param chain_12: :class:`~getdist.mcsamples.MCSamples`
+        the joint input chain.
+    :param param_names: (optional) parameter names of the parameters to be used
+        in the calculation. By default all running parameters.
+    :param which: (optional) which decomposition to report. Possibilities are
+        '1' for the chain 1 covariance matrix, '2' for the chain 2 covariance
+        matrix and '12' for the joint covariance matrix.
+    :return: parameter names used in the calculation, values of improvement,
+        fractional covariance matrix and covariance matrix
+        (inverse covariance).
+    """
+    KL_eig, KL_eigv, param_names = Q_UDM_KL_components(chain_1,
+                                                       chain_12,
+                                                       param_names=param_names)
+    # inverse KL components:
+    KL_eigv = utils.QR_inverse(KL_eigv)
+    # compute covariance and fractional covariance matrix:
+    if which == '1':
+        diag_cov = np.sum(KL_eigv*KL_eigv*KL_eig, axis=1)
+        fractional_cov = ((KL_eigv*KL_eigv*KL_eig).T/diag_cov).T
+    elif which == '2':
+        diag_cov = np.sum(KL_eigv*KL_eigv*KL_eig/(KL_eig-1.), axis=1)
+        fractional_cov = ((KL_eigv*KL_eigv*KL_eig/(KL_eig-1.)).T/diag_cov).T
+    elif which == '12':
+        diag_cov = np.sum(KL_eigv*KL_eigv, axis=1)
+        fractional_cov = ((KL_eigv*KL_eigv).T/diag_cov).T
+    else:
+        raise ValueError('Input parameter which can only be: 1, 2, 12.')
+    #
+    return param_names, KL_eig, fractional_cov
 
 ###############################################################################
 
