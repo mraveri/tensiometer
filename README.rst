@@ -5,7 +5,7 @@ Tensiometer
  Test a model until it breaks!
 -------------------------------
 :Tensiometer: utilities to understand concordance and discordance of posterior distributions
-:Author: Marco Raveri
+:Author: Marco Raveri and Cyrille Doux
 :Homepage: https://tensiometer.readthedocs.io
 :Source: https://github.com/mraveri/tensiometer
 :Reference: mostly https://arxiv.org/abs/1806.04649 and https://arxiv.org/abs/1912.04880
