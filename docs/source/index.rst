@@ -19,6 +19,7 @@ The best place to start is by looking at the worked examples below.
 
    Quantify measured parameters <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
    Quantify convergence of chains <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
+   Compute non-Gaussian tension estimates <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
 
 Other examples are provided for specific tasks.
 

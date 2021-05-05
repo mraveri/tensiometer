@@ -2,6 +2,33 @@
 This is random material, do not read it :)
 """
 
+
+def _vec_to_log_pdm(vec, d):
+    """
+    """
+    # get indexes:
+    ind = np.tril_indices(d, 0)
+    # initialize:
+    mat = np.zeros((d, d))
+    mat[ind] = vec
+    # take exponential of the diagonal to ensure positivity:
+    mat[np.diag_indices(d)] = np.exp(np.diagonal(mat))
+    #
+    return np.dot(mat, mat.T)
+
+
+def _log_pdm_to_vec(pdm, d):
+    """
+    """
+    # decompose:
+    mat = np.linalg.cholesky(pdm)
+    # take log of diagonal:
+    mat[np.diag_indices(d)] = np.log(np.diagonal(mat))
+    #
+    return mat[np.tril_indices(d, 0)]
+
+
+
 def _temp_vec_kde_pdf(x, samples, weights):
     """
     Utility function to compute the KDE

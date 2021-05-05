@@ -35,12 +35,17 @@ def get_long_description():
 
 # get requirements:
 def get_requirements():
-    with open('README.rst',  encoding='utf-8-sig') as f:
+    requirements = []
+    with open('requirements.txt',  encoding='utf-8-sig') as f:
         lines = f.readlines()
-        i = -1
-        while '=====' not in lines[i]:
-            i -= 1
-        return ''.join(lines[:i])
+        for line in lines:
+            line = line.rstrip()
+            if '>=' in line:
+                pc, ver = line.split('>=')
+                requirements.append(pc+' (>='+ver+')')
+            else:
+                requirements.append(line)
+    return requirements
 
 
 # setup:
@@ -59,27 +64,16 @@ setuptools.setup(name='tensiometer',
                     },
                  packages=setuptools.find_packages(),
                  platforms='any',
-                 install_requires=[
-                    'GetDist (>=1.1.2)',
-                    'numpy',
-                    'matplotlib (>=2.2.0)',
-                    'scipy (>=1.0.0)',
-                    'joblib',
-                    'coverage',
-                    'tqdm',
-                    'autograd',
-                    'pymanopt',
-                    ],
+                 install_requires=get_requirements(),
                  classifiers=[
-                    'Development Status :: 2 - Pre-Alpha',
+                    'Development Status :: 3 - Alpha',
                     'Operating System :: OS Independent',
                     'Intended Audience :: Science/Research',
                     'Programming Language :: Python :: 3',
-                    'Programming Language :: Python :: 3.6',
                     'Programming Language :: Python :: 3.7',
                     'Programming Language :: Python :: 3.8',
                     ],
-                 python_requires='>=3.6',
+                 python_requires='>=3.7',
                  zip_safe=False,
                  keywords=['MCMC']
                  )

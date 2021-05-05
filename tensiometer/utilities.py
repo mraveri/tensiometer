@@ -6,7 +6,9 @@ This file contains some utilities that are used in the tensiometer package.
 # initial imports:
 
 import numpy as np
+import scipy
 import scipy.special
+from scipy.linalg import sqrtm
 from getdist import MCSamples
 
 ###############################################################################
@@ -160,6 +162,37 @@ def clopper_pearson_binomial_trial(k, n, alpha=0.32):
 ###############################################################################
 
 
+def min_samples_for_tension(nsigma, sigma_err):
+    """
+    Computes the minimum number of uncorrelated samples that are
+    needed to quantify a tension of a given significance with a given error
+    through binomial trials.
+
+    This function works by inverting the Clopper Pearson binomial trial and
+    likely delivers an underestimate of the points needed.
+
+    :param nsigma: number of effective sigmas of the given tension.
+    :param sigma_err: the desired error on the determination of nsigma.
+    :returns: minimum number of samples.
+    """
+    P = from_sigma_to_confidence(nsigma)
+
+    def dummy(n):
+        _dn, _up = clopper_pearson_binomial_trial(max(P, 1.-P)*n, n)
+        _err_up = from_confidence_to_sigma(max(P, 1.-P)) - from_confidence_to_sigma(_dn)
+        _err_dn = from_confidence_to_sigma(_up) - from_confidence_to_sigma(max(P, 1.-P))
+        return 0.5*(_err_up + _err_dn) - sigma_err
+    try:
+        n = scipy.optimize.brentq(lambda x: dummy(np.exp(x)), 0., 30.)
+        n = np.exp(n)
+    except ValueError:
+        n = np.nan
+    return n
+
+
+###############################################################################
+
+
 def get_separate_mcsamples(chain):
     """
     Function that returns separate :class:`~getdist.mcsamples.MCSamples`
@@ -246,7 +279,7 @@ def random_samples_reshuffle(chain):
     #
     return chain
 
-# ***************************************************************************************
+###############################################################################
 
 
 def make_list(elements):
@@ -255,10 +288,144 @@ def make_list(elements):
     If yes returns elements without modifying it.
     If not creates and return a list with elements inside.
 
-    :param elements: an element or a list of elements
+    :param elements: an element or a list of elements.
     :return: a list containing elements.
     """
     if isinstance(elements, (list, tuple)):
         return elements
     else:
         return [elements]
+
+###############################################################################
+
+
+def PDM_to_vector(pdm):
+    """
+    Transforms a positive definite matrix of dimension :math:`d \\times d`
+    into an unconstrained vector of dimension :math:`d(d+1)/2`.
+    This does not use the Cholesky decomposition since we need guarantee of
+    strictly positive definiteness.
+
+    The absolute values of the elements with indexes of the returned vector
+    that satisfy:
+
+    .. code-block:: python
+
+        np.tril_indices(d, 0)[0] == np.tril_indices(d, 0)[1]
+
+    are the eigenvalues of the matrix. The sign of these elements define
+    the orientation of the eigenvectors.
+
+    Note that this is not strictly the inverse of
+    :meth:`tensiometer.utilities.vector_to_PDM`
+    since there are a number of discrete symmetries in the definition of the
+    eigenvectors that we ignore since they are irrelevant for the sake of
+    representing the matrix.
+
+    :param pdm: the input positive definite matrix.
+    :return: output vector representation.
+    :reference: https://arxiv.org/abs/1906.00587
+    """
+    # get dimension:
+    d = pdm.shape[0]
+    # get the eigenvalues of the matrix:
+    Lambda, Phi = np.linalg.eigh(pdm)
+    # get triangular decomposition:
+    (P, L, U) = scipy.linalg.lu(Phi.T, permute_l=False)
+    # WR decomposition:
+    Q, R = np.linalg.qr(L)
+    L = np.dot(np.dot(R, U), L)
+    # pivot the eigenvalues:
+    Lambda2 = np.dot(np.dot(P.T, np.diag(Lambda)), P)
+    # prepare output:
+    mat = L
+    mat[np.diag_indices(d)] = np.sign(mat[np.diag_indices(d)])*np.diag(Lambda2)
+    #
+    return mat[np.tril_indices(d, 0)]
+
+
+def vector_to_PDM(vec):
+    """
+    Transforms an unconstrained vector of dimension :math:`d(d+1)/2`
+    into a positive definite matrix of dimension :math:`d \\times d`.
+    In the input vector the eigenvalues are in the positions where
+
+    The absolute values of the elements with indexes of the input vector
+    that satisfy:
+
+    .. code-block:: python
+
+        np.tril_indices(d, 0)[0] == np.tril_indices(d, 0)[1]
+
+    are the eigenvalues of the matrix. The sign of these elements define
+    the orientation of the eigenvectors.
+
+    The purpose of this function is to allow optimization over the space
+    of positive definite matrices that is either unconstrained or
+    has constraints on the condition number of the matrix.
+
+    :param pdm: the input vector.
+    :return: output positive definite matrix.
+    :reference: https://arxiv.org/abs/1906.00587
+    """
+    d = int(np.sqrt(1 + 8*len(vec)) - 1)//2
+    L = np.zeros((d, d))
+    # get the diagonal with eigenvalues:
+    L[np.tril_indices(d, 0)] = vec
+    Lambda2 = np.diag(np.abs(L[np.diag_indices(d)]))
+    L[np.diag_indices(d)] = np.sign(L[np.diag_indices(d)]) * np.ones(d)
+    # qr decompose L:
+    Q, R = np.linalg.qr(L)
+    Phi2 = np.dot(L, np.linalg.inv(R))
+    # rebuild matrix
+    return np.dot(np.dot(Phi2.T, Lambda2), Phi2)
+
+###############################################################################
+
+
+def whiten_samples(samples, weights):
+    """
+    Rescales samples by the square root of their inverse covariance.
+    The resulting samples have identity covariance. This amounts to a change of
+    coordinates so the physical meaning of different coordinates is changed.
+
+    :param samples: the input samples.
+    :param weights: the input weights of the samples.
+    :return: whitened samples with identity covariance.
+    """
+    # compute sample covariance:
+    _cov = np.cov(samples.T, aweights=weights)
+    # compute its inverse square root:
+    _temp = sqrtm(QR_inverse(_cov))
+    # whiten the samples:
+    white_samples = samples.dot(_temp)
+    #
+    return white_samples
+
+###############################################################################
+
+
+def is_outlier(points, thresh=3.5):
+    """
+    Returns a boolean array with True if points are outliers and False
+    otherwise.
+
+    :param points: An num-observations by num-dimensions array of observations
+    :param thresh: The modified z-score to use as a threshold. Observations with
+        a modified z-score (based on the median absolute deviation) greater
+        than this value will be classified as outliers.
+    :return: A num-observations-length boolean array.
+    :reference: Boris Iglewicz and David Hoaglin (1993), "Volume 16: How to Detect and
+        Handle Outliers", The ASQC Basic References in Quality Control:
+        Statistical Techniques, Edward F. Mykytka, Ph.D., Editor.
+    """
+    if len(points.shape) == 1:
+        points = points[:, None]
+    median = np.median(points, axis=0)
+    diff = np.sum((points - median)**2, axis=-1)
+    diff = np.sqrt(diff)
+    med_abs_deviation = np.median(diff)
+
+    modified_z_score = 0.6745 * diff / med_abs_deviation
+
+    return modified_z_score > thresh

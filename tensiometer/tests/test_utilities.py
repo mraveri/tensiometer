@@ -69,16 +69,31 @@ class test_chi2_to_sigma(unittest.TestCase):
 class test_KL_decomposition(unittest.TestCase):
 
     def setUp(self):
-        import numpy as np
-        pass
+        np.random.seed(0)
+        # generate two random positive matrices:
+        self.mat_1 = np.random.rand(10)
+        self.mat_2 = np.random.rand(10)
+        self.mat_1 = ttu.vector_to_PDM(self.mat_1)
+        self.mat_2 = ttu.vector_to_PDM(self.mat_2)
 
     # test values:
     def test_values(self):
-        pass
+        # test with random matrices:
+        ttu.KL_decomposition(self.mat_1, self.mat_2)
+        # test that, if the second matrix is the identity then this is equal to eigenvalues:
+        kl_eig, kl_eigv = ttu.KL_decomposition(self.mat_1, np.identity(self.mat_2.shape[0]))
+        eig, eigv = np.linalg.eigh(self.mat_1)
+        assert np.allclose(eig, kl_eig)
+        assert np.allclose(eigv, kl_eigv)
 
     # test raises:
     def test_errors(self):
-        pass
+        d = 10
+        wrong_mat = np.random.rand(d, d)
+        right_mat = ttu.vector_to_PDM(np.random.rand(d*(d+1)//2))
+        with self.assertRaises(ValueError):
+            ttu.KL_decomposition(right_mat, wrong_mat)
+
 
 ###############################################################################
 
@@ -86,15 +101,12 @@ class test_KL_decomposition(unittest.TestCase):
 class test_QR_inverse(unittest.TestCase):
 
     def setUp(self):
-        pass
+        d = 10
+        self.mat = ttu.vector_to_PDM(np.random.rand(d*(d+1)//2))
 
     # test values:
     def test_values(self):
-        pass
-
-    # test raises:
-    def test_errors(self):
-        pass
+        assert np.allclose(np.linalg.inv(self.mat), ttu.QR_inverse(self.mat))
 
 ###############################################################################
 
@@ -107,6 +119,41 @@ class test_clopper_pearson_binomial_trial(unittest.TestCase):
     # test values:
     def test_values(self):
         low, high = ttu.clopper_pearson_binomial_trial(1., 2.)
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_PDM_vectorization(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    # test values:
+    def test_values(self):
+        # generate a random vector between -1, 1 (seeded so reproducible):
+        np.random.seed(0)
+        # sweep dimensions from low to medium
+        for d in range(2, 20):
+            num = d*(d+1)//2
+            # get some random matrices:
+            for i in range(10):
+                vec = 2.*np.random.rand(num) -1.
+                # get the corresponding PDM matrix:
+                mat = ttu.vector_to_PDM(vec)
+                # check that it is positive definite:
+                assert np.all(np.linalg.eig(mat)[0] > 0)
+                # transform back. This can be different from the previous one
+                # because of many discrete symmetries in defining the
+                # eigenvectors
+                vec2 = ttu.PDM_to_vector(mat)
+                # transform again. This has to be equal, discrete symmetries for
+                # eigenvectors do not matter once they are paired with eigenvalues:
+                mat2 = ttu.vector_to_PDM(vec2)
+                assert np.allclose(mat, mat2)
 
     # test raises:
     def test_errors(self):

@@ -43,7 +43,7 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     :param chain_min_root: (optional) name of the file containing the
         explicit best fit.
     :param param_name_dict: (optional) a dictionary with the mapping between
-        cosmosis names and reasonable names.
+        cosmosis names and reasonable parameter names.
     :param param_label_dict: (optional) dictionary with the mapping between
         parameter names and parameter labels, since Cosmosis does not save
         the labels in the chain.
@@ -80,7 +80,7 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     if sampler == 'nested':
         # get number of samples to use:
         nsamples = int(list(filter(lambda x: 'nsample=' in x, info))
-                       [0].split('=')[1])
+                       [0].replace(' ', '').split('=')[1])
         # get the chain:
         chain = chain[-nsamples:]
         # get all quantities:
@@ -95,6 +95,19 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
             param_labels.pop(param_names.index('weight'))
             param_labels.pop(param_names.index('post'))
         param_names.pop(param_names.index('weight'))
+        param_names.pop(param_names.index('post'))
+    elif sampler == 'mcmc':
+        # get all quantities:
+        indexes = [i for i in range(len(param_names))
+                   if i != param_names.index('post')]
+        samples = chain[:, indexes]
+        loglike = chain[:, param_names.index('post')]
+        # Cosmosis does not weight samples:
+        samples, idx, weights = np.unique(samples, return_index=True, return_counts=True, axis=0)
+        loglike = loglike[idx]
+        # delete the weights and likelihood from names:
+        if param_labels is not None:
+            param_labels.pop(param_names.index('post'))
         param_names.pop(param_names.index('post'))
     elif sampler == 'uncorrelated':
         # get all quantities:
@@ -138,9 +151,6 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     mc_samples = polish_samples(mc_samples)
     # get the best fit:
     if chain_min_root is not None:
-        #mc_samples.bestfit = get_maximum_likelihood(chain_min_root,
-        #                                            param_name_dict,
-        #                                            param_label_dict)
         # since getdist does not cache the best fit we have to override the
         # method in this brute way:
         funcType = types.MethodType
@@ -221,13 +231,14 @@ def get_sampler_type(info):
                     'polychord': 'nested',
                     'multinest': 'nested',
                     'apriori': 'uncorrelated',
+                    'emcee': 'mcmc',
                     'pmaxlike': 'max_like',
                     'maxlike': 'max_like'
                     }
     # find the sampler in the parameters:
     temp = list(filter(lambda x: 'sampler' in x, info))
     if len(temp) > 0:
-        sampler = temp[0].split('=')[1].lower()
+        sampler = temp[0].replace(' ', '').split('=')[1].lower()
         if sampler in sampler_dict.keys():
             sampler = sampler_dict[sampler]
         else:
@@ -248,7 +259,7 @@ def get_name_tag(info):
     """
     temp = list(filter(lambda x: 'run_name' in x, info))
     if len(temp) > 0:
-        name_tag = temp[0].split('=')[1].lower()
+        name_tag = temp[0].replace(' ', '').split('=')[1].lower()
         name_tag = name_tag.rstrip().lstrip()
     else:
         name_tag = None

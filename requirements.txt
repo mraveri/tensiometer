@@ -1,9 +1,12 @@
 GetDist>=1.1.2
-numpy
+numpy>=1.19.1
 matplotlib>=2.2.0
-scipy>=1.0.0
-joblib
-coverage
+scipy>=1.6.2
+joblib>=1.0.1
+coverage>=5.5
 tqdm
 autograd
-pymanopt
+pymanopt>=0.2.5
+tensorflow>=2.0.0
+tensorflow_probability>=0.11.1
+numba>=0.53.0

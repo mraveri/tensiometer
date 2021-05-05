@@ -1,18 +1,16 @@
-#
-# Simple make file to store commands that are used often
-#
+# Simple make file to store commands that are used often:
+
+install:
+	@python setup.py install --user
 
 test:
 	@python -m unittest discover tensiometer/tests
-
-install:
-	@python setup.py install
 
 coverage_report:
 	@coverage report
 
 test_with_coverage:
-	@coverage run -m unittest discover tensiometer/tests
+	@coverage run -m unittest discover tensiometer/tests -vvv -f
 	@coverage report
 
 run_examples:
@@ -21,7 +19,13 @@ run_examples:
 		jupyter nbconvert --execute --to html $$i --ExecutePreprocessor.timeout=-1; \
 	done;
 
-doc:
+prepare_examples:
+	@cd docs/example_notebooks && \
+	for i in *.ipynb ; do \
+		jupyter nbconvert --to html $$i; \
+	done;
+
+documentation:
 	@sphinx-build -b html docs/source build
 
 release:

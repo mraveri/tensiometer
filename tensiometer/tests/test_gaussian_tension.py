@@ -81,7 +81,7 @@ class test_utilities(unittest.TestCase):
         gt.gaussian_approximation(self.chain_1, param_names=['p1'])
         self.chain_1.label = 'chain_1'
         temp = gt.gaussian_approximation(self.chain_1)
-        assert temp.label == 'Gaussian_'+self.chain_1.label
+        assert temp.label == 'Gaussian '+self.chain_1.label
         self.chain_1.label = None
         self.chain_1.name_tag = 'chain_1'
         temp = gt.gaussian_approximation(self.chain_1)

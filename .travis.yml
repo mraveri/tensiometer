@@ -6,16 +6,16 @@ git:
 
 jobs:
   include:
-    - env:
+    - name: "Anaconda Python 3.7"
+      env:
         - CHANNEL="defaults"
         - PYDIST="ANACONDA"
-      python: "3.6"
-    - env:
+      python: "3.7"
+    - name: "Anaconda Python 3.8"
+      env:
         - CHANNEL="conda-forge"
         - PYDIST="ANACONDA"
       python: "3.8"
-    - name: "3.7 with bionic"
-      python: "3.7"
 
 install:
   # Setup anaconda following http://conda.pydata.org/docs/travis.html
@@ -29,6 +29,7 @@ install:
       conda create -q -n test-environment -c $CHANNEL python=$TRAVIS_PYTHON_VERSION scipy matplotlib;
       source activate test-environment;
     fi
+  - pip install --upgrade pip
   - python --version
   - pip install .
   - pip install coveralls

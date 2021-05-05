@@ -24,8 +24,8 @@ Tensiometer
 Description
 ============
 
-The tensiometer package is a collection of tools that extends `GetDist <https://pypi.org/project/GetDist/>`_ capabilities
-to test the level of agreement/disagreement between different posterior distributions.
+The tensiometer package is a collection of tools to test the level of
+agreement/disagreement between different posterior distributions.
 
 The best way to get up to speed is to read through the worked example
 `full worked example <https://tensiometer.readthedocs.org/en/latest/tension_example.html>`_
@@ -42,17 +42,18 @@ Alternatively one can download the source code from github::
 
   git clone https://github.com/mraveri/tensiometer.git
 
-and install with::
+and install it locally with the shortcut::
 
-  python setup.py install
+  make install
 
 You can test that the code is working properly by using::
 
   make test
 
+
 Dependencies
 =============
-* Python 3.6+
-* matplotlib 2.2+ (3.1+ recommended)
-* scipy
-* GetDist
+
+Uses mostly standard python packages and GetDist.
+
+For the full list of requirements see the `requirements.txt` file.
