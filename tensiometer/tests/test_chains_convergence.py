@@ -53,6 +53,12 @@ class test_convergence(unittest.TestCase):
         print(conv.GRn_test(ttu.get_separate_mcsamples(self.chain)[:2], n=2, param_names=None, feedback=0,
                             optimizer='ParticleSwarm', **kwargs))
 
+    def test_errors(self):
+        #self.assertRaises(TypeError, conv.GR_test('test'))
+        #self.assertRaises(TypeError, conv.GR_test(['test']))
+        #self.assertRaises(ValueError, conv.GR_test([]))
+        pass
+
 ###############################################################################
 
 

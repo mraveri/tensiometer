@@ -219,6 +219,10 @@ def tRq_nder(x, A, n):
 # manifold brute force maximization:
 
 import autograd.numpy as anp
+
+# prevent pymanopt from running with tensorflow:
+import pymanopt.tools.autodiff._tensorflow as ptf
+ptf.tf = None
 from pymanopt.manifolds import Sphere
 from pymanopt import Problem
 import pymanopt.solvers

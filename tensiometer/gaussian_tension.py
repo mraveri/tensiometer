@@ -400,18 +400,6 @@ def KL_PCA(chain_1, chain_12, param_names=None,
     Perform the KL analysis of two chains.
     Directions that chain_2 improves over chain_1.
 
-    chain_12 = chain_1.copy()
-    chain_1 = prior_chain.copy()
-    param_names = chain_1.getParamNames().getRunningNames()
-    conditional_params=[]
-    param_map='LNLNLN'
-    normparam=None
-    num_modes=None
-    localize=True
-    dimensional_reduce=True
-    dimensional_threshold=0.1
-    verbose=True
-
     :param chain_1: :class:`~getdist.mcsamples.MCSamples` the first input chain.
     :param chain_12: :class:`~getdist.mcsamples.MCSamples` the second input chain.
     :param param_names: list of names of the parameters to use

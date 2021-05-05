@@ -18,6 +18,7 @@ import os
 autoclass_content = 'both'
 
 nitpicky = True
+nitpick_ignore = [('py:class', 'optional')]
 
 
 # Prevent spurious errors for every field ivar (not sure why..)
@@ -57,7 +58,9 @@ intersphinx_mapping = {'python': ('https://docs.python.org/3', None),
                        'numpy': ('https://docs.scipy.org/doc/numpy/', None),
                        'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
                        'matplotlib': ('https://matplotlib.org/', None),
-                       'getdist': ('https://getdist.readthedocs.io/en/latest/', None)}
+                       'getdist': ('https://getdist.readthedocs.io/en/latest/', None),
+                       "tensorflow": ("https://www.tensorflow.org/api_docs/python", "https://github.com/GPflow/tensorflow-intersphinx/raw/master/tf2_py_objects.inv"),
+                       "tensorflow_probability": ("https://www.tensorflow.org/probability/api_docs/python", "https://github.com/GPflow/tensorflow-intersphinx/raw/master/tfp_py_objects.inv")}
 
 # plot_formats = [('png', 80)]
 plot_html_show_formats = False
@@ -118,7 +121,7 @@ html_theme = 'sphinx_rtd_theme'
 # further.  For a list of options available for each theme, see the
 # documentation.
 html_theme_options = {
-    'collapse_navigation': True,    
+    'collapse_navigation': True,
     }
 # Add any paths that contain custom themes here, relative to this directory.
 # html_theme_path = []
