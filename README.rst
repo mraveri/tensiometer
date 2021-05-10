@@ -8,7 +8,7 @@ Tensiometer
 :Author: Marco Raveri and Cyrille Doux
 :Homepage: https://tensiometer.readthedocs.io
 :Source: https://github.com/mraveri/tensiometer
-:Reference: mostly https://arxiv.org/abs/1806.04649 and https://arxiv.org/abs/1912.04880
+:References: https://arxiv.org/abs/2105.03324 (non-Gaussian metrics), https://arxiv.org/abs/1806.04649 and https://arxiv.org/abs/1912.04880 (Gaussian)
 
 .. image:: https://travis-ci.org/mraveri/tensiometer.svg?branch=master
     :target: https://travis-ci.org/mraveri/tensiometer
@@ -29,7 +29,9 @@ agreement/disagreement between different posterior distributions.
 
 The best way to get up to speed is to read through the worked example
 `full worked example <https://tensiometer.readthedocs.org/en/latest/tension_example.html>`_
-that you can `run online <https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb>`_!
+that you can `run online <https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb>`_! There's also a documented example of
+`non-Gaussian tension estimates between DES Y1 and Planck 18 <https://tensiometer.readthedocs.io/en/latest/non_gaussian_tension.html>`_.
+
 
 Installation
 =============
