@@ -66,7 +66,7 @@ setuptools.setup(name='tensiometer',
                  platforms='any',
                  install_requires=get_requirements(),
                  classifiers=[
-                    'Development Status :: 3 - Alpha',
+                    'Development Status :: 4 - Beta',
                     'Operating System :: OS Independent',
                     'Intended Audience :: Science/Research',
                     'Programming Language :: Python :: 3',
