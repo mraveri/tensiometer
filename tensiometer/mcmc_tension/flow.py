@@ -193,7 +193,7 @@ class DiffFlowCallback(Callback):
         self.feedback = feedback
 
         # Chain
-        self._init_diff_chain(diff_chain, param_names=None, validation_split=validation_split)
+        self._init_diff_chain(diff_chain, param_names=param_names, validation_split=validation_split)
 
         # Transformed distribution
         self._init_transf_dist(Z2Y_bijector, learning_rate=learning_rate, **kwargs)
@@ -487,6 +487,33 @@ class DiffFlowCallback(Callback):
 
 
 def flow_parameter_shift(diff_chain, param_names=None, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=[], verbose=1, tol=0.05, max_iter=1000, step=100000, **kwargs):
+    """
+    Wrapper function to compute a normalizing flow estimate of the probability of a parameter shift given the input parameter difference chain with a standard MAF. It creates a :class:`~.DiffFlowCallback` object with a :class:`~.SimpleMAF` model (to which kwargs are passed), trains the model and returns the estimated shift probability.
+
+    :param diff_chain: input parameter difference chain.
+    :type diff_chain: :class:`~getdist.mcsamples.MCSamples`
+    :param param_names: parameter names of the parameters to be used
+        in the calculation. By default all running parameters.
+    :type param_names: list, optional
+    :param epochs: number of training epochs, defaults to 100.
+    :type epochs: int, optional
+    :param batch_size: number of samples per batch, defaults to None. If None, the training sample is divided into `steps_per_epoch` batches.
+    :type batch_size: int, optional
+    :param steps_per_epoch: number of steps per epoch, defaults to None. If None and `batch_size` is also None, then `steps_per_epoch` is set to 100.
+    :type steps_per_epoch: int, optional
+    :param callbacks: a list of additional Keras callbacks, such as :class:`~tf.keras.callbacks.ReduceLROnPlateau`, defaults to [].
+    :type callbacks: list, optional
+    :param verbose: verbosity level, defaults to 1.
+    :type verbose: int, optional
+    :param tol: absolute tolerance on the shift significance, defaults to 0.05.
+    :type tol: float, optional
+    :param max_iter: maximum number of sampling steps, defaults to 1000.
+    :type max_iter: int, optional
+    :param step: number of samples per step, defaults to 100000.
+    :type step: int, optional
+    :return: probability value and error estimate.
+    """
+    
     # Callback/model handler
     diff_flow_callback = DiffFlowCallback(diff_chain, param_names=param_names, **kwargs)
     # Train model
