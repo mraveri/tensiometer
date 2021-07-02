@@ -249,13 +249,13 @@ class DiffFlowCallback(Callback):
         self.weights = diff_chain.weights[training_idx]
         self.weights *= len(self.weights) / np.sum(self.weights)  # weights normalized to number of samples
         self.has_weights = np.any(self.weights != self.weights[0])
-        self.Y = np.array(self.Y2X_bijector.inverse(self.X))
+        self.Y = np.array(self.Y2X_bijector.inverse(self.X.astype(np.float32)))
         assert not np.any(np.isnan(self.Y))
         self.num_samples = len(self.X)
 
         # Test
         self.X_test = diff_chain.samples[test_idx, :][:, ind]
-        self.Y_test = np.array(self.Y2X_bijector.inverse(self.X_test))
+        self.Y_test = np.array(self.Y2X_bijector.inverse(self.X_test.astype(np.float32)))
         self.weights_test = diff_chain.weights[test_idx]
         self.weights_test *= len(self.weights_test) / np.sum(self.weights_test)  # weights normalized to number of samples
 
@@ -513,7 +513,7 @@ def flow_parameter_shift(diff_chain, param_names=None, epochs=100, batch_size=No
     :type step: int, optional
     :return: probability value and error estimate.
     """
-    
+
     # Callback/model handler
     diff_flow_callback = DiffFlowCallback(diff_chain, param_names=param_names, **kwargs)
     # Train model
