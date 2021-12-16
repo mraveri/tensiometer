@@ -30,8 +30,8 @@ from collections.abc import Iterable
 import matplotlib
 from matplotlib import pyplot as plt
 
-from .. import utilities as utils
-from .. import gaussian_tension
+from . import utilities as utils
+from . import gaussian_tension
 
 try:
     import tensorflow as tf
