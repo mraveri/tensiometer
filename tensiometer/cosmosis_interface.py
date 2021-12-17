@@ -25,6 +25,7 @@ import os
 import numpy as np
 import functools
 import types
+import re
 
 from getdist.chains import loadNumpyTxt
 from getdist.mcsamples import MCSamples
@@ -190,7 +191,7 @@ def get_param_names(info):
     :param info: a list of strings with the cosmosis parameters for the run.
     :return: a list of strings with the parameter names.
     """
-    return info[0].split('\t')
+    return list(filter(None, re.split('\t| ', info[0])))
 
 
 def get_param_labels(info, param_names, param_label_dict):
