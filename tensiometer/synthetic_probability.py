@@ -8,21 +8,21 @@ chain = getdist.mcsamples.loadMCSamples(file_root=chains_dir+'DES', no_cache=Tru
 param_names = ['omegam', 'sigma8']
 from tensorflow.keras.callbacks import Callback
 self = Callback()
+
+from tensiometer import utilities as utils
+from tensiometer import gaussian_tension
 """
 
 ###############################################################################
 # initial imports and set-up:
 
+import os
 import copy
 import numpy as np
 import getdist.chains as gchains
-gchains.print_load_details = False
-from getdist import MCSamples, WeightedSamples
+from getdist import MCSamples
 import scipy
 import scipy.integrate
-from scipy.linalg import sqrtm
-from scipy.integrate import simps
-from scipy.spatial import cKDTree
 from scipy.optimize import differential_evolution, minimize
 import scipy.stats
 import pickle
@@ -33,6 +33,9 @@ from matplotlib import pyplot as plt
 from . import utilities as utils
 from . import gaussian_tension
 
+gchains.print_load_details = False
+
+# tensorflow imports:
 try:
     import tensorflow as tf
     import tensorflow_probability as tfp
@@ -42,8 +45,10 @@ try:
     from tensorflow.keras.layers import Input
     from tensorflow.keras.callbacks import Callback
     HAS_FLOW = True
+    # tensorflow precision:
     prec = tf.float32
     np_prec = np.float32
+    int_np_prec = np.int32
 except Exception as e:
     print("Could not import tensorflow or tensorflow_probability: ", e)
     Callback = object
@@ -54,19 +59,9 @@ try:
 except ModuleNotFoundError:
     pass
 
+
 ###############################################################################
 # helper class to build a masked-autoregressive flow:
-
-
-class shift_and_log_scale_fn_helper(tf.Module):
-    def __init__(self, made, name=None):
-        super(shift_and_log_scale_fn_helper, self).__init__(name=name)
-        self.made = made
-        self._made_variables = made.variables
-
-    def __call__(self, x):
-        return tf.exp(-0.05*tf.norm(x, ord=2, axis=-1, keepdims=False)**2)[..., None, None] * self.made(x)
-
 
 class SimpleMAF(object):
     """
@@ -113,14 +108,10 @@ class SimpleMAF(object):
 
         # Build transformed distribution
         bijectors = []
-
-        mafs = []
-        mades = []
         for i in range(n_maf):
             if _permutations:
-                bijectors.append(tfb.Permute(_permutations[i].astype(np.int32)))
-            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **kwargs)
-            # shift_and_log_scale_fn = shift_and_log_scale_fn_helper(made) # not ready yet...
+                bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
+            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
             shift_and_log_scale_fn = made
             maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
             bijectors.append(maf)
@@ -128,7 +119,7 @@ class SimpleMAF(object):
             if _permutations:  # add the inverse permutation
                 inv_perm = np.zeros_like(_permutations[i])
                 inv_perm[_permutations[i]] = np.arange(len(inv_perm))
-                bijectors.append(tfb.Permute(inv_perm.astype(np.int32)))
+                bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
 
         self.bijector = tfb.Chain(bijectors)
 
@@ -150,22 +141,24 @@ class SimpleMAF(object):
         pickle.dump(self.permutations, open(path+'_permutations.pickle', 'wb'))
 
     @classmethod
-    def load(cls, num_params, path, **kwargs):
+    def load(cls, path, **kwargs):
         """
         Load a saved `SimpleMAF` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
 
-        :param num_params: number of parameters, ie the dimension of the space of which the bijector is defined.
         :type num_params: int
         :param path: path of the directory from which to load.
         :type path: str
         :return: a :class:`~.SimpleMAF`.
         """
         permutations = pickle.load(open(path+'_permutations.pickle', 'rb'))
-        maf = SimpleMAF(num_params=num_params, permutations=permutations, **kwargs)
+        maf = SimpleMAF(num_params=len(permutations[0]), permutations=permutations, **utils.filter_kwargs(kwargs, SimpleMAF))
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
 
+
+###############################################################################
+# helper function to generate analytic prior bijectors
 
 def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, **kwargs):
     """
@@ -192,7 +185,7 @@ def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, *
     def multivariate_normal(loc, cov):
         return tfd.MultivariateNormalTriL(loc=loc.astype(np_prec), scale_tril=tf.linalg.cholesky(cov.astype(np_prec))).bijector
 
-    if prior_dict_list is not None: # Mix of uniform and gaussian one-dimensional priors
+    if prior_dict_list is not None:  # Mix of uniform and gaussian one-dimensional priors
 
         # Build one-dimensional bijectors
         n = len(prior_dict_list)
@@ -414,13 +407,13 @@ class DiffFlowCallback(Callback):
         # assert not np.any(np.isnan(self.Y))
         self.num_samples = len(self.samples)
 
-        # Test
+        # Test:
         self.samples_test = self.fixed_bijector.inverse(chain.samples[test_idx, :][:, ind]).numpy().astype(np_prec)
         # self.Y_test = np.array(self.Y2X_bijector.inverse(self.samples_test.astype(np_prec)))
         self.weights_test = chain.weights[test_idx]
         self.weights_test *= len(self.weights_test) / np.sum(self.weights_test)  # weights normalized to number of samples
 
-        # Training sample generator
+        # Training sample generator:
         self.training_dataset = tf.data.Dataset.from_tensor_slices((tf.cast(self.samples, prec),     # input
                                                                     tf.zeros(self.num_samples),      # output (dummy zero)
                                                                     tf.cast(self.weights, prec),))   # weights
@@ -481,15 +474,6 @@ class DiffFlowCallback(Callback):
         :type verbose: int, optional
         :return: A :class:`~tf.keras.callbacks.History` object. Its `history` attribute is a dictionary of training and validation loss values and metrics values at successive epochs: `"shift0_chi2"` is the squared norm of the zero-shift point in the gaussianized space, with the probability-to-exceed and corresponding tension in `"shift0_pval"` and `"shift0_nsigma"`; `"chi2Z_ks"` and `"chi2Z_ks_p"` contain the :math:`D_n` statistic and probability-to-exceed of the Kolmogorov-Smironov test that squared norms of the transformed samples `Z` are :math:`\\chi^2` distributed (with a number of degrees of freedom equal to the number of parameters).
         """
-        """
-        For testing purposes:
-        epochs=100
-        batch_size=None
-        steps_per_epoch=None
-        callbacks=[]
-        verbose=1
-        kwargs = {}
-        """
         # We're trying to loop through the full sample each epoch
         if batch_size is None:
             if steps_per_epoch is None:
@@ -506,7 +490,7 @@ class DiffFlowCallback(Callback):
                               validation_data=(self.samples_test, tf.zeros(len(self.samples_test)), self.weights_test),
                               verbose=verbose,
                               callbacks=[tf.keras.callbacks.TerminateOnNaN(), self]+callbacks,
-                              **kwargs)
+                              **utils.filter_kwargs(kwargs, self.model.fit))
         # model is now trained:
         self.is_trained = True
         #
@@ -514,10 +498,12 @@ class DiffFlowCallback(Callback):
 
     def global_train(self, pop_size=10,  **kwargs):
         """
-        Training algorithm with some globalization strategy
+        Training algorithm with some globalization strategy. Starts from multiple
+        random weight initializations and selects the one that has the best
+        performances on the validation set after training.
 
-        pop_size = 10
-        kwargs = {'epochs': 10}
+        :param pop_size: number of weight initializations. Time to solution
+        scales linearly with this parameter.
         """
         # generate starting population of weights:
         population = [self.model.get_weights()]
@@ -551,7 +537,9 @@ class DiffFlowCallback(Callback):
 
     def cast(self, v):
         """
-        Cast vector to internal precision of the flow. Converts to tensorflow tensor.
+        Cast vector/tensor to tensorflow tensor with internal precision of the flow.
+
+        :param v: input vector
         """
         return tf.cast(v, dtype=prec)
 
@@ -559,6 +547,8 @@ class DiffFlowCallback(Callback):
     def sample(self, N):
         """
         Return samples from the synthetic probablity.
+
+        :param N: number of samples
         """
         return self.distribution.sample(N)
 
@@ -566,13 +556,17 @@ class DiffFlowCallback(Callback):
     def log_probability(self, coord):
         """
         Returns learned log probability.
+
+        :param coord: input parameter value
         """
         return self.distribution.log_prob(coord)
 
     @tf.function()
     def log_probability_jacobian(self, coord):
         """
-        Computes the Jacobian of the log probability.
+        Computes the Jacobian of log probability.
+
+        :param coord: input parameter value
         """
         with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
             tape.watch(coord)
@@ -583,6 +577,8 @@ class DiffFlowCallback(Callback):
     def log_probability_abs(self, abs_coord):
         """
         Returns learned log probability in original parameter space as a function of abstract coordinates.
+
+        :param abs_coord: input parameter value in abstract Gaussian coordinates
         """
         temp_1 = self.distribution.distribution.log_prob(abs_coord)
         temp_2 = self.distribution.bijector.forward_log_det_jacobian(abs_coord, event_ndims=1)
@@ -591,7 +587,9 @@ class DiffFlowCallback(Callback):
     @tf.function()
     def log_probability_abs_jacobian(self, abs_coord):
         """
-        Computes the Jacobian of the log probability.
+        Jacobian of the log probability with respect to abstract coordinates.
+
+        :param abs_coord: input parameter value in abstract Gaussian coordinates
         """
         with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
             tape.watch(abs_coord)
@@ -601,6 +599,9 @@ class DiffFlowCallback(Callback):
     def MCSamples(self, size, logLikes=True, **kwargs):
         """
         Return MCSamples object from the syntetic probability.
+
+        :param size: number of samples
+        :param logLikes: logical, whether to include log-likelihoods or not.
         """
         samples = self.sample(size)
         if logLikes:
@@ -610,7 +611,7 @@ class DiffFlowCallback(Callback):
         mc_samples = MCSamples(samples=samples.numpy(), loglikes=loglikes.numpy(),
                                names=self.param_names, labels=self.param_labels,
                                ranges=self.parameter_ranges,
-                               name_tag=self.name_tag, **kwargs)
+                               name_tag=self.name_tag, **utils.filter_kwargs(kwargs, MCSamples))
         #
         return mc_samples
 
@@ -621,7 +622,7 @@ class DiffFlowCallback(Callback):
         # main call to differential evolution:
         result = differential_evolution(lambda x: -self.distribution.log_prob(self.cast(x)),
                                         bounds=list(self.parameter_ranges.values()),
-                                        **kwargs)
+                                        **utils.filter_kwargs(kwargs, differential_evolution))
         # cache MAP value:
         if result.success:
             self.MAP_coord = result.x
@@ -642,7 +643,7 @@ class DiffFlowCallback(Callback):
         result = minimize(lambda x: -self.log_probability_abs(self.cast(x)).numpy().astype(np.float64),
                           x0=x0_abs,
                           jac=lambda x: -self.log_probability_abs_jacobian(self.cast(x)).numpy().astype(np.float64),
-                          **kwargs)
+                          **utils.filter_kwargs(kwargs, minimize))
         # test result:
         if not result.success:
             print('fast map finder failed')
@@ -905,7 +906,7 @@ class DiffFlowCallback(Callback):
         Solve naively the dynamical equation for eigenvalues in abstract space.
         """
         # preprocess:
-        x = tf.convert_to_tensor([tf.cast(y, tf.float32)])
+        x = self.cast([y])
         # map to original space to compute Jacobian (without inversion):
         x_par = self.map_to_original_coord(x)
         # precompute Jacobian and its derivative:
@@ -1218,7 +1219,7 @@ def _naive_KL_ode(t, y, reference, flow, prior_flow):
     Solve naively the dynamical equation for KL decomposition in abstract space.
     """
     # preprocess:
-    x = tf.convert_to_tensor([tf.cast(y, tf.float32)])
+    x = flow.cast([y])
     # compute metrics:
     metric = flow.metric(x)[0]
     prior_metric = prior_flow.metric(x)[0]
@@ -1250,7 +1251,7 @@ def solve_KL_ode(flow, prior_flow, y0, n, length=1.5, side='both', integrator_op
     # define solution points:
     solution_times = tf.linspace(0., length, num_points)
     # compute initial KL decomposition:
-    x = tf.convert_to_tensor([tf.cast(y0, tf.float32)])
+    x = flow.cast([y0])
     metric = flow.metric(x)[0]
     prior_metric = prior_flow.metric(x)[0]
     # compute KL decomposition:
@@ -1338,6 +1339,9 @@ def solve_KL_ode(flow, prior_flow, y0, n, length=1.5, side='both', integrator_op
 class TransformedDiffFlowCallback(DiffFlowCallback):
 
     def __init__(self, flow, transformation):
+        """
+        Applies an analytic bijector to a flow to transform parameters.
+        """
 
         self.num_params = flow.num_params
         if isinstance(transformation, Iterable):
@@ -1390,3 +1394,37 @@ class TransformedDiffFlowCallback(DiffFlowCallback):
         else:
             self.MAP_coord = flow.MAP_coord
             self.MAP_logP = flow.MAP_logP
+
+###############################################################################
+# Flow utilities:
+
+
+def flow_from_chain(chain, cache_dir=None, root_name='sprob', do_test_plots=True, **kwargs):
+    """
+    Helper to initialize and train a synthetic probability starting from a chain.
+    If a cache directory is specified then training results are cached and
+    retreived at later calls.
+    """
+
+    # check if we want to create a cache folder:
+    if cache_dir is not None:
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+
+    # load from cache:
+    if cache_dir is not None and os.path.isfile(cache_dir+'/'+root_name+'_permutations.pickle'):
+        # load trained model:
+        temp_MAF = SimpleMAF.load(cache_dir+'/'+root_name, **kwargs)
+        # initialize flow:
+        if 'trainable_bijector' in kwargs:
+            kwargs.pop('trainable_bijector')
+        flow = DiffFlowCallback(chain, trainable_bijector=temp_MAF.bijector, **kwargs)
+    else:
+        # initialize posterior flow:
+        flow = DiffFlowCallback(chain, **kwargs)
+        # train posterior flow:
+        flow.global_train(**kwargs)
+        # save trained model:
+        flow.MAF.save(cache_dir+'/'+root_name)
+    #
+    return flow

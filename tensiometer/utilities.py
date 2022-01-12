@@ -10,6 +10,7 @@ import scipy
 import scipy.special
 from scipy.linalg import sqrtm
 from getdist import MCSamples
+import inspect
 
 ###############################################################################
 
@@ -429,3 +430,19 @@ def is_outlier(points, thresh=3.5):
     modified_z_score = 0.6745 * diff / med_abs_deviation
 
     return modified_z_score > thresh
+
+###############################################################################
+
+
+def filter_kwargs(dict_to_filter, function_with_kwargs):
+    """
+    Inspects a function signature and returns the correct kwargs. Usefull to
+    isolate kwargs for a third party library.abs($0)
+
+    :param dict_to_filter: dictionary to filter
+    :param function_with_kwargs: function to inspect
+    """
+    sig = inspect.signature(function_with_kwargs)
+    filter_keys = [param.name for param in sig.parameters.values() if param.kind == param.POSITIONAL_OR_KEYWORD]
+    filtered_dict = {filter_key: dict_to_filter[filter_key] for filter_key in filter_keys if filter_key in dict_to_filter.keys()}
+    return filtered_dict
