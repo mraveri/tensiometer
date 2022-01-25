@@ -136,7 +136,7 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
         #    if name in param_name_dict.keys():
     # initialize the samples:
     mc_samples = MCSamples(samples=samples, weights=weights,
-                           loglikes=-2.*loglike,
+                           loglikes=-loglike,
                            sampler=sampler, names=param_names,
                            labels=param_labels, ranges=ranges,
                            ignore_rows=0, name_tag=name_tag,
