@@ -44,6 +44,7 @@ try:
     from tensorflow.keras.models import Model
     from tensorflow.keras.layers import Input
     from tensorflow.keras.callbacks import Callback
+    import tensorflow.keras.callbacks as keras_callbacks
     HAS_FLOW = True
     # tensorflow precision:
     prec = tf.float32
@@ -332,26 +333,16 @@ class DiffFlowCallback(Callback):
             # get ranges from MCSamples:
             else:
                 temp_range = []
-                do_extend = False
                 # lower:
                 if name in chain.ranges.lower.keys():
                     temp_range.append(chain.ranges.lower[name])
                 else:
                     temp_range.append(np.amin(chain.samples[:, chain.index[name]]))
-                    do_extend = True
                 # upper:
                 if name in chain.ranges.upper.keys():
                     temp_range.append(chain.ranges.upper[name])
                 else:
                     temp_range.append(np.amax(chain.samples[:, chain.index[name]]))
-                    do_extend = True
-                # if using min/max from samples, we extend the range to avoid overflows
-                if do_extend or True:
-                    center = 0.5 * (temp_range[0]+temp_range[1])
-                    length = temp_range[1] - temp_range[0]
-                    eps = 10.*np.finfo(np_prec).eps
-                    eps = 0.001
-                    temp_range = [center - 0.5*length*(1.+eps), center + 0.5*length*(1.+eps)]
                 # save:
                 self.parameter_ranges[name] = copy.deepcopy(temp_range)
 
@@ -365,7 +356,16 @@ class DiffFlowCallback(Callback):
             self.chain_MAP = None
         # Prior bijector setup:
         if prior_bijector == 'ranges':
-            self.prior_bijector = prior_bijector_helper([{'lower': tf.cast(self.parameter_ranges[name][0], prec), 'upper': tf.cast(self.parameter_ranges[name][1], prec)} for name in param_names])
+            # extend slightly the ranges to avoid overflows:
+            temp_ranges = []
+            for name in param_names:
+                temp_range = self.parameter_ranges[name]
+                center = 0.5 * (temp_range[0]+temp_range[1])
+                length = temp_range[1] - temp_range[0]
+                eps = 0.001
+                temp_ranges.append({'lower': self.cast(center - 0.5*length*(1.+eps)), 'upper': self.cast(center + 0.5*length*(1.+eps))})
+            # define bijector:
+            self.prior_bijector = prior_bijector_helper(temp_ranges)
         elif isinstance(prior_bijector, tfp.bijectors.Bijector):
             self.prior_bijector = prior_bijector
         elif prior_bijector is None or prior_bijector is False:
@@ -458,7 +458,7 @@ class DiffFlowCallback(Callback):
         # compile model:
         self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=lambda _, log_prob: -log_prob)
 
-    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=[], verbose=1, **kwargs):
+    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=1, **kwargs):
         """
         Train the normalizing flow model. Internally, this runs the fit method of the Keras :class:`~tf.keras.Model`, to which `**kwargs are passed`.
 
@@ -468,7 +468,7 @@ class DiffFlowCallback(Callback):
         :type batch_size: int, optional
         :param steps_per_epoch: number of steps per epoch, defaults to None. If None and `batch_size` is also None, then `steps_per_epoch` is set to 100.
         :type steps_per_epoch: int, optional
-        :param callbacks: a list of additional Keras callbacks, such as :class:`~tf.keras.callbacks.ReduceLROnPlateau`, defaults to [].
+        :param callbacks: a list of additional Keras callbacks, such as :class:`~tf.keras.callbacks.ReduceLROnPlateau`, defaults to None which contains a selection of useful callbacks.
         :type callbacks: list, optional
         :param verbose: verbosity level, defaults to 1.
         :type verbose: int, optional
@@ -482,6 +482,14 @@ class DiffFlowCallback(Callback):
         else:
             if steps_per_epoch is None:
                 steps_per_epoch = int(self.num_samples/batch_size)
+        # set callbacks:
+        if callbacks is None:
+            callbacks = []
+            # callback that reduces learning rate when it stops improving:
+            callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
+            # callback to stop if weights start getting worse:
+            callbacks.append(keras_callbacks.EarlyStopping(patience=10, restore_best_weights=True,
+                                                           **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
         # Run training:
         hist = self.model.fit(x=self.training_dataset.batch(batch_size),
                               batch_size=batch_size,
@@ -615,40 +623,33 @@ class DiffFlowCallback(Callback):
         #
         return mc_samples
 
-    def MAP_finder(self, **kwargs):
-        """
-        Function that uses scipy differential evolution to find the global maximum of the synthetic posterior.
-        """
-        # main call to differential evolution:
-        result = differential_evolution(lambda x: -self.distribution.log_prob(self.cast(x)),
-                                        bounds=list(self.parameter_ranges.values()),
-                                        **utils.filter_kwargs(kwargs, differential_evolution))
-        # cache MAP value:
-        if result.success:
-            self.MAP_coord = result.x
-            self.MAP_logP = -result.fun
-        #
-        return result
-
-    def fast_MAP_finder(self, **kwargs):
+    def MAP_finder(self, x0=None, bounds='ranges', **kwargs):
         """
         Function that uses scipy optimizer to find the maximum of the synthetic posterior.
         """
-        # initialize:
-        if self.chain_MAP is not None:
-            x0_abs = self.map_to_abstract_coord(self.cast(self.chain_MAP))
+        # find initial guess:
+        if x0 is None:
+            num_samples = 10000*self.num_params
+            temp_samples = self.sample(num_samples)
+            temp_probs = self.log_probability(temp_samples)
+            x0 = temp_samples[tf.argmax(temp_probs)]
+        # find ranges:
+        if bounds == 'ranges':
+            bounds_to_use = list(self.parameter_ranges.values())
         else:
-            x0_abs = self.map_to_abstract_coord(self.cast(self.sample_MAP))
+            bounds_to_use = bounds
         # call to minimizer:
-        result = minimize(lambda x: -self.log_probability_abs(self.cast(x)).numpy().astype(np.float64),
-                          x0=x0_abs,
-                          jac=lambda x: -self.log_probability_abs_jacobian(self.cast(x)).numpy().astype(np.float64),
-                          **utils.filter_kwargs(kwargs, minimize))
+        result = minimize(lambda x: -self.log_probability(self.cast(x)).numpy().astype(np.float64),
+                          x0=x0,
+                          jac=lambda x: -self.log_probability_jacobian(self.cast(x)).numpy().astype(np.float64),
+                          bounds=bounds_to_use,
+                          **utils.filter_kwargs(kwargs, minimize)
+                          )
         # test result:
         if not result.success:
             print('fast map finder failed')
         # cache MAP value:
-        self.MAP_coord = self.map_to_original_coord(self.cast(result.x)).numpy()
+        self.MAP_coord = result.x
         self.MAP_logP = -result.fun
         #
         return result
