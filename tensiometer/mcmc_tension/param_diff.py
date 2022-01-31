@@ -219,11 +219,11 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
     indexes_1 = [chain_1.index[name] for name in param_names]
     indexes_2 = [chain_2.index[name] for name in param_names]
     # get separate chains:
-    if not hasattr(chain_1, 'chain_offsets'):
+    if not hasattr(chain_1, 'chain_offsets') or chain_1.sampler == 'nested':
         _chains_1 = [chain_1]
     else:
         _chains_1 = chain_1.getSeparateChains()
-    if not hasattr(chain_2, 'chain_offsets'):
+    if not hasattr(chain_2, 'chain_offsets') or chain_2.sampler == 'nested':
         _chains_2 = [chain_2]
     else:
         _chains_2 = chain_2.getSeparateChains()

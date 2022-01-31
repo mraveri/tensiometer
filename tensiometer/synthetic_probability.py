@@ -1433,7 +1433,7 @@ class TransformedDiffFlowCallback(DiffFlowCallback):
 # Flow utilities:
 
 
-def flow_from_chain(chain, cache_dir=None, root_name='sprob', do_test_plots=True, **kwargs):
+def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
     """
     Helper to initialize and train a synthetic probability starting from a chain.
     If a cache directory is specified then training results are cached and
