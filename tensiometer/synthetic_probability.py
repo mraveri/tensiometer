@@ -23,7 +23,8 @@ import getdist.chains as gchains
 from getdist import MCSamples
 import scipy
 import scipy.integrate
-from scipy.optimize import differential_evolution, minimize
+from scipy.spatial import cKDTree
+from scipy.optimize import minimize
 import scipy.stats
 import pickle
 from collections.abc import Iterable
@@ -287,7 +288,7 @@ class DiffFlowCallback(Callback):
             print("    - trainable parameters:", self.model.count_params())
 
         # Metrics
-        keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error"]
+        keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
         self.log = {_k: [] for _k in keys}
 
         self.chi2Y = np.sum(self.samples_test**2, axis=1)
@@ -345,7 +346,6 @@ class DiffFlowCallback(Callback):
                     temp_range.append(np.amax(chain.samples[:, chain.index[name]]))
                 # save:
                 self.parameter_ranges[name] = copy.deepcopy(temp_range)
-
         # save sample MAP:
         temp = chain.samples[np.argmin(chain.loglikes), :]
         self.sample_MAP = np.array([temp[chain.index[name]] for name in param_names])
@@ -370,7 +370,6 @@ class DiffFlowCallback(Callback):
             self.prior_bijector = prior_bijector
         elif prior_bijector is None or prior_bijector is False:
             self.prior_bijector = tfb.Identity()
-
         self.bijectors = [self.prior_bijector]
 
         # Samples indices:
@@ -381,6 +380,12 @@ class DiffFlowCallback(Callback):
         self.chain_samples = chain.samples[:, ind]
         self.chain_loglikes = chain.loglikes
         self.chain_weights = chain.weights
+        # cache nearest neighbours indexes, in whitened coordinates:
+        temp_cov = np.cov(self.chain_samples.T, aweights=self.chain_weights)
+        white_samples = np.dot(scipy.linalg.sqrtm(np.linalg.inv(temp_cov)), self.chain_samples.T).T
+        data_tree = cKDTree(white_samples, balanced_tree=True)
+        r2, idx = data_tree.query(white_samples, (2), workers=-1)
+        self.chain_nearest_index = idx.copy()
 
         # Gaussian approximation (full chain)
         if apply_pregauss:
@@ -672,7 +677,23 @@ class DiffFlowCallback(Callback):
         # compute average and error:
         average = np.average(diffs, weights=self.chain_weights)
         variance = np.average((diffs-average)**2, weights=self.chain_weights)
+        #
         return (average, np.sqrt(variance))
+
+    def smoothness_score(self):
+        """
+        Compute smoothness score for the flow. This measures how much the flow is non-linear in between neares neighbours.
+        """
+        # get delta log likes and delta params:
+        delta_theta = self.chain_samples - self.chain_samples[self.chain_nearest_index[:, 1], :]
+        delta_log_likes = -(self.chain_loglikes - self.chain_loglikes[self.chain_nearest_index[:, 1]])
+        # compute the gradient:
+        delta_1 = tf.einsum("...i, ...i -> ...", self.log_probability_jacobian(self.cast(self.chain_samples)), delta_theta) - delta_log_likes
+        delta_2 = tf.einsum("...i, ...i -> ...", self.log_probability_jacobian(self.cast(self.chain_samples[self.chain_nearest_index[:, 1], :])), delta_theta) - delta_log_likes
+        # average:
+        score = np.average(np.abs(0.5*(delta_1 + delta_2)), weights=self.chain_weights)
+        #
+        return score
 
     ###############################################################################
     # Information geometry methods:
@@ -881,14 +902,14 @@ class DiffFlowCallback(Callback):
         return results
 
     @tf.function()
-    def geodesic_distance(self, coord_1, coord_2):
+    def geodesic_distance(self, coord_1, coord_2, **kwargs):
         """
         """
         # map to abstract coordinates:
         abs_coord_1 = self.map_to_abstract_coord(coord_1)
         abs_coord_2 = self.map_to_abstract_coord(coord_2)
         # metric there is Euclidean:
-        return tf.linalg.norm(abs_coord_1 - abs_coord_2)
+        return tf.linalg.norm(abs_coord_1 - abs_coord_2, **kwargs)
 
     @tf.function()
     def fast_geodesic_ivp(self, pos, velocity, solution_times):
@@ -1143,6 +1164,17 @@ class DiffFlowCallback(Callback):
             labs = [l.get_label() for l in lns]
             ax2.legend(lns, labs, loc=1)
 
+    def _plot_smoothness_score(self, ax, logs={}):
+        # compute and plot smoothness score during training:
+        score = self.smoothness_score()
+        self.log["smoothness_score"].append(score)
+        # plot:
+        if ax is not None:
+            ax.plot(self.log["smoothness_score"])
+            ax.set_title(r"Smoothness score")
+            ax.set_xlabel("Epoch #")
+            ax.set_ylabel(r"$\langle \, J\cdot \Delta \theta - \Delta \log P \, \rangle$")
+
     def on_epoch_end(self, epoch, logs={}):
         """
         This method is used by Keras to show progress during training if `feedback` is True.
@@ -1152,13 +1184,14 @@ class DiffFlowCallback(Callback):
                 if epoch % self.feedback:
                     return
             clear_output(wait=True)
-            fig, axes = plt.subplots(1, 4, figsize=(16, 3))
+            fig, axes = plt.subplots(1, 5, figsize=(16, 3))
         else:
-            axes = [None]*4
+            axes = [None]*5
         self._plot_loss(axes[0], logs=logs)
         self._plot_chi2_dist(axes[1], logs=logs)
         self._plot_chi2_ks_p(axes[2], logs=logs)
         self._plot_evidence_error(axes[3], logs=logs)
+        self._plot_smoothness_score(axes[4], logs=logs)
 
         for k in self.log.keys():
             logs[k] = self.log[k][-1]
