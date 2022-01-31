@@ -74,7 +74,7 @@ def flow_parameter_shift(diff_chain, cache_dir=None, root_name='sprob', tol=0.05
     """
 
     # initialize and train parameter difference flow:
-    diff_flow = synthetic_probability.flow_from_chain(diff_chain, cache_dir=None, root_name='sprob', **kwargs)
+    diff_flow = synthetic_probability.flow_from_chain(diff_chain, cache_dir=cache_dir, root_name=root_name, **kwargs)
     # Compute tension:
     result = estimate_shift(diff_flow, tol=tol, max_iter=max_iter, step=step)
     #
