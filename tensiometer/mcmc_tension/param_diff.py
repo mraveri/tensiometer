@@ -11,10 +11,9 @@ chain_2 = loadMCSamples('./test_chains/Planck18TTTEEE')
 chain_12 = loadMCSamples('./test_chains/Planck18TTTEEE_DES')
 chain_prior = loadMCSamples('./test_chains/prior')
 
-import tensiometer.utilities as utils
 import matplotlib.pyplot as plt
 
-diff_chain = parameter_diff_chain(chain_1, chain_2, boost=1)
+diff_chain = parameter_diff_chain(chain_1, chain_2, boost=2)
 num_params, num_samples = diff_chain.samples.T.shape
 
 param_names = None
@@ -26,17 +25,10 @@ feedback=2
 ###############################################################################
 # initial imports and set-up:
 
-import os
 import numpy as np
 import getdist.chains as gchains
 gchains.print_load_details = False
 from getdist import MCSamples, WeightedSamples
-import scipy
-from scipy.linalg import sqrtm
-from scipy.integrate import simps
-from scipy.spatial import cKDTree
-
-from .. import utilities as utils
 
 ###############################################################################
 # Parameter difference chain:
@@ -230,7 +222,7 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
         _chains_2 = [chain_2]
     else:
         if chain_2.chain_offsets is None:
-            _chains_2 = [chain_1]
+            _chains_2 = [chain_2]
         else:
             _chains_2 = chain_2.getSeparateChains()
     # set the boost:
