@@ -214,9 +214,8 @@ def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, *
 
 ###############################################################################
 # loss function for hybrid density and log-likelihood optimization:
-def custom_loss(alv=0.5):
+def custom_loss(alv=1.0, blv=0.0):
     def loss(y_true_inp, y_pred):
-        blv = 1-alv
         # unpack the weights:
         y_true, weights = tf.unstack(y_true_inp, axis=1)
         # compute difference between true and predicted likelihoods:
@@ -229,7 +228,7 @@ def custom_loss(alv=0.5):
         # compute density loss function:
         loss_orig = y_pred
         # combine into total loss function:
-        loss_comb = tf.abs(-1.*alv*loss_orig) + blv*std_diff
+        loss_comb = -alv*loss_orig + blv*std_diff
         return loss_comb
     return loss
 
@@ -321,10 +320,6 @@ class DiffFlowCallback(Callback):
         self.is_trained = False
         self.MAP_coord = None
         self.MAP_logP = None
-
-        if feedback > 0:
-            print('Weight of fiducial loss:', alpha_lossv, ' Weight of Z-loss:',1-alpha_lossv)
-        self.alpha_lossv = alpha_lossv
 
     def _init_chain(self, chain, param_names=None, param_ranges=None, validation_split=0.1, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', alpha_lossv=0.5):
         """
@@ -420,10 +415,30 @@ class DiffFlowCallback(Callback):
             temp_X = self.prior_bijector.inverse(chain.samples[:, ind]).numpy()
             temp_chain = MCSamples(samples=temp_X, weights=chain.weights, names=param_names)
             temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=param_names)
-            temp_dist = tfd.MultivariateNormalTriL(loc=tf.cast(temp_gaussian_approx.means[0], prec), scale_tril=tf.linalg.cholesky(tf.cast(temp_gaussian_approx.covs[0], prec)))
+            temp_dist = tfd.MultivariateNormalTriL(loc=self.cast(temp_gaussian_approx.means[0]), scale_tril=tf.linalg.cholesky(self.cast(temp_gaussian_approx.covs[0])))
             self.bijectors.append(temp_dist.bijector)
 
         self.fixed_bijector = tfb.Chain(self.bijectors)
+
+        # set loss functions relative weights:
+        if not self.has_loglikes and alpha_lossv != 1.0:
+            raise ValueError('Cannot use likelihood based loss function in absence if the input chain does not have likelihood values')
+        # compute beta loss and save in:
+        self.alpha_lossv = alpha_lossv
+        self.beta_lossv = (1.-alpha_lossv)
+        # feedback:
+        if self.feedback:
+            print('Weight of density loss: %.3g, weight of likelihood-loss: %.3g' % (self.alpha_lossv, self.beta_lossv))
+        # rescale beta term by Gaussian expectation of the first term (so that roughly alpha controls the precision of the Evidence estimate)
+        if self.beta_lossv != 0.0:
+            temp_X = self.fixed_bijector.inverse(self.chain_samples).numpy()
+            temp_chain = MCSamples(samples=temp_X, weights=self.chain_weights, names=param_names)
+            temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=param_names)
+            temp_factor = np.log(np.linalg.det(2.*np.pi*np.exp(1)*temp_gaussian_approx.covs[0]))/2.
+            self.beta_lossv *= temp_factor
+            # feedback:
+            if self.feedback:
+                print(f'Gaussian density loss asymptotic constant: %.4g, adjusted likelihood-loss weight: %.4g' % (temp_factor, self.beta_lossv))
 
         # Split training/test:
         n = chain.samples.shape[0]
@@ -458,10 +473,6 @@ class DiffFlowCallback(Callback):
         self.training_dataset = self.training_dataset.shuffle(self.num_training_samples, reshuffle_each_iteration=True).repeat()
 
         if self.feedback:
-            print('Weight of fiducial loss:', alpha_lossv, ' Weight of Z-loss:',1-alpha_lossv)
-        self.alpha_lossv = alpha_lossv
-
-        if self.feedback:
             print("Building training/test samples")
             if self.has_weights:
                 print("    - {}/{} training/test samples and non-uniform weights.".format(self.num_training_samples, self.samples_test.shape[0]))
@@ -493,13 +504,11 @@ class DiffFlowCallback(Callback):
 
         # Construct model (using only trainable bijector)
         x_ = Input(shape=(self.num_params,), dtype=prec)
-        # log_prob_ = base_distribution.log_prob(self.trainable_bijector.inverse(x_))
         log_prob_ = tfd.TransformedDistribution(distribution=base_distribution, bijector=self.trainable_bijector).log_prob(x_)
         self.model = Model(x_, log_prob_)
 
-
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv))
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv, blv=self.beta_lossv))
 
     def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=1, **kwargs):
         """
@@ -538,7 +547,7 @@ class DiffFlowCallback(Callback):
                               batch_size=batch_size,
                               epochs=epochs,
                               steps_per_epoch=steps_per_epoch,
-                              validation_data=(self.samples_test, self.cast(np.array([self.logP_preabs_test,self.weights_test]).T), self.weights_test),
+                              validation_data=(self.samples_test, self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.weights_test),
                               verbose=verbose,
                               callbacks=[tf.keras.callbacks.TerminateOnNaN(), self]+callbacks,
                               **utils.filter_kwargs(kwargs, self.model.fit))
@@ -711,7 +720,7 @@ class DiffFlowCallback(Callback):
         # compute log likes:
         flow_log_likes = self.log_probability(self.cast(self.chain_samples))
         # compute residuals:
-        diffs = -self.chain_loglikes -flow_log_likes
+        diffs = -self.chain_loglikes - flow_log_likes
         # compute average and error:
         average = np.average(diffs, weights=self.chain_weights)
         variance = np.average((diffs-average)**2, weights=self.chain_weights)
@@ -1240,7 +1249,6 @@ class DiffFlowCallback(Callback):
 
         for k in self.log.keys():
             logs[k] = self.log[k][-1]
-            print(k,np.round(logs[k],4))
 
         if self.feedback and matplotlib.get_backend() != 'agg':
             plt.tight_layout()
