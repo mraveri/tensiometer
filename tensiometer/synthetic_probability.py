@@ -288,7 +288,10 @@ class DiffFlowCallback(Callback):
             print("    - trainable parameters:", self.model.count_params())
 
         # Metrics
-        keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
+        if self.has_loglikes:
+            keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
+        else:
+            keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p"]
         self.log = {_k: [] for _k in keys}
 
         self.chi2Y = np.sum(self.samples_test**2, axis=1)
@@ -379,6 +382,7 @@ class DiffFlowCallback(Callback):
         # cache chain samples and log likes:
         self.chain_samples = chain.samples[:, ind]
         self.chain_loglikes = chain.loglikes
+        self.has_loglikes = self.chain_loglikes is not None
         self.chain_weights = chain.weights
         # cache nearest neighbours indexes, in whitened coordinates:
         temp_cov = np.cov(self.chain_samples.T, aweights=self.chain_weights)
@@ -1184,14 +1188,18 @@ class DiffFlowCallback(Callback):
                 if epoch % self.feedback:
                     return
             clear_output(wait=True)
-            fig, axes = plt.subplots(1, 5, figsize=(16, 3))
+            if self.has_loglikes:
+                fig, axes = plt.subplots(1, 5, figsize=(16, 3))
+            else:
+                fig, axes = plt.subplots(1, 3, figsize=(16, 3))
         else:
             axes = [None]*5
         self._plot_loss(axes[0], logs=logs)
         self._plot_chi2_dist(axes[1], logs=logs)
         self._plot_chi2_ks_p(axes[2], logs=logs)
-        self._plot_evidence_error(axes[3], logs=logs)
-        self._plot_smoothness_score(axes[4], logs=logs)
+        if self.has_loglikes:
+            self._plot_evidence_error(axes[3], logs=logs)
+            self._plot_smoothness_score(axes[4], logs=logs)
 
         for k in self.log.keys():
             logs[k] = self.log[k][-1]
