@@ -30,7 +30,6 @@ import pickle
 from collections.abc import Iterable
 import matplotlib
 from matplotlib import pyplot as plt
-plt.rc('text', usetex=True)
 from . import utilities as utils
 from . import gaussian_tension
 
@@ -55,7 +54,6 @@ except Exception as e:
     print("Could not import tensorflow or tensorflow_probability: ", e)
     Callback = object
     HAS_FLOW = False
-
 
 try:
     from IPython.display import clear_output, set_matplotlib_formats
@@ -214,26 +212,26 @@ def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, *
         raise ValueError
 
 
+###############################################################################
+# loss function for hybrid density and log-likelihood optimization:
 def custom_loss(alv=0.5):
     def loss(y_true_inp, y_pred):
         blv = 1-alv
-        y_true, weights = tf.unstack(y_true_inp,axis=1)
+        # unpack the weights:
+        y_true, weights = tf.unstack(y_true_inp, axis=1)
+        # compute difference between true and predicted likelihoods:
         diffs = (y_true - y_pred)
-        # mse(diffs)
+        # compute overall offset:
         mean_diff = tf.reduce_sum(diffs*weights)/tf.reduce_sum(weights)
+        # compute its variance:
         var_diff = tf.reduce_sum((tf.square(diffs - mean_diff))*weights)/tf.reduce_sum(weights)
         std_diff = tf.sqrt(var_diff)
-        skew_diff = tf.reduce_sum(((diffs - mean_diff)/std_diff)*(tf.square((diffs - mean_diff)/std_diff))*weights)/tf.reduce_sum(weights)
-        # loss_Z = tf.abs(var_diff) + tf.abs(skew_diff)
-        loss_Z = tf.abs(var_diff)
+        # compute density loss function:
         loss_orig = y_pred
-        # loss_comb = -1.*(alv*loss_orig) + blv*loss_Z
-        loss_comb = tf.abs(-1.*alv*loss_orig) + tf.abs(blv*loss_Z)
-        # loss_comb = (-1.*alv*loss_orig - alv*13.32) + tf.abs(blv*loss_Z)
+        # combine into total loss function:
+        loss_comb = tf.abs(-1.*alv*loss_orig) + blv*std_diff
         return loss_comb
     return loss
-
-
 
 ###############################################################################
 # main class to compute NF-based tension:
@@ -325,7 +323,7 @@ class DiffFlowCallback(Callback):
         self.MAP_logP = None
 
         if feedback > 0:
-            print('Weight of fiducial loss:',alpha_lossv, ' Weight of Z-loss:',1-alpha_lossv)
+            print('Weight of fiducial loss:', alpha_lossv, ' Weight of Z-loss:',1-alpha_lossv)
         self.alpha_lossv = alpha_lossv
 
     def _init_chain(self, chain, param_names=None, param_ranges=None, validation_split=0.1, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', alpha_lossv=0.5):
@@ -431,50 +429,44 @@ class DiffFlowCallback(Callback):
         n = chain.samples.shape[0]
         indices = np.random.permutation(n)
         n_split = int(validation_split*n)
-        test_idx, training_idx = indices[:n_split], indices[n_split:]
+        self.test_idx, self.training_idx = indices[:n_split], indices[n_split:]
 
         # Training:
-        self.samples = self.fixed_bijector.inverse(chain.samples[training_idx, :][:, ind]).numpy().astype(np_prec)
-        self.jac_true_preabs = self.fixed_bijector.inverse_log_det_jacobian(chain.samples[training_idx, :][:, ind])
-        self.logP_preabs = -1.*self.chain_loglikes[training_idx] - self.jac_true_preabs
+        self.samples = self.fixed_bijector.inverse(chain.samples[self.training_idx, :][:, ind]).numpy().astype(np_prec)
+        self.jac_true_preabs = self.fixed_bijector.inverse_log_det_jacobian(chain.samples[self.training_idx, :][:, ind], event_ndims=1)
+        self.logP_preabs = -1.*self.chain_loglikes[self.training_idx] - self.jac_true_preabs
 
-
-        self.weights = chain.weights[training_idx]
+        self.weights = chain.weights[self.training_idx]
         self.weights *= len(self.weights) / np.sum(self.weights)  # weights normalized to number of samples
         self.has_weights = np.any(self.weights != self.weights[0])
-        # self.Y = np.array(self.Y2X_bijector.inverse(self.samples.astype(np_prec)))
-        # assert not np.any(np.isnan(self.Y))
-        self.num_samples = len(self.samples)
+        self.num_training_samples = len(self.samples)
 
         # Test:
-        self.samples_test = self.fixed_bijector.inverse(chain.samples[test_idx, :][:, ind]).numpy().astype(np_prec)
-        self.jac_true_test_preabs = self.fixed_bijector.inverse_log_det_jacobian(chain.samples[test_idx, :][:, ind])
-        self.logP_preabs_test = -1.*self.chain_loglikes[test_idx] - self.jac_true_test_preabs
+        self.samples_test = self.fixed_bijector.inverse(chain.samples[self.test_idx, :][:, ind]).numpy().astype(np_prec)
+        self.jac_true_test_preabs = self.fixed_bijector.inverse_log_det_jacobian(chain.samples[self.test_idx, :][:, ind], event_ndims=1)
+        self.logP_preabs_test = -1.*self.chain_loglikes[self.test_idx] - self.jac_true_test_preabs
 
         # self.Y_test = np.array(self.Y2X_bijector.inverse(self.samples_test.astype(np_prec)))
-        self.weights_test = chain.weights[test_idx]
+        self.weights_test = chain.weights[self.test_idx]
         self.weights_test *= len(self.weights_test) / np.sum(self.weights_test)  # weights normalized to number of samples
 
         # Training sample generator:
-        self.training_dataset = tf.data.Dataset.from_tensor_slices((tf.cast(self.samples, prec),     # input
-                                                                    self.cast(np.array([(self.logP_preabs),(self.weights)]).T),      # output (dummy zero)
-                                                                    tf.cast(self.weights, prec),))   # weights
+        self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.samples),
+                                                                    self.cast(np.array([(self.logP_preabs), (self.weights)]).T),
+                                                                    self.cast(self.weights),))
         self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
-        self.training_dataset = self.training_dataset.shuffle(self.num_samples, reshuffle_each_iteration=True).repeat()
+        self.training_dataset = self.training_dataset.shuffle(self.num_training_samples, reshuffle_each_iteration=True).repeat()
 
         if self.feedback:
-            print('Weight of fiducial loss:',alpha_lossv, ' Weight of Z-loss:',1-alpha_lossv)
+            print('Weight of fiducial loss:', alpha_lossv, ' Weight of Z-loss:',1-alpha_lossv)
         self.alpha_lossv = alpha_lossv
-
 
         if self.feedback:
             print("Building training/test samples")
             if self.has_weights:
-                print("    - {}/{} training/test samples and non-uniform weights.".format(self.num_samples, self.samples_test.shape[0]))
+                print("    - {}/{} training/test samples and non-uniform weights.".format(self.num_training_samples, self.samples_test.shape[0]))
             else:
-                print("    - {}/{} training/test samples and uniform weights.".format(self.num_samples, self.samples_test.shape[0]))
-
-
+                print("    - {}/{} training/test samples and uniform weights.".format(self.num_training_samples, self.samples_test.shape[0]))
 
     def _init_transf_dist(self, trainable_bijector, learning_rate=1e-4, **kwargs):
         """
@@ -529,10 +521,10 @@ class DiffFlowCallback(Callback):
         if batch_size is None:
             if steps_per_epoch is None:
                 steps_per_epoch = 100
-            batch_size = int(self.num_samples/steps_per_epoch)
+            batch_size = int(self.num_training_samples/steps_per_epoch)
         else:
             if steps_per_epoch is None:
-                steps_per_epoch = int(self.num_samples/batch_size)
+                steps_per_epoch = int(self.num_training_samples/batch_size)
         # set callbacks:
         if callbacks is None:
             callbacks = []
@@ -555,7 +547,7 @@ class DiffFlowCallback(Callback):
         #
         return hist
 
-    def global_train(self, pop_size=10, savefname=None, **kwargs):
+    def global_train(self, pop_size=10, **kwargs):
         """
         Training algorithm with some globalization strategy. Starts from multiple
         random weight initializations and selects the one that has the best
@@ -564,36 +556,32 @@ class DiffFlowCallback(Callback):
         :param pop_size: number of weight initializations. Time to solution
         scales linearly with this parameter.
         """
-        self.savefdir_root = savefname
         # generate starting population of weights:
-        self.population = [self.model.get_weights()]
+        population = [self.model.get_weights()]
         for i in range(pop_size-1):
             for layer in self.model.layers:
                 layer.build(layer.input_shape)
-            self.population.append(self.model.get_weights())
+            population.append(self.model.get_weights())
         # evolve:
-        self.loss_allpop, self.val_loss_allpop, self.history_allpop = [], [], []
+        loss, val_loss = [], []
         for i in range(pop_size):
             # feedback:
             if self.feedback:
                 print('Training population', i+1)
             # train:
-            self.model.set_weights(self.population[i])
+            self.model.set_weights(population[i])
             history = self.train(**kwargs)
             # update stored weights:
-            self.population[i] = self.model.get_weights()
+            population[i] = self.model.get_weights()
             # save log:
-            self.loss_allpop.append(history.history['loss'][-1])
-            self.val_loss_allpop.append(history.history['val_loss'][-1])
-            self.history_allpop.append(history.history)
-            self.MAF.save(savefname + str(i) + '_lossv_' + str(np.round(history.history['val_loss'][-1],3)))
-        self.loss_allpop = np.array(self.loss_allpop)
-        self.val_loss_allpop = np.array(self.val_loss_allpop)
+            loss.append(history.history['loss'][-1])
+            val_loss.append(history.history['val_loss'][-1])
+        loss = np.array(loss)
+        val_loss = np.array(val_loss)
         # select best:
-        self.model.set_weights(self.population[np.argmin(self.val_loss_allpop)])
+        self.model.set_weights(population[np.argmin(val_loss)])
         #
-
-        return self.population, self.loss_allpop, self.val_loss_allpop
+        return population, loss, val_loss
 
     ###############################################################################
     # Utility functions:
@@ -1202,18 +1190,17 @@ class DiffFlowCallback(Callback):
         self.log["evidence_error"].append(evidence_error)
         # plot:
         if ax is not None:
+            # evidence error:
             ln1 = ax.plot(self.log["evidence_error"], label='var $\\mathcal{E}$')
             ax.set_title(r"Flow evidence")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel(r"Evidence error")
             ax.set_yscale('log')
-
+            # evidence value:
             ax2 = ax.twinx()
             ln2 = ax2.plot(self.log["evidence"], ls='--', label='$\\mathcal{E}$')
             ax2.set_ylabel(r'Evidence')
-
-
-
+            # legend:
             lns = ln1+ln2
             labs = [l.get_label() for l in lns]
             ax2.legend(lns, labs, loc=1)
@@ -1255,15 +1242,10 @@ class DiffFlowCallback(Callback):
             logs[k] = self.log[k][-1]
             print(k,np.round(logs[k],4))
 
-
         if self.feedback and matplotlib.get_backend() != 'agg':
             plt.tight_layout()
             plt.show()
-            # fig.savefig('res_all_test_data2D_alv0p5_.pdf')
-            fig.savefig(self.savefdir_root + 'res_all_test.pdf')
             return fig
-
-
 
 ###############################################################################
 # KL methods:
@@ -1516,13 +1498,14 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         # initialize flow:
         if 'trainable_bijector' in kwargs:
             kwargs.pop('trainable_bijector')
-        flow = DiffFlowCallback(chain, trainable_bijector=temp_MAF.bijector, alpha_lossv=alpha_lossv, **kwargs)
+        flow = DiffFlowCallback(chain, trainable_bijector=temp_MAF.bijector, **kwargs)
     else:
         # initialize posterior flow:
-        flow = DiffFlowCallback(chain, alpha_lossv=alpha_lossv, **kwargs)
+        flow = DiffFlowCallback(chain, **kwargs)
         # train posterior flow:
-        flow.global_train(savefname=cache_dir+'/'+root_name, **kwargs)
+        flow.global_train(**kwargs)
         # save trained model:
-        flow.MAF.save(cache_dir+'/'+root_name)
+        if cache_dir is not None:
+            flow.MAF.save(cache_dir+'/'+root_name)
     #
     return flow
