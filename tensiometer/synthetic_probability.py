@@ -220,10 +220,12 @@ def custom_loss(alv=1.0, blv=0.0):
         y_true, weights = tf.unstack(y_true_inp, axis=1)
         # compute difference between true and predicted likelihoods:
         diffs = (y_true - y_pred)
+        # sum weights:
+        tot_weights = tf.reduce_sum(weights)
         # compute overall offset:
-        mean_diff = tf.reduce_sum(diffs*weights)/tf.reduce_sum(weights)
+        mean_diff = tf.reduce_sum(diffs*weights) / tot_weights
         # compute its variance:
-        var_diff = tf.reduce_sum((tf.square(diffs - mean_diff))*weights)/tf.reduce_sum(weights)
+        var_diff = tf.reduce_sum((tf.square(diffs - mean_diff))*weights) / tot_weights
         std_diff = tf.sqrt(var_diff)
         # compute density loss function:
         loss_orig = y_pred
@@ -297,7 +299,7 @@ class DiffFlowCallback(Callback):
         # read in varaiables:
         self.feedback = feedback
 
-        # Chain
+        # initialize internal samples from chain:
         self._init_chain(chain, param_names=param_names, param_ranges=param_ranges, validation_split=validation_split, prior_bijector=prior_bijector, apply_pregauss=apply_pregauss, trainable_bijector=trainable_bijector, alpha_lossv=alpha_lossv)
 
         # Transformed distribution
@@ -305,12 +307,11 @@ class DiffFlowCallback(Callback):
         if feedback > 0:
             print("Building flow")
             print("    - trainable parameters:", self.model.count_params())
-
         # Metrics
         if self.has_loglikes:
-            keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
+            keys = ["loss", "val_loss", "rho_loss", "like_loss", "lr", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
         else:
-            keys = ["loss", "val_loss", "chi2Z_ks", "chi2Z_ks_p"]
+            keys = ["loss", "val_loss", "lr", "chi2Z_ks", "chi2Z_ks_p"]
         self.log = {_k: [] for _k in keys}
 
         self.chi2Y = np.sum(self.samples_test**2, axis=1)
@@ -1134,20 +1135,39 @@ class DiffFlowCallback(Callback):
         return zero, chi2Z0, pval, nsigma
 
     def _plot_loss(self, ax, logs={}):
+        """
+        Utility function to plot loss for training and validation samples
+        """
         self.log["loss"].append(logs.get('loss'))
         self.log["val_loss"].append(logs.get('val_loss'))
         if ax is not None:
-            ax.plot(self.log["loss"], label='Training')
-            ax.plot(self.log["val_loss"], label='Testing')
+            ax.plot(self.log["loss"], ls='-', lw=1., label='Training')
+            ax.plot(self.log["val_loss"], ls='-', lw=1., label='Testing')
             ax.set_title("Training Loss")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel("Loss")
             ax.set_yscale('log')
             ax.legend()
 
+    def _plot_lr(self, ax, logs={}):
+        """
+        Utility function to plot learning rate per epoch
+        """
+        self.log["lr"].append(logs.get('lr'))
+        if ax is not None:
+            ax.plot(self.log["lr"], ls='-', lw=1.)
+            ax.set_title("Learning rate")
+            ax.set_xlabel(r"Epoch $\#$")
+            ax.set_ylabel("Rate")
+            ax.set_yscale('log')
+
     def _plot_chi2_dist(self, ax, logs={}):
-        # Compute chi2 and make sure some are finite
+        """
+        Utility function to compute KS test and plot chi2 distribution vs histogram.
+        """
+        # Compute chi2:
         chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.samples_test))**2, axis=1)
+        # make sure some are finite:
         _s = np.isfinite(chi2Z)
         assert np.any(_s)
         chi2Z = chi2Z[_s]
@@ -1160,39 +1180,68 @@ class DiffFlowCallback(Callback):
             chi2Z_ks, chi2Z_ks_p = scipy.stats.kstest(chi2Z, 'chi2', args=(self.num_params,))
         except:
             chi2Z_ks, chi2Z_ks_p = 0., 0.
-
         self.log["chi2Z_ks"].append(chi2Z_ks)
         self.log["chi2Z_ks_p"].append(chi2Z_ks_p)
 
-        xx = np.linspace(0, self.num_params*4, 1000)
-        bins = np.linspace(0, self.num_params*4, 100)
-
-        # Plot
+        # Plot PDF results:
         if ax is not None:
-            ax.plot(xx, scipy.stats.chi2.pdf(xx, df=self.num_params), label='$\\chi^2_{{{}}}$ PDF'.format(self.num_params), c='k', lw=1)
-            ax.hist(self.chi2Y, bins=bins, density=True, histtype='step', weights=self.weights_test, label='Pre-gauss ($D_n$={:.3f})'.format(self.chi2Y_ks))
-            ax.hist(chi2Z, bins=bins, density=True, histtype='step', weights=self.weights_test[_s], label='Post-gauss ($D_n$={:.3f})'.format(chi2Z_ks))
+            xx = np.linspace(0, self.num_params*4, 1000)
+            bins = np.linspace(0, self.num_params*4, 100)
+            ax.plot(xx, scipy.stats.chi2.pdf(xx, df=self.num_params), label='$\\chi^2_{{{}}}$ PDF'.format(self.num_params), c='k', lw=1., ls='-')
+            ax.hist(self.chi2Y, bins=bins, density=True, histtype='step', weights=self.weights_test, label='Pre-gauss ($D_n$={:.3f})'.format(self.chi2Y_ks), lw=1., ls='-')
+            ax.hist(chi2Z, bins=bins, density=True, histtype='step', weights=self.weights_test[_s], label='Post-gauss ($D_n$={:.3f})'.format(chi2Z_ks), lw=1., ls='-')
             ax.set_title(r'$\chi^2_{{{}}}$ PDF'.format(self.num_params))
             ax.set_xlabel(r'$\chi^2$')
             ax.legend(fontsize=8)
 
     def _plot_chi2_ks_p(self, ax, logs={}):
+        """
+        Utility function to plot the KS test results.
+        """
         # Plot
         if ax is not None:
-            ln1 = ax.plot(self.log["chi2Z_ks_p"], label='$p$')
+            # KS result probability:
+            ln1 = ax.plot(self.log["chi2Z_ks_p"], label='$p$', lw=1., ls='-')
             ax.set_title(r"KS test ($\chi^2$)")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel(r"$p$-value")
-
+            # KL difference:
             ax2 = ax.twinx()
-            ln2 = ax2.plot(self.log["chi2Z_ks"], ls='--', label='$D_n$')
+            ln2 = ax2.plot(self.log["chi2Z_ks"], label='$D_n$', lw=1., ls='--')
             ax2.set_ylabel(r'$D_n$')
-
+            # legend:
             lns = ln1+ln2
             labs = [l.get_label() for l in lns]
             ax2.legend(lns, labs, loc=1)
 
+    def _plot_losses(self, ax, logs={}):
+        """
+        Plot behavior of density and likelihood loss as training progresses.
+        """
+        # compute density loss on validation data:
+        temp_rho_loss = custom_loss(self.alpha_lossv, 0.0)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_rho_loss = np.average(temp_rho_loss.numpy(), weights=self.weights_test)
+        # compute likelihood loss on validation data:
+        temp_like_loss = custom_loss(0.0, self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_like_loss = np.average(temp_like_loss.numpy(), weights=self.weights_test)
+        # add to log:
+        self.log["rho_loss"].append(temp_rho_loss)
+        self.log["like_loss"].append(temp_like_loss)
+        # plot:
+        if ax is not None:
+            # evidence error:
+            ln1 = ax.plot(self.log["rho_loss"], lw=1., ls='-', label='density loss')
+            ln1 = ax.plot(self.log["like_loss"], lw=1., ls='-', label='likelihood loss')
+            ax.set_title(r"Loss breakdown")
+            ax.set_xlabel(r"Epoch $\#$")
+            ax.set_yscale('log')
+            # legend:
+            ax.legend(loc=1)
+
     def _plot_evidence_error(self, ax, logs={}):
+        """
+        Utility function to plot the evidence and error on evidence as a function of training.
+        """
         # compute evidence:
         evidence, evidence_error = self.evidence()
         self.log["evidence"].append(evidence)
@@ -1200,14 +1249,14 @@ class DiffFlowCallback(Callback):
         # plot:
         if ax is not None:
             # evidence error:
-            ln1 = ax.plot(self.log["evidence_error"], label='var $\\mathcal{E}$')
+            ln1 = ax.plot(self.log["evidence_error"], lw=1., ls='-', label='var $\\log \\mathcal{E}$')
             ax.set_title(r"Flow evidence")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel(r"Evidence error")
             ax.set_yscale('log')
             # evidence value:
             ax2 = ax.twinx()
-            ln2 = ax2.plot(self.log["evidence"], ls='--', label='$\\mathcal{E}$')
+            ln2 = ax2.plot(self.log["evidence"], lw=1., ls='--', label='$\\log \\mathcal{E}$')
             ax2.set_ylabel(r'Evidence')
             # legend:
             lns = ln1+ln2
@@ -1215,12 +1264,15 @@ class DiffFlowCallback(Callback):
             ax2.legend(lns, labs, loc=1)
 
     def _plot_smoothness_score(self, ax, logs={}):
+        """
+        Utility function to plot the smoothness score as a function of training.
+        """
         # compute and plot smoothness score during training:
         score = self.smoothness_score()
         self.log["smoothness_score"].append(score)
         # plot:
         if ax is not None:
-            ax.plot(self.log["smoothness_score"])
+            ax.plot(self.log["smoothness_score"], ls='-', lw=1.)
             ax.set_title(r"Smoothness score")
             ax.set_xlabel("Epoch #")
             ax.set_ylabel(r"$\langle \, J\cdot \Delta \theta - \Delta \log P \, \rangle$")
@@ -1229,23 +1281,31 @@ class DiffFlowCallback(Callback):
         """
         This method is used by Keras to show progress during training if `feedback` is True.
         """
+
+        # update log:
+        logs['lr'] = self.model.optimizer.lr.numpy()
+
+        # do the plots:
         if self.feedback and matplotlib.get_backend() != 'agg':
             if isinstance(self.feedback, int):
                 if epoch % self.feedback:
                     return
             clear_output(wait=True)
             if self.has_loglikes:
-                fig, axes = plt.subplots(1, 5, figsize=(16, 3))
+                fig, axes = plt.subplots(2, 4, figsize=(16, 6))
             else:
-                fig, axes = plt.subplots(1, 3, figsize=(16, 3))
+                fig, axes = plt.subplots(1, 4, figsize=(16, 3))
         else:
             axes = [None]*5
-        self._plot_loss(axes[0], logs=logs)
-        self._plot_chi2_dist(axes[1], logs=logs)
-        self._plot_chi2_ks_p(axes[2], logs=logs)
+        self._plot_loss(axes[0, 0], logs=logs)
+        self._plot_lr(axes[0, 1], logs=logs)
+        self._plot_chi2_dist(axes[0, 2], logs=logs)
+        self._plot_chi2_ks_p(axes[0, 3], logs=logs)
+
         if self.has_loglikes:
-            self._plot_evidence_error(axes[3], logs=logs)
-            self._plot_smoothness_score(axes[4], logs=logs)
+            self._plot_losses(axes[1, 0], logs=logs)
+            self._plot_evidence_error(axes[1, 1], logs=logs)
+            self._plot_smoothness_score(axes[1, 2], logs=logs)
 
         for k in self.log.keys():
             logs[k] = self.log[k][-1]
