@@ -390,6 +390,145 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
     return Q_DM, dofs
 
 ###############################################################################
+# IW
+
+
+def linear_CPCA(fisher_1, fisher_12, param_names, param_labels=None,
+                conditional_params=[], normparam=None,
+                num_modes=None, dimensional_reduce=True,
+                dimensional_threshold=0.1, verbose=True, **kwargs):
+    """
+    Documentation
+    """
+    # initialize param names:
+    num_params = len(param_names)
+    if num_params != fisher_1.shape[0]:
+        raise ValueError('Input fisher matrix 1 has size', fisher_1.shape[0], '\n',
+                         ' while param_names has length', num_params)
+    if num_params != fisher_12.shape[0]:
+        raise ValueError('Input fisher matrix 12 has size', fisher_12.shape[0], '\n',
+                         ' while param_names has length', num_params)
+    # initialize conditional parameters:
+    if len(conditional_params) > 0:
+        if not np.all([name in param_names for name in conditional_params]):
+            raise ValueError('Input conditional_params:', conditional_params, '\n',
+                             'are not in param_names:', param_names)
+    keep_indexes = [param_names.index(name) for name in param_names if name not in conditional_params]
+    param_names_to_use = [param_names[ind] for ind in keep_indexes]
+    num_params = len(param_names_to_use)
+    # other initialization:
+    if param_labels is not None:
+        if len(param_names) != len(param_labels):
+            raise ValueError('Different number of parameter names and labels')
+        labels = param_labels
+    else:
+        labels = param_names
+    if num_modes is not None:
+        num_modes = min(num_modes, num_params)
+    else:
+        num_modes = num_params
+    if normparam is not None:
+        normparam = param_names.index(normparam)
+    # apply conditioning:
+    F_p1 = fisher_1[:, keep_indexes][keep_indexes, :]
+    F_p12 = fisher_12[:, keep_indexes][keep_indexes, :]
+    # perform the KL decomposition:
+    KL_eig, KL_eigv = utils.KL_decomposition(F_p12, F_p1)
+    sqrt_F_p12 = scipy.linalg.sqrtm(F_p12)
+    # sort:
+    idx = np.argsort(KL_eig)[::-1]
+    KL_eig, KL_eigv = KL_eig[idx], KL_eigv[:, idx]
+    # compute contributions:
+    temp = np.dot(sqrt_F_p12, KL_eigv)
+    contributions = temp * temp / KL_eig
+    # compute the dimensional reduction matrix:
+    if dimensional_reduce:
+        reduction_filter = contributions > dimensional_threshold
+    else:
+        reduction_filter = np.ones((num_params, num_params), dtype=bool)
+    if normparam is not None:
+        reduction_filter[:, normparam] = True
+    # compute projector:
+    projector = np.linalg.inv(KL_eigv).copy().T
+    projector[np.logical_not(reduction_filter)] = 0
+    # prepare return of the function:
+    results_dict = {}
+    results_dict['CPCA_eig'] = KL_eig.copy()
+    results_dict['CPCA_eigv'] = KL_eigv.copy()
+    results_dict['CPCA_var_contributions'] = contributions.copy()
+    results_dict['CPCA_var_filter'] = reduction_filter.copy()
+    results_dict['CPCA_projector'] = projector
+    results_dict['param_names'] = param_names_to_use
+    # all calculations are done, write out text:
+    PCAtext = 'CPCA for '+str(num_params)+' parameters:\n\n'
+    # parameter names:
+    if verbose:
+        for i in range(num_params):
+            PCAtext += "%4s : %s\n" % (str(i + 1), labels[param_names.index(param_names_to_use[i])])
+        PCAtext += '\n'
+    # fixed parameter names:
+    if verbose:
+        if len(conditional_params) > 0:
+            PCAtext += 'With '+str(len(conditional_params))+' parameters fixed:\n'
+            for i, name in enumerate(conditional_params):
+                PCAtext += "%4s : %s\n" % (str(i + 1), labels[param_names.index(name)])
+            PCAtext += '\n'
+    # write out KL eigenvalues:
+    PCAtext += 'CPC amplitudes - 1 (variance improvement per mode):\n'
+    for i in range(num_modes):
+        PCAtext += '%4s : %8.4f' % (str(i + 1), KL_eig[i]-1.)
+        if KL_eig[i]-1. > 0.:
+            PCAtext += ' (%8.1f %%)' % (np.sqrt(KL_eig[i]-1.)*100.)
+        PCAtext += '\n'
+    # write out KL eigenvectors:
+    if verbose:
+        PCAtext += '\n'
+        PCAtext += 'CPC modes:\n'
+        for j in range(num_modes):
+            PCAtext += '%4s :' % str(j + 1)
+            for i in range(num_modes):
+                PCAtext += '%8.3f' % (KL_eigv.T[j, i])
+            PCAtext += '\n'
+    # write out parameter contributions to KL mode variance:
+    PCAtext += '\n'
+    PCAtext += 'Parameter contribution to CPC-mode variance\n'
+    PCAtext += '%12s :' % 'mode number'
+    for j in range(num_modes):
+        PCAtext += '%8i' % (j+1)
+    PCAtext += '\n'
+    for i in range(num_params):
+        PCAtext += '%12s :' % param_names_to_use[i]
+        for j in range(num_modes):
+            PCAtext += '%8.3f' % (contributions[j, i])
+        PCAtext += '\n'
+    # write out CPC components:
+    PCAtext += '\n'
+    PCAtext += 'Covariant Principal Components:\n'
+    for i in range(num_modes):
+        # summary of mode improvement:
+        summary = '%4s : %8.4f' % (str(i + 1), KL_eig[i]-1.)
+        if KL_eig[i]-1. > 0.:
+            summary += ' (%8.1f %%)' % (np.sqrt(KL_eig[i]-1.)*100.)
+        summary += '\n'
+        # compute normalization of mode:
+        if normparam is not None:
+            norm = projector[i, normparam]
+        else:
+            norm = projector[i, np.argmax(contributions[i, :])]
+        # write the mode:
+        string = ''
+        for j in range(num_modes):
+            if reduction_filter[i, j]:
+                # get normalized coefficient:
+                _norm_eigv = projector[:, j] / norm
+                # format it to string and save it:
+                _temp = '{0:+.2f}'.format(np.round(_norm_eigv[j], 2))
+                string += _temp+'*('+labels[j]+') '
+        summary += '     '+string
+        summary += '\n'
+        PCAtext += summary
+    #
+    return PCAtext, results_dict
 
 
 def KL_PCA(chain_1, chain_12, param_names=None,
