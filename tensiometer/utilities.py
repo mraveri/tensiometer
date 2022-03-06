@@ -119,7 +119,7 @@ def KL_decomposition(matrix_a, matrix_b):
     # check that this is positive:
     if np.any(_lambda_b < 0.):
         raise ValueError('B is not positive definite\n',
-                         'KL eigenvalues are ', _lambda_b)
+                         'eigenvalues are ', _lambda_b)
     _sqrt_lambda_b = np.diag(1./np.sqrt(_lambda_b))
     _phib_prime = np.dot(_phi_b, _sqrt_lambda_b)
     _a_prime = np.dot(np.dot(_phib_prime.T, matrix_a), _phib_prime)
