@@ -234,6 +234,105 @@ def custom_loss(alv=1.0, blv=0.0):
         return loss_comb
     return loss
 
+
+###############################################################################
+# learning rate tuner:
+class CosineAnnealer:
+    """
+    Code taken from https://www.kaggle.com/avanwyk/tf2-super-convergence-with-the-1cycle-policy
+    """
+
+    def __init__(self, start, end, steps):
+        self.start = start
+        self.end = end
+        self.steps = steps
+        self.n = 0
+
+    def step(self):
+        self.n += 1
+        cos = np.cos(np.pi * (self.n / self.steps)) + 1
+        return self.end + (self.start - self.end) / 2. * cos
+
+
+class OneCycleScheduler(Callback):
+    """
+    `Callback` that schedules the learning rate on a 1cycle policy as per Leslie Smith's paper(https://arxiv.org/pdf/1803.09820.pdf).
+    If the model supports a momentum parameter, it will also be adapted by the schedule.
+    The implementation adopts additional improvements as per the fastai library: https://docs.fast.ai/callbacks.one_cycle.html, where
+    only two phases are used and the adaptation is done using cosine annealing.
+    In phase 1 the LR increases from `lr_max / div_factor` to `lr_max` and momentum decreases from `mom_max` to `mom_min`.
+    In the second phase the LR decreases from `lr_max` to `lr_max / (div_factor * 1e4)` and momemtum from `mom_max` to `mom_min`.
+    By default the phases are not of equal length, with the phase 1 percentage controlled by the parameter `phase_1_pct`.
+    Code taken from https://www.kaggle.com/avanwyk/tf2-super-convergence-with-the-1cycle-policy
+    """
+
+    def __init__(self, lr_max, steps, mom_min=0.85, mom_max=0.95, phase_1_pct=0.3, div_factor=25.):
+        super(OneCycleScheduler, self).__init__()
+        lr_min = lr_max / div_factor
+        final_lr = lr_max / (div_factor * 1e4)
+        phase_1_steps = steps * phase_1_pct
+        phase_2_steps = steps - phase_1_steps
+
+        self.phase_1_steps = phase_1_steps
+        self.phase_2_steps = phase_2_steps
+        self.phase = 0
+        self.step = 0
+
+        self.phases = [[CosineAnnealer(lr_min, lr_max, phase_1_steps), CosineAnnealer(mom_max, mom_min, phase_1_steps)],
+                       [CosineAnnealer(lr_max, final_lr, phase_2_steps), CosineAnnealer(mom_min, mom_max, phase_2_steps)]]
+
+        self.lrs = []
+        self.moms = []
+
+    def on_train_begin(self, logs=None):
+        self.phase = 0
+        self.step = 0
+
+        self.set_lr(self.lr_schedule().start)
+        self.set_momentum(self.mom_schedule().start)
+
+    def on_train_batch_begin(self, batch, logs=None):
+        self.lrs.append(self.get_lr())
+        self.moms.append(self.get_momentum())
+
+    def on_train_batch_end(self, batch, logs=None):
+        self.step += 1
+        if self.step >= self.phase_1_steps:
+            self.phase = 1
+
+        self.set_lr(self.lr_schedule().step())
+        self.set_momentum(self.mom_schedule().step())
+
+    def get_lr(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.lr)
+        except AttributeError:
+            return None
+
+    def get_momentum(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.momentum)
+        except AttributeError:
+            return None
+
+    def set_lr(self, lr):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+        except AttributeError:
+            pass  # ignore
+
+    def set_momentum(self, mom):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.momentum, mom)
+        except AttributeError:
+            pass  # ignore
+
+    def lr_schedule(self):
+        return self.phases[self.phase][0]
+
+    def mom_schedule(self):
+        return self.phases[self.phase][1]
+
 ###############################################################################
 # main class to compute NF-based tension:
 
@@ -294,7 +393,7 @@ class DiffFlowCallback(Callback):
     self = DiffFlowCallback(chain, param_names=param_names, feedback=1)
     """
 
-    def __init__(self, chain, param_names=None, param_ranges=None, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', learning_rate=1e-3, feedback=1, validation_split=0.1, alpha_lossv=0.5, **kwargs):
+    def __init__(self, chain, param_names=None, param_ranges=None, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', learning_rate=1e-3, feedback=1, validation_split=0.1, alpha_lossv=1.0, **kwargs):
 
         # read in varaiables:
         self.feedback = feedback
@@ -322,7 +421,7 @@ class DiffFlowCallback(Callback):
         self.MAP_coord = None
         self.MAP_logP = None
 
-    def _init_chain(self, chain, param_names=None, param_ranges=None, validation_split=0.1, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', alpha_lossv=0.5):
+    def _init_chain(self, chain, param_names=None, param_ranges=None, validation_split=0.1, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', alpha_lossv=1.0):
         """
         Add documentation
         """
@@ -511,6 +610,10 @@ class DiffFlowCallback(Callback):
         # compile model:
         self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv, blv=self.beta_lossv))
 
+        # feedback:
+        if self.feedback:
+            print('Maximum learning rate: %.3g' % (learning_rate))
+
     def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=1, **kwargs):
         """
         Train the normalizing flow model. Internally, this runs the fit method of the Keras :class:`~tf.keras.Model`, to which `**kwargs are passed`.
@@ -538,10 +641,13 @@ class DiffFlowCallback(Callback):
         # set callbacks:
         if callbacks is None:
             callbacks = []
+            # learning rate scheduler:
+            lr_schedule = OneCycleScheduler(self.model.optimizer.lr.numpy(), steps_per_epoch * epochs, **utils.filter_kwargs(kwargs, OneCycleScheduler))
+            callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
             callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
             # callback to stop if weights start getting worse:
-            callbacks.append(keras_callbacks.EarlyStopping(patience=10, restore_best_weights=True,
+            callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
                                                            **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
         # Run training:
         hist = self.model.fit(x=self.training_dataset.batch(batch_size),
@@ -1276,6 +1382,7 @@ class DiffFlowCallback(Callback):
             ax.set_title(r"Smoothness score")
             ax.set_xlabel("Epoch #")
             ax.set_ylabel(r"$\langle \, J\cdot \Delta \theta - \Delta \log P \, \rangle$")
+            ax.set_yscale('log')
 
     def on_epoch_end(self, epoch, logs={}):
         """
@@ -1306,6 +1413,7 @@ class DiffFlowCallback(Callback):
             self._plot_losses(axes[1, 0], logs=logs)
             self._plot_evidence_error(axes[1, 1], logs=logs)
             self._plot_smoothness_score(axes[1, 2], logs=logs)
+            axes[1, 3].axis('off')
 
         for k in self.log.keys():
             logs[k] = self.log[k][-1]
