@@ -30,8 +30,8 @@ import pickle
 from collections.abc import Iterable
 import matplotlib
 from matplotlib import pyplot as plt
-from . import utilities as utils
-from . import gaussian_tension
+from .. import utilities as utils
+from .. import gaussian_tension
 
 gchains.print_load_details = False
 
@@ -60,6 +60,8 @@ try:
 except ModuleNotFoundError:
     pass
 
+# local imports:
+from . import lr_schedulers as lr
 
 ###############################################################################
 # helper class to build a masked-autoregressive flow:
@@ -233,105 +235,6 @@ def custom_loss(alv=1.0, blv=0.0):
         loss_comb = -alv*loss_orig + blv*std_diff
         return loss_comb
     return loss
-
-
-###############################################################################
-# learning rate tuner:
-class CosineAnnealer:
-    """
-    Code taken from https://www.kaggle.com/avanwyk/tf2-super-convergence-with-the-1cycle-policy
-    """
-
-    def __init__(self, start, end, steps):
-        self.start = start
-        self.end = end
-        self.steps = steps
-        self.n = 0
-
-    def step(self):
-        self.n += 1
-        cos = np.cos(np.pi * (self.n / self.steps)) + 1
-        return self.end + (self.start - self.end) / 2. * cos
-
-
-class OneCycleScheduler(Callback):
-    """
-    `Callback` that schedules the learning rate on a 1cycle policy as per Leslie Smith's paper(https://arxiv.org/pdf/1803.09820.pdf).
-    If the model supports a momentum parameter, it will also be adapted by the schedule.
-    The implementation adopts additional improvements as per the fastai library: https://docs.fast.ai/callbacks.one_cycle.html, where
-    only two phases are used and the adaptation is done using cosine annealing.
-    In phase 1 the LR increases from `lr_max / div_factor` to `lr_max` and momentum decreases from `mom_max` to `mom_min`.
-    In the second phase the LR decreases from `lr_max` to `lr_max / (div_factor * 1e4)` and momemtum from `mom_max` to `mom_min`.
-    By default the phases are not of equal length, with the phase 1 percentage controlled by the parameter `phase_1_pct`.
-    Code taken from https://www.kaggle.com/avanwyk/tf2-super-convergence-with-the-1cycle-policy
-    """
-
-    def __init__(self, lr_max, steps, mom_min=0.85, mom_max=0.95, phase_1_pct=0.3, div_factor=25.):
-        super(OneCycleScheduler, self).__init__()
-        lr_min = lr_max / div_factor
-        final_lr = lr_max / (div_factor * 1e4)
-        phase_1_steps = steps * phase_1_pct
-        phase_2_steps = steps - phase_1_steps
-
-        self.phase_1_steps = phase_1_steps
-        self.phase_2_steps = phase_2_steps
-        self.phase = 0
-        self.step = 0
-
-        self.phases = [[CosineAnnealer(lr_min, lr_max, phase_1_steps), CosineAnnealer(mom_max, mom_min, phase_1_steps)],
-                       [CosineAnnealer(lr_max, final_lr, phase_2_steps), CosineAnnealer(mom_min, mom_max, phase_2_steps)]]
-
-        self.lrs = []
-        self.moms = []
-
-    def on_train_begin(self, logs=None):
-        self.phase = 0
-        self.step = 0
-
-        self.set_lr(self.lr_schedule().start)
-        self.set_momentum(self.mom_schedule().start)
-
-    def on_train_batch_begin(self, batch, logs=None):
-        self.lrs.append(self.get_lr())
-        self.moms.append(self.get_momentum())
-
-    def on_train_batch_end(self, batch, logs=None):
-        self.step += 1
-        if self.step >= self.phase_1_steps:
-            self.phase = 1
-
-        self.set_lr(self.lr_schedule().step())
-        self.set_momentum(self.mom_schedule().step())
-
-    def get_lr(self):
-        try:
-            return tf.keras.backend.get_value(self.model.optimizer.lr)
-        except AttributeError:
-            return None
-
-    def get_momentum(self):
-        try:
-            return tf.keras.backend.get_value(self.model.optimizer.momentum)
-        except AttributeError:
-            return None
-
-    def set_lr(self, lr):
-        try:
-            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
-        except AttributeError:
-            pass  # ignore
-
-    def set_momentum(self, mom):
-        try:
-            tf.keras.backend.set_value(self.model.optimizer.momentum, mom)
-        except AttributeError:
-            pass  # ignore
-
-    def lr_schedule(self):
-        return self.phases[self.phase][0]
-
-    def mom_schedule(self):
-        return self.phases[self.phase][1]
 
 ###############################################################################
 # main class to compute NF-based tension:
@@ -642,7 +545,7 @@ class DiffFlowCallback(Callback):
         if callbacks is None:
             callbacks = []
             # learning rate scheduler:
-            lr_schedule = OneCycleScheduler(self.model.optimizer.lr.numpy(), steps_per_epoch * epochs, **utils.filter_kwargs(kwargs, OneCycleScheduler))
+            lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), steps_per_epoch * epochs, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
             callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
@@ -1392,201 +1295,46 @@ class DiffFlowCallback(Callback):
         # update log:
         logs['lr'] = self.model.optimizer.lr.numpy()
 
+        # decide whether to plot:
+        do_plots = self.feedback and matplotlib.get_backend() != 'agg'
+        if do_plots and isinstance(self.feedback, int):
+            if epoch % self.feedback:
+                do_plots = False
+
         # do the plots:
-        if self.feedback and matplotlib.get_backend() != 'agg':
-            if isinstance(self.feedback, int):
-                if epoch % self.feedback:
-                    return
+        if do_plots:
             clear_output(wait=True)
             if self.has_loglikes:
                 fig, axes = plt.subplots(2, 4, figsize=(16, 6))
             else:
                 fig, axes = plt.subplots(1, 4, figsize=(16, 3))
         else:
-            axes = [None]*5
+            if self.has_loglikes:
+                axes = np.array([[None]*4, [None]*4])
+            else:
+                axes = np.array([None]*4)
+
+        # do the plot and update logs:
         self._plot_loss(axes[0, 0], logs=logs)
         self._plot_lr(axes[0, 1], logs=logs)
         self._plot_chi2_dist(axes[0, 2], logs=logs)
         self._plot_chi2_ks_p(axes[0, 3], logs=logs)
-
         if self.has_loglikes:
             self._plot_losses(axes[1, 0], logs=logs)
             self._plot_evidence_error(axes[1, 1], logs=logs)
             self._plot_smoothness_score(axes[1, 2], logs=logs)
-            axes[1, 3].axis('off')
+            if axes[1, 3] is not None:
+                axes[1, 3].axis('off')
 
+        # save out log:
         for k in self.log.keys():
             logs[k] = self.log[k][-1]
 
-        if self.feedback and matplotlib.get_backend() != 'agg':
+        # show figure:
+        if do_plots:
             plt.tight_layout()
             plt.show()
             return fig
-
-###############################################################################
-# KL methods:
-
-
-@tf.function
-def tf_KL_decomposition(matrix_a, matrix_b):
-    """
-    KL decomposition in tensorflow
-    """
-    # compute the eigenvalues of b, lambda_b:
-    _lambda_b, _phi_b = tf.linalg.eigh(matrix_b)
-    _sqrt_lambda_b = tf.linalg.diag(1./tf.math.sqrt(_lambda_b))
-    _phib_prime = tf.matmul(_phi_b, _sqrt_lambda_b)
-    #
-    trailing_axes = [-1, -2]
-    leading = tf.range(tf.rank(_phib_prime) - len(trailing_axes))
-    trailing = trailing_axes + tf.rank(_phib_prime)
-    new_order = tf.concat([leading, trailing], axis=0)
-    _phib_prime_T = tf.transpose(_phib_prime, new_order)
-    #
-    _a_prime = tf.matmul(tf.matmul(_phib_prime_T, matrix_a), _phib_prime)
-    _lambda, _phi_a = tf.linalg.eigh(_a_prime)
-    _phi = tf.matmul(tf.matmul(_phi_b, _sqrt_lambda_b), _phi_a)
-    return _lambda, _phi
-
-
-#def _naive_KL_ode(t, y, reference, flow, prior_flow):
-#    """
-#    Solve naively the dynamical equation for KL decomposition in abstract space.
-#    """
-#    # preprocess:
-#    x = tf.convert_to_tensor([tf.cast(y, tf.float32)])
-#    # compute metrics:
-#    metric = flow.metric(x)[0]
-#    prior_metric = prior_flow.metric(x)[0]
-#    # compute KL decomposition:
-#    eig, eigv = tf_KL_decomposition(metric, prior_metric)
-#    # normalize to one to project and select direction:
-#    temp = tf.matmul(tf.transpose(eigv), tf.transpose([reference]))[:, 0] / tf.linalg.norm(eigv, axis=0)
-#    idx = tf.math.argmax(tf.abs(temp))
-#    w = tf.math.sign(temp[idx]) * eigv[:, idx]
-#    # normalize affine parameter:
-#    s = tf.math.sqrt(tf.tensordot(w, tf.tensordot(metric, w, 1), 1))
-#    #
-#    return tf.convert_to_tensor([w / s])
-
-
-def _naive_KL_ode(t, y, reference, flow, prior_flow):
-    """
-    Solve naively the dynamical equation for KL decomposition in abstract space.
-    """
-    # preprocess:
-    x = flow.cast([y])
-    # compute metrics:
-    metric = flow.metric(x)[0]
-    prior_metric = prior_flow.metric(x)[0]
-    # compute KL decomposition:
-    eig, eigv = tf_KL_decomposition(metric, prior_metric)
-    # normalize to one to project and select direction:
-    #temp = tf.linalg.matvec(tf.matmul(tf.transpose(eigv), metric), reference) - tf.tensordot(reference, tf.tensordot(metric, reference, 1), 1)
-    #idx = tf.math.argmin(tf.abs(temp))
-    #temp_2 = tf.tensordot(eigv[:, idx], reference, 1)
-    #w = tf.math.sign(temp_2) * eigv[:, idx]
-    #
-    temp = tf.matmul(tf.transpose(eigv), tf.transpose([reference]))[:, 0] / tf.linalg.norm(eigv, axis=0) / tf.linalg.norm(reference)
-    idx = tf.math.argmax(tf.abs(temp))
-    w = tf.math.sign(temp[idx]) * eigv[:, idx]
-    # normalize affine parameter:
-    s = tf.math.sqrt(tf.tensordot(w, tf.tensordot(metric, w, 1), 1))
-    #
-    return tf.convert_to_tensor([w / s])
-
-
-def solve_KL_ode(flow, prior_flow, y0, n, length=1.5, side='both', integrator_options=None, num_points=100, **kwargs):
-    """
-    Solve eigenvalue problem in abstract space
-    side = '+', '-', 'both'
-    length = 1.5
-    num_points = 100
-    n=0
-    """
-    # define solution points:
-    solution_times = tf.linspace(0., length, num_points)
-    # compute initial KL decomposition:
-    x = flow.cast([y0])
-    metric = flow.metric(x)[0]
-    prior_metric = prior_flow.metric(x)[0]
-    # compute KL decomposition:
-    eig, eigv = tf_KL_decomposition(metric, prior_metric)
-    # solve forward:
-    if side == '+' or side == 'both':
-        # initialize solution:
-        temp_sol_1 = np.zeros((num_points-1, flow.num_params))
-        temp_sol_dot_1 = np.zeros((num_points-1, flow.num_params))
-        # initialize forward integration:
-        solver = scipy.integrate.ode(_naive_KL_ode)
-        if integrator_options is not None:
-            solver.set_integrator(**integrator_options)
-        solver.set_initial_value(y0, 0.)
-        #reference = eigv[:, n] / tf.norm(eigv[:, n])
-        reference = eigv[:, n]
-        yt = y0.numpy()
-        yprime = eigv[:, n]
-        # do the time steps:
-        for ind, t in enumerate(solution_times[1:]):
-            # set the reference:
-            solver.set_f_params(reference, flow, prior_flow)
-            # advance solver:
-            try:
-                yt = solver.integrate(t)
-                yprime = _naive_KL_ode(t, yt, reference, flow, prior_flow)
-            except:
-                pass
-            # update reference:
-            # reference = yprime[0] / tf.norm(yprime[0])
-            reference = yprime[0]
-            # save out:
-            temp_sol_1[ind] = yt.copy()
-            temp_sol_dot_1[ind] = yprime.numpy().copy()
-        # return if needed:
-        if side == '+':
-            traj = np.concatenate((x.numpy(), temp_sol_1))
-            vel = np.concatenate(([eigv[:, n].numpy()], temp_sol_dot_1))
-            return solution_times, traj, vel
-    # solve backward:
-    if side == '-' or side == 'both':
-        # initialize solution:
-        temp_sol_2 = np.zeros((num_points-1, flow.num_params))
-        temp_sol_dot_2 = np.zeros((num_points-1, flow.num_params))
-        # initialize backward integration:
-        solver = scipy.integrate.ode(_naive_KL_ode)
-        if integrator_options is not None:
-            solver.set_integrator(**integrator_options)
-        solver.set_initial_value(y0, 0.)
-        # reference = - eigv[:, n] / tf.norm(eigv[:, n])
-        reference = - eigv[:, n]
-        yt = y0.numpy()
-        yprime = reference
-        for ind, t in enumerate(solution_times[1:]):
-            # set the reference:
-            solver.set_f_params(reference, flow, prior_flow)
-            # advance solver:
-            try:
-                yt = solver.integrate(t)
-                yprime = _naive_KL_ode(t, yt, reference, flow, prior_flow)
-            except:
-                pass
-            # update reference:
-            # reference = yprime[0] / tf.norm(yprime[0])
-            reference = yprime[0]
-            # save out:
-            temp_sol_2[ind] = yt.copy()
-            temp_sol_dot_2[ind] = yprime.numpy().copy()
-        # return if needed:
-        if side == '-':
-            traj = np.concatenate((temp_sol_2[::-1], x.numpy()))
-            vel = np.concatenate((-temp_sol_dot_2[::-1], [eigv[:, n].numpy()]))
-            return -solution_times, traj, vel
-    # patch solutions:
-    times = np.concatenate((-solution_times[::-1], solution_times[1:]))
-    traj = np.concatenate((temp_sol_2[::-1], x.numpy(), temp_sol_1))
-    vel = np.concatenate((-temp_sol_dot_2[::-1], [eigv[:, n].numpy()], temp_sol_dot_1))
-    #
-    return times, traj, vel
 
 ###############################################################################
 # Transformed flow:
