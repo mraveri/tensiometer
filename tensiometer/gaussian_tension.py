@@ -12,10 +12,10 @@ and `arxiv 1912.04880 <https://arxiv.org/pdf/1912.04880.pdf>`_.
 For testing purposes:
 
 from getdist import loadMCSamples, MCSamples, WeightedSamples
-chain_1 = loadMCSamples('./test_chains/DES')
-chain_2 = loadMCSamples('./test_chains/Planck18TTTEEE')
-chain_12 = loadMCSamples('./test_chains/Planck18TTTEEE_DES')
-chain_prior = loadMCSamples('./test_chains/prior')
+chain_1 = loadMCSamples('./tensiometer/test_chains/DES')
+chain_2 = loadMCSamples('./tensiometer/test_chains/Planck18TTTEEE')
+chain_12 = loadMCSamples('./tensiometer/test_chains/Planck18TTTEEE_DES')
+chain_prior = loadMCSamples('./tensiometer/test_chains/prior')
 prior_chain = chain_prior
 chain = chain_1
 param_names = None
@@ -400,6 +400,9 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
     """
     Documentation
 
+    conventions for 2d output: indexes are [parameter, mode]
+    conventions for projector [mode, parameters]
+
     :param chain_1: :class:`~getdist.mcsamples.MCSamples` the first input chain.
     :param chain_12: :class:`~getdist.mcsamples.MCSamples` the second input chain.
     :param param_names: list of names of the parameters to use
@@ -485,7 +488,7 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
         reduction_filter[normparam, :] = True
     # compute projector:
     projector = np.linalg.inv(CPC_eigv).copy()
-    projector[np.logical_not(reduction_filter)] = 0
+    projector[np.logical_not(reduction_filter.T)] = 0
     # prepare return of the function:
     results_dict = {}
     # mode results:
@@ -647,15 +650,15 @@ def print_CPCA_results(CPCA_results, verbose=True, num_modes=None):
             summary += '\n'
             # compute normalization of mode:
             if CPCA_results['normparam'] is not None:
-                norm = CPCA_results['CPCA_projector'][CPCA_results['normparam'], i]
+                norm = CPCA_results['CPCA_projector'][i, CPCA_results['normparam']]
             else:
-                norm = CPCA_results['CPCA_projector'][np.argmax(CPCA_results['CPCA_var_contributions'][:, i]), i]
+                norm = CPCA_results['CPCA_projector'][i, np.argmax(CPCA_results['CPCA_var_contributions'][:, i])]
             # write the mode:
             string = ''
             for j in range(num_params):  # loop over parameters
                 if CPCA_results['CPCA_var_filter'][j, i]:
                     # get normalized coefficient:
-                    _norm_eigv = CPCA_results['CPCA_projector'][j, i] / norm
+                    _norm_eigv = CPCA_results['CPCA_projector'][i, j] / norm
                     # format it to string and save it:
                     _temp = '{0:+.2f}'.format(np.round(_norm_eigv, 2))
                     if 'reference_point' in CPCA_results.keys():
