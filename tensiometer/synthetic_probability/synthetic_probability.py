@@ -27,7 +27,6 @@ from scipy.spatial import cKDTree
 from scipy.optimize import minimize
 import scipy.stats
 import pickle
-from collections.abc import Iterable
 import matplotlib
 from matplotlib import pyplot as plt
 from .. import utilities as utils
@@ -49,7 +48,6 @@ try:
     # tensorflow precision:
     prec = tf.float32
     np_prec = np.float32
-    int_np_prec = np.int32
 except Exception as e:
     print("Could not import tensorflow or tensorflow_probability: ", e)
     Callback = object
@@ -62,103 +60,7 @@ except ModuleNotFoundError:
 
 # local imports:
 from . import lr_schedulers as lr
-
-###############################################################################
-# helper class to build a masked-autoregressive flow:
-
-class SimpleMAF(object):
-    """
-    A class to implement a simple Masked AutoRegressive Flow (MAF) using the implementation :class:`tfp.bijectors.AutoregressiveNetwork` from from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_. Additionally, this class provides utilities to load/save models, including random permutations.
-
-    :param num_params: number of parameters, ie the dimension of the space of which the bijector is defined.
-    :type num_params: int
-    :param n_maf: number of MAFs to stack. Defaults to None, in which case it is set to `2*num_params`.
-    :type n_maf: int, optional
-    :param hidden_units: a list of the number of nodes per hidden layers. Defaults to None, in which case it is set to `[num_params*2]*2`.
-    :type hidden_units: list, optional
-    :param permutations: whether to use shuffle dimensions between stacked MAFs, defaults to True.
-    :type permutations: bool, optional
-    :param activation: activation function to use in all layers, defaults to :func:`tf.math.asinh`.
-    :type activation: optional
-    :param kernel_initializer: kernel initializer, defaults to 'glorot_uniform'.
-    :type kernel_initializer: str, optional
-    :param feedback: print the model architecture, defaults to 0.
-    :type feedback: int, optional
-    :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
-    """
-
-    def __init__(self, num_params, n_maf=None, hidden_units=None, permutations=True, activation=tf.math.asinh, kernel_initializer='glorot_uniform', feedback=0, **kwargs):
-
-        if n_maf is None:
-            n_maf = 2*num_params
-        event_shape = (num_params,)
-
-        if hidden_units is None:
-            hidden_units = [num_params*2]*2
-
-        if permutations is None:
-            _permutations = False
-        elif isinstance(permutations, Iterable):
-            assert len(permutations) == n_maf
-            _permutations = permutations
-        elif isinstance(permutations, bool):
-            if permutations:
-                _permutations = [np.random.permutation(num_params) for _ in range(n_maf)]
-            else:
-                _permutations = False
-
-        self.permutations = _permutations
-
-        # Build transformed distribution
-        bijectors = []
-        for i in range(n_maf):
-            if _permutations:
-                bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
-            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
-            shift_and_log_scale_fn = made
-            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
-            bijectors.append(maf)
-
-            if _permutations:  # add the inverse permutation
-                inv_perm = np.zeros_like(_permutations[i])
-                inv_perm[_permutations[i]] = np.arange(len(inv_perm))
-                bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
-
-        self.bijector = tfb.Chain(bijectors)
-
-        if feedback > 0:
-            print("Building MAF")
-            print("    - number of MAFs:", n_maf)
-            print("    - activation:", activation)
-            print("    - hidden_units:", hidden_units)
-
-    def save(self, path):
-        """
-        Save a `SimpleMAF` object.
-
-        :param path: path of the directory where to save.
-        :type path: str
-        """
-        checkpoint = tf.train.Checkpoint(bijector=self.bijector)
-        checkpoint.write(path)
-        pickle.dump(self.permutations, open(path+'_permutations.pickle', 'wb'))
-
-    @classmethod
-    def load(cls, path, **kwargs):
-        """
-        Load a saved `SimpleMAF` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
-
-        :type num_params: int
-        :param path: path of the directory from which to load.
-        :type path: str
-        :return: a :class:`~.SimpleMAF`.
-        """
-        permutations = pickle.load(open(path+'_permutations.pickle', 'rb'))
-        maf = SimpleMAF(num_params=len(permutations[0]), permutations=permutations, **utils.filter_kwargs(kwargs, SimpleMAF))
-        checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
-        checkpoint.read(path)
-        return maf
-
+from . import trainable_bijectors as tb
 
 ###############################################################################
 # helper function to generate analytic prior bijectors
@@ -232,7 +134,7 @@ def custom_loss(alv=1.0, blv=0.0):
         # compute density loss function:
         loss_orig = y_pred
         # combine into total loss function:
-        loss_comb = -alv*loss_orig + blv*std_diff
+        loss_comb = -alv*(loss_orig + blv) + (1. - alv)*std_diff
         return loss_comb
     return loss
 
@@ -316,7 +218,13 @@ class DiffFlowCallback(Callback):
             keys = ["loss", "val_loss", "lr", "chi2Z_ks", "chi2Z_ks_p"]
         self.log = {_k: [] for _k in keys}
 
-        self.chi2Y = np.sum(self.samples_test**2, axis=1)
+        # compute initial chi2:
+        _temp_mean = np.average(self.samples_test, axis=0, weights=self.weights_test)
+        _temp_invcov = np.linalg.inv(scipy.linalg.sqrtm(np.cov(self.samples_test.T, aweights=self.weights_test)))
+        _temp = np.dot(_temp_invcov, (self.samples_test-_temp_mean).T)
+        self.chi2Y = np.sum((_temp)**2, axis=0)
+        if self.has_weights:
+            self.chi2Y = np.random.choice(self.chi2Y, size=len(self.chi2Y), replace=True, p=self.weights_test/np.sum(self.weights_test))
         self.chi2Y_ks, self.chi2Y_ks_p = scipy.stats.kstest(self.chi2Y, 'chi2', args=(self.num_params,))
 
         # internal variables:
@@ -428,20 +336,17 @@ class DiffFlowCallback(Callback):
             raise ValueError('Cannot use likelihood based loss function in absence if the input chain does not have likelihood values')
         # compute beta loss and save in:
         self.alpha_lossv = alpha_lossv
-        self.beta_lossv = (1.-alpha_lossv)
         # feedback:
         if self.feedback:
-            print('Weight of density loss: %.3g, weight of likelihood-loss: %.3g' % (self.alpha_lossv, self.beta_lossv))
+            print('Weight of density loss: %.3g, weight of likelihood-loss: %.3g' % (self.alpha_lossv, 1.-alpha_lossv))
         # rescale beta term by Gaussian expectation of the first term (so that roughly alpha controls the precision of the Evidence estimate)
-        if self.beta_lossv != 0.0:
-            temp_X = self.fixed_bijector.inverse(self.chain_samples).numpy()
-            temp_chain = MCSamples(samples=temp_X, weights=self.chain_weights, names=param_names)
-            temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=param_names)
-            temp_factor = np.log(np.linalg.det(2.*np.pi*np.exp(1)*temp_gaussian_approx.covs[0]))/2.
-            self.beta_lossv *= temp_factor
-            # feedback:
-            if self.feedback:
-                print(f'Gaussian density loss asymptotic constant: %.4g, adjusted likelihood-loss weight: %.4g' % (temp_factor, self.beta_lossv))
+        temp_X = self.fixed_bijector.inverse(self.chain_samples).numpy()
+        temp_chain = MCSamples(samples=temp_X, weights=self.chain_weights, names=param_names)
+        temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=param_names)
+        self.beta_lossv = np.log(np.linalg.det(2.*np.pi*np.exp(1)*temp_gaussian_approx.covs[0]))/2.
+        # feedback:
+        if self.feedback:
+            print(f'Gaussian density loss asymptotic constant: %.4g' % (self.beta_lossv))
 
         # Split training/test:
         n = chain.samples.shape[0]
@@ -488,7 +393,7 @@ class DiffFlowCallback(Callback):
         """
         # Model
         if trainable_bijector == 'MAF':
-            self.MAF = SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
+            self.MAF = tb.SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
             self.trainable_bijector = self.MAF.bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
             self.trainable_bijector = trainable_bijector
@@ -1228,7 +1133,7 @@ class DiffFlowCallback(Callback):
         Plot behavior of density and likelihood loss as training progresses.
         """
         # compute density loss on validation data:
-        temp_rho_loss = custom_loss(self.alpha_lossv, 0.0)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_rho_loss = custom_loss(1.0, self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
         temp_rho_loss = np.average(temp_rho_loss.numpy(), weights=self.weights_test)
         # compute likelihood loss on validation data:
         temp_like_loss = custom_loss(0.0, self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
@@ -1418,7 +1323,7 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
     # load from cache:
     if cache_dir is not None and os.path.isfile(cache_dir+'/'+root_name+'_permutations.pickle'):
         # load trained model:
-        temp_MAF = SimpleMAF.load(cache_dir+'/'+root_name, **kwargs)
+        temp_MAF = tb.SimpleMAF.load(cache_dir+'/'+root_name, **kwargs)
         # initialize flow:
         if 'trainable_bijector' in kwargs:
             kwargs.pop('trainable_bijector')
