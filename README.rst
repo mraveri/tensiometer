@@ -59,3 +59,8 @@ Dependencies
 Uses mostly standard python packages and GetDist.
 
 For the full list of requirements see the `requirements.txt` file.
+
+Acknowledgements
+=================
+
+We thank Samuel Goldstein for help developing the code.

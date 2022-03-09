@@ -395,7 +395,7 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
 
 def linear_CPCA(fisher_1, fisher_12, param_names,
                 conditional_params=[], marginalized_parameters=[],
-                normparam=None, num_modes=None, dimensional_reduce=True,
+                normparam=None, dimensional_reduce=True,
                 dimensional_threshold=0.1):
     """
     Documentation
@@ -417,9 +417,6 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
     :param normparam: (optional) name of parameter to normalize result
         (i.e. this parameter will have unit power)
         By default scales to the parameter that has the largest impactr on the KL mode variance.
-    :param num_modes: (optional) only return the num_modes best modes.
-    :param localize: (optional) localize the first covariance with the second,
-        useful when chain_1 spans a much larger region with respect to chain_12.
     :param dimensional_reduce: (optional) perform dimensional reduction of the KL modes considered
         keeping only parameters with a large impact on KL mode variances.
         Default is True.
@@ -487,7 +484,7 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
     if normparam is not None:
         reduction_filter[normparam, :] = True
     # compute projector:
-    projector = np.linalg.inv(CPC_eigv).T.copy()
+    projector = np.linalg.inv(CPC_eigv).copy()
     projector[np.logical_not(reduction_filter)] = 0
     # prepare return of the function:
     results_dict = {}
@@ -557,7 +554,7 @@ def linear_CPCA_chains(chain_1, chain_12, param_names, **kwargs):
     return CPCA_results
 
 
-def print_CPCA_results(CPCA_results, verbose=True):
+def print_CPCA_results(CPCA_results, verbose=True, num_modes=None):
     """
     Documentation
     """
@@ -565,6 +562,8 @@ def print_CPCA_results(CPCA_results, verbose=True):
     # initialize parameters:
     param_names = CPCA_results['param_names']
     num_params = len(param_names)
+    if num_modes is None:
+        num_modes = num_params
     PCAtext += 'CPCA for '+str(num_params)+' parameters:\n'
     if verbose:
         PCAtext += '\n'
@@ -606,7 +605,7 @@ def print_CPCA_results(CPCA_results, verbose=True):
     PCAtext += ']\n\n'
     # write out eigenvalues:
     PCAtext += 'CPC amplitudes - 1 (variance improvement per mode):\n'
-    for i in range(num_params):
+    for i in range(num_modes):
         PCAtext += '%4s : %8.4f' % (str(i + 1), CPCA_results['CPCA_eig'][i]-1.)
         if CPCA_results['CPCA_eig'][i]-1. > 0.:
             PCAtext += ' (%8.1f %%)' % (np.sqrt(CPCA_results['CPCA_eig'][i]-1.)*100.)
@@ -617,7 +616,7 @@ def print_CPCA_results(CPCA_results, verbose=True):
     if verbose:
         PCAtext += '\n'
         PCAtext += 'CPC modes:\n'
-        for i in range(num_params):
+        for i in range(num_modes):
             if CPCA_results['CPCA_eig'][i]-1. > 0.:
                 PCAtext += '%4s :' % str(i + 1)
                 for j in range(num_params):
@@ -627,19 +626,19 @@ def print_CPCA_results(CPCA_results, verbose=True):
     PCAtext += '\nParameter contribution to CPC-mode variance:\n'
     max_length = np.amax([len(name) for name in param_names + ['mode number']])
     PCAtext += f" {'mode number':<{max_length}} :"
-    for i in range(num_params):
+    for i in range(num_modes):
         if CPCA_results['CPCA_eig'][i]-1. > 0.:
             PCAtext += '%8i' % (i+1)
     PCAtext += '\n'
     for i in range(num_params):  # loop over parameters
         PCAtext += f" {param_names[i]:<{max_length}} :"
-        for j in range(num_params):  # loop over modes
+        for j in range(num_modes):  # loop over modes
             if CPCA_results['CPCA_eig'][j]-1. > 0.:
                 PCAtext += '%8.3f' % (CPCA_results['CPCA_var_contributions'][i, j])
         PCAtext += '\n'
     # write out CPC components constraints:
     PCAtext += '\nCPC parameter combinations:\n'
-    for i in range(num_params):  # loop over modes
+    for i in range(num_modes):  # loop over modes
         if CPCA_results['CPCA_eig'][i]-1. > 0.:
             # summary of mode improvement:
             summary = '%4s : %8.3f' % (str(i + 1), CPCA_results['CPCA_eig'][i]-1.)
@@ -675,14 +674,14 @@ def print_CPCA_results(CPCA_results, verbose=True):
         # write first line:
         PCAtext += '\nCPC modes parameters correlations:\n'
         PCAtext += f" {'mode number':<{max_length}} :"
-        for i in range(num_params):
+        for i in range(num_modes):
             if CPCA_results['CPCA_eig'][i]-1. > 0.:
                 PCAtext += '%8i' % (i+1)
         PCAtext += '\n'
         # then write out parameter per parameter:
         for i, name in enumerate(CPCA_results['correlation_parameter_names']):
             PCAtext += f" {name:<{max_length}} :"
-            for j in range(num_params):  # loop over modes
+            for j in range(num_modes):  # loop over modes
                 if CPCA_results['CPCA_eig'][j]-1. > 0.:
                     PCAtext += '%8.3f' % (CPCA_results['correlation_mode_parameter'][j, i])
             PCAtext += '\n'
