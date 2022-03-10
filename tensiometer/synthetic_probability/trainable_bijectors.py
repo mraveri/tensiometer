@@ -4,14 +4,17 @@
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
-tfb = tfp.bijectors
-tfd = tfp.distributions
+import pickle
 from collections.abc import Iterable
 
 from .. import utilities as utils
 
+tfb = tfp.bijectors
+tfd = tfp.distributions
+
 ###############################################################################
 # helper class to build a masked-autoregressive flow:
+
 
 class SimpleMAF(object):
     """

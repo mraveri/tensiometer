@@ -26,9 +26,10 @@ import scipy.integrate
 from scipy.spatial import cKDTree
 from scipy.optimize import minimize
 import scipy.stats
-import pickle
 import matplotlib
 from matplotlib import pyplot as plt
+from collections.abc import Iterable
+
 from .. import utilities as utils
 from .. import gaussian_tension
 
@@ -44,6 +45,7 @@ try:
     from tensorflow.keras.layers import Input
     from tensorflow.keras.callbacks import Callback
     import tensorflow.keras.callbacks as keras_callbacks
+
     HAS_FLOW = True
     # tensorflow precision:
     prec = tf.float32
@@ -54,7 +56,7 @@ except Exception as e:
     HAS_FLOW = False
 
 try:
-    from IPython.display import clear_output, set_matplotlib_formats
+    from IPython.display import clear_output
 except ModuleNotFoundError:
     pass
 
@@ -450,7 +452,10 @@ class DiffFlowCallback(Callback):
         if callbacks is None:
             callbacks = []
             # learning rate scheduler:
-            lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), steps_per_epoch * epochs, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
+            total_steps = steps_per_epoch * epochs
+            initial_lr = self.model.optimizer.lr.numpy()
+            #lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), total_steps, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
+            lr_schedule = lr.ExponentialDecayScheduler(initial_lr, initial_lr/100., 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
             callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
@@ -1055,8 +1060,8 @@ class DiffFlowCallback(Callback):
         self.log["loss"].append(logs.get('loss'))
         self.log["val_loss"].append(logs.get('val_loss'))
         if ax is not None:
-            ax.plot(self.log["loss"], ls='-', lw=1., label='Training')
-            ax.plot(self.log["val_loss"], ls='-', lw=1., label='Testing')
+            ax.plot(np.abs(self.log["loss"]), ls='-', lw=1., label='Training')
+            ax.plot(np.abs(self.log["val_loss"]), ls='-', lw=1., label='Testing')
             ax.set_title("Training Loss")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel("Loss")
@@ -1144,8 +1149,8 @@ class DiffFlowCallback(Callback):
         # plot:
         if ax is not None:
             # evidence error:
-            ln1 = ax.plot(self.log["rho_loss"], lw=1., ls='-', label='density loss')
-            ln1 = ax.plot(self.log["like_loss"], lw=1., ls='-', label='likelihood loss')
+            ax.plot(np.abs(self.log["rho_loss"]), lw=1., ls='-', label='density loss')
+            ax.plot(np.abs(self.log["like_loss"]), lw=1., ls='-', label='likelihood loss')
             ax.set_title(r"Loss breakdown")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_yscale('log')
@@ -1198,7 +1203,10 @@ class DiffFlowCallback(Callback):
         """
 
         # update log:
-        logs['lr'] = self.model.optimizer.lr.numpy()
+        try:
+            logs['lr'] = tf.keras.backend.get_value(self.model.optimizer.lr)
+        except AttributeError:
+            logs['lr'] = 0.0
 
         # decide whether to plot:
         do_plots = self.feedback and matplotlib.get_backend() != 'agg'

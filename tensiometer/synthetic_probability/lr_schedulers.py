@@ -8,7 +8,8 @@ import numpy as np
 ###############################################################################
 # Cosine learning rate scheduler:
 
-class CosineAnnealer:
+
+class CosineAnnealer():
     """
     Code taken from https://www.kaggle.com/avanwyk/tf2-super-convergence-with-the-1cycle-policy
     """
@@ -103,3 +104,58 @@ class OneCycleScheduler(Callback):
 
     def mom_schedule(self):
         return self.phases[self.phase][1]
+
+###############################################################################
+# Exponential decay:
+
+
+class ExponentialDecayAnnealer():
+    """
+    """
+
+    def __init__(self, start, end, roll_off_step, steps):
+        self.start = start
+        self.end = end
+        self.roll_off_step = float(roll_off_step)
+        self.steps = float(steps)
+        self.n = 0
+
+    def step(self):
+        self.n += 1
+        return self.start/(1. + (self.end/(self.start-self.end))**((self.n - self.roll_off_step)/(self.roll_off_step - self.steps)))
+
+
+class ExponentialDecayScheduler(Callback):
+    """
+    """
+
+    def __init__(self, lr_max, lr_min, roll_off_step, steps):
+        super(ExponentialDecayScheduler, self).__init__()
+
+        self.step = 0
+        self.Annealer = ExponentialDecayAnnealer(lr_max, lr_min, roll_off_step, steps)
+        self.lrs = []
+        self.moms = []
+
+    def on_train_begin(self, logs=None):
+        self.step = 0
+        self.set_lr(self.Annealer.start)
+
+    def on_train_batch_begin(self, batch, logs=None):
+        self.lrs.append(self.get_lr())
+
+    def on_train_batch_end(self, batch, logs=None):
+        self.step += 1
+        self.set_lr(self.Annealer.step())
+
+    def get_lr(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.lr)
+        except AttributeError:
+            return None
+
+    def set_lr(self, lr):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+        except AttributeError:
+            pass  # ignore
