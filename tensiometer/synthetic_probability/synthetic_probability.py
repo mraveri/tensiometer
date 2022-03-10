@@ -1211,7 +1211,7 @@ class DiffFlowCallback(Callback):
         # decide whether to plot:
         do_plots = self.feedback and matplotlib.get_backend() != 'agg'
         if do_plots and isinstance(self.feedback, int):
-            if epoch % self.feedback:
+            if epoch + 1 % self.feedback:
                 do_plots = False
 
         # do the plots:
