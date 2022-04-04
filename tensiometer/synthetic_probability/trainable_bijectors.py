@@ -2,10 +2,13 @@
 # initial imports and set-up:
 
 import numpy as np
-import tensorflow as tf
-import tensorflow_probability as tfp
 import pickle
 from collections.abc import Iterable
+
+import tensorflow as tf
+import tensorflow_probability as tfp
+from tensorflow_probability.python.internal import dtype_util
+from tensorflow_probability.python.internal import tensor_util
 
 from .. import utilities as utils
 
@@ -110,3 +113,11 @@ class SimpleMAF(object):
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
+
+
+
+
+
+
+
+pass

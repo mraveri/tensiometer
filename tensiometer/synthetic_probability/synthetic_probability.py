@@ -454,8 +454,9 @@ class DiffFlowCallback(Callback):
             # learning rate scheduler:
             total_steps = steps_per_epoch * epochs
             initial_lr = self.model.optimizer.lr.numpy()
-            #lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), total_steps, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
+            # lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), total_steps, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
             lr_schedule = lr.ExponentialDecayScheduler(initial_lr, initial_lr/100., 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            # lr_schedule = lr.SqrtDecayScheduler(initial_lr, initial_lr/100., total_steps, **utils.filter_kwargs(kwargs, lr.SqrtDecayScheduler))
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
             callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
@@ -1211,7 +1212,7 @@ class DiffFlowCallback(Callback):
         # decide whether to plot:
         do_plots = self.feedback and matplotlib.get_backend() != 'agg'
         if do_plots and isinstance(self.feedback, int):
-            if epoch + 1 % self.feedback:
+            if ((epoch + 1) % self.feedback) > 0:
                 do_plots = False
 
         # do the plots:
