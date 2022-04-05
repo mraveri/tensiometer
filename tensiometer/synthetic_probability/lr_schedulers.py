@@ -163,30 +163,31 @@ class ExponentialDecayScheduler(Callback):
 # Square root decay:
 
 
-class SqrtDecayAnnealer():
+class PowerLawDecayAnnealer():
     """
     """
 
-    def __init__(self, start, end, steps):
+    def __init__(self, start, end, power, steps):
         self.start = start
         self.end = end
+        self.p = power
         self.steps = float(steps)
         self.n = 0
 
     def step(self):
         self.n += 1
-        return self.start/tf.math.sqrt((self.n*self.start**2)/(self.steps*self.end**2))
+        return self.start/(self.n/(self.steps*(self.end/self.start)**(1/self.p)))**self.p
 
 
-class SqrtDecayScheduler(Callback):
+class PowerLawDecayScheduler(Callback):
     """
     """
 
-    def __init__(self, lr_max, lr_min, steps):
-        super(SqrtDecayScheduler, self).__init__()
+    def __init__(self, lr_max, lr_min, power, steps):
+        super(PowerLawDecayScheduler, self).__init__()
 
         self.step = 0
-        self.Annealer = SqrtDecayAnnealer(lr_max, lr_min, steps)
+        self.Annealer = PowerLawDecayAnnealer(lr_max, lr_min, power, steps)
         self.lrs = []
 
     def on_train_begin(self, logs=None):
