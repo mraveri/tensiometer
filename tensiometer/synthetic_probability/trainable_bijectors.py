@@ -127,7 +127,7 @@ class rotoshift(tfb.Bijector):
             self.dtype = dtype
             self.dimension = dimension
             self._shift = tfp.layers.VariableLayer(dimension, dtype=self.dtype)
-            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension+1)//2, initializer='random_normal', trainable=True, dtype=self.dtype)
+            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=self.dtype)
 
             super(rotoshift, self).__init__(
                 forward_min_event_ndims=0,
@@ -147,6 +147,7 @@ class rotoshift(tfb.Bijector):
     def _getrot_invrot(self, x):
         L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
         L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
+        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, tf.ones(self.dimension))
         Q, R = tf.linalg.qr(L)
         self.rot = tf.linalg.matmul(L, tf.linalg.inv(R))
         self.invrot = tf.transpose(self.rot)
