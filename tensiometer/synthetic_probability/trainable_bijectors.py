@@ -8,7 +8,7 @@ from collections.abc import Iterable
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability.python.internal import dtype_util
-from tensorflow_probability.python.internal import tensor_util
+from tensorflow_probability.python.internal import parameter_properties
 
 from .. import utilities as utils
 
@@ -114,10 +114,63 @@ class SimpleMAF(object):
         checkpoint.read(path)
         return maf
 
+###############################################################################
+# class to build a rotation and shift bijector:
 
 
+class rotoshift(tfb.Bijector):
 
+    def __init__(self, dimension, validate_args=False, name='rotoshift', dtype=tf.float32):
+        parameters = dict(locals())
 
+        with tf.name_scope(name) as name:
+            self.dtype = dtype
+            self.dimension = dimension
+            self._shift = tfp.layers.VariableLayer(dimension, dtype=self.dtype)
+            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension+1)//2, initializer='random_normal', trainable=True, dtype=self.dtype)
 
+            super(rotoshift, self).__init__(
+                forward_min_event_ndims=0,
+                is_constant_jacobian=True,
+                validate_args=validate_args,
+                parameters=parameters,
+                name=name)
 
-pass
+    @property
+    def shift(self):
+        return self._shift
+
+    @classmethod
+    def _is_increasing(cls):
+        return True
+
+    def _getrot_invrot(self, x):
+        L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
+        Q, R = tf.linalg.qr(L)
+        self.rot = tf.linalg.matmul(L, tf.linalg.inv(R))
+        self.invrot = tf.transpose(self.rot)
+
+    def _forward(self, x):
+        if hasattr(self, 'rot'):
+            _rot = self.rot
+        else:
+            self._getrot_invrot(x)
+            _rot = self.rot
+        return tf.transpose(tf.linalg.matmul(_rot, tf.transpose(x))) + self._shift(x)[None, :]
+
+    def _inverse(self, y):
+        if hasattr(self, 'invrot'):
+            _invrot = self.invrot
+        else:
+            self._getrot_invrot(y)
+            _invrot = self.invrot
+        return tf.transpose(tf.linalg.matmul(_invrot, tf.transpose(y - self._shift(y)[None, :])))
+
+    def _forward_log_det_jacobian(self, x):
+        print('in forward jac')
+        return tf.zeros([], dtype=dtype_util.base_dtype(x.dtype))
+
+    @classmethod
+    def _parameter_properties(cls, dtype):
+        return {'shift': parameter_properties.ParameterProperties()}
