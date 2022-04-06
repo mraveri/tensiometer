@@ -118,7 +118,7 @@ class SimpleMAF(object):
 # class to build a rotation and shift bijector:
 
 
-class rotoshift(tfb.Bijector):
+class Rotoshift(tfb.Bijector):
 
     def __init__(self, dimension, validate_args=False, name='rotoshift', dtype=tf.float32):
         parameters = dict(locals())
@@ -129,7 +129,7 @@ class rotoshift(tfb.Bijector):
             self._shift = tfp.layers.VariableLayer(dimension, dtype=self.dtype)
             self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=self.dtype)
 
-            super(rotoshift, self).__init__(
+            super(Rotoshift, self).__init__(
                 forward_min_event_ndims=0,
                 is_constant_jacobian=True,
                 validate_args=validate_args,
