@@ -174,3 +174,73 @@ class Rotoshift(tfb.Bijector):
     @classmethod
     def _parameter_properties(cls, dtype):
         return {'shift': parameter_properties.ParameterProperties()}
+
+
+
+class Affine(tfb.Bijector):
+
+    def __init__(self, dimension, validate_args=False, name='Affine', dtype=tf.float32):
+        parameters = dict(locals())
+
+        with tf.name_scope(name) as name:
+
+            self.dimension = dimension
+            self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
+            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension+1)//2, initializer='random_normal', trainable=True, dtype=dtype)
+            
+            super(Affine, self).__init__(
+                forward_min_event_ndims=0,
+                is_constant_jacobian=False,
+                validate_args=validate_args,
+                parameters=parameters,
+                dtype=dtype,
+                name=name)
+
+    @property
+    def shift(self):
+        return self._shift
+
+    @classmethod
+    def _is_increasing(cls):
+        return True
+
+    def _getaff_invaff(self, x):
+
+        L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
+        Lambda2 = tf.linalg.diag(tf.math.abs(tf.linalg.tensor_diag_part(L)))
+        val_update = tf.math.sign(tf.linalg.tensor_diag_part(L)) * tf.ones(self.dimension)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, val_update)
+        Q, R = tf.linalg.qr(L)
+        Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
+        self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
+        self.invaff = tf.linalg.inv(self.aff)  
+        valdet = tf.linalg.logdet(self.aff)
+        self.logdet = valdet
+
+    def _forward(self, x):
+        if hasattr(self, 'rot'):
+            _aff = self.aff
+        else:
+            self._getaff_invaff(x)
+            _aff = self.aff
+        return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
+
+    def _inverse(self, y):
+        if hasattr(self, 'invrot'):
+            _invaff = self.invaff
+        else:
+            self._getaff_invaff(y)
+            _invaff = self.invaff
+        return tf.transpose(tf.linalg.matmul(_invaff, tf.transpose(y - self._shift(y)[None, :])))
+
+    def _forward_log_det_jacobian(self, x):
+        if not hasattr(self, 'logdet'):
+            self._getaff_invaff(x)
+        return self.logdet
+
+    @classmethod
+    def _parameter_properties(cls, dtype):
+        return {'shift': parameter_properties.ParameterProperties()}
+
+    
