@@ -160,7 +160,7 @@ class ExponentialDecayScheduler(Callback):
             pass  # ignore
 
 ###############################################################################
-# Square root decay:
+# Power law decay:
 
 
 class PowerLawDecayAnnealer():
