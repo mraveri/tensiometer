@@ -168,7 +168,6 @@ class rotoshift(tfb.Bijector):
         return tf.transpose(tf.linalg.matmul(_invrot, tf.transpose(y - self._shift(y)[None, :])))
 
     def _forward_log_det_jacobian(self, x):
-        print('in forward jac')
         return tf.zeros([], dtype=dtype_util.base_dtype(x.dtype))
 
     @classmethod
