@@ -230,7 +230,7 @@ class ScaleRotoShift(tfb.Bijector):
         self.logdet = valdet/self.dimension
 
     def _forward(self, x):
-        if hasattr(self, 'rot'):
+        if hasattr(self, 'aff'):
             _aff = self.aff
         else:
             self._getaff_invaff(x)
@@ -238,7 +238,7 @@ class ScaleRotoShift(tfb.Bijector):
         return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
 
     def _inverse(self, y):
-        if hasattr(self, 'invrot'):
+        if hasattr(self, 'invaff'):
             _invaff = self.invaff
         else:
             self._getaff_invaff(y)
