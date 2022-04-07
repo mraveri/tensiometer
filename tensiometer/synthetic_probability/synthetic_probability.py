@@ -1185,10 +1185,8 @@ class FlowCallback(Callback):
         self._plot_chi2_ks_p(axes[0, 3], logs=logs)
         if self.has_loglikes:
             self._plot_losses(axes[1, 0], logs=logs)
-            self._plot_evidence_error(axes[1, 1], logs=logs)
-            self._plot_smoothness_score(axes[1, 2], logs=logs)
-            if axes[1, 3] is not None:
-                axes[1, 3].axis('off')
+            self._plot_evidence_error(axes[1, 2], logs=logs)
+            self._plot_smoothness_score(axes[1, 3], logs=logs)
 
         # save out log:
         for k in self.log.keys():
