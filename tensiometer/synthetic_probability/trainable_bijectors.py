@@ -177,7 +177,7 @@ def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., r
     return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
 
 ###############################################################################
-# class to build a rotation and shift bijector:
+# class to build a scaling, rotation and shift bijector:
 
 
 class ScaleRotoShift(tfb.Bijector):
@@ -190,17 +190,16 @@ class ScaleRotoShift(tfb.Bijector):
             if shift:
                 self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
             else:
-                self._shift = lambda _ : tf.zeros(dimension, dtype=dtype)
+                self._shift = lambda _: tf.zeros(dimension, dtype=dtype)
             if scale:
                 self._scalevec = tfp.layers.VariableLayer(dimension, initializer='ones', dtype=dtype)
             else:
-                self._scalevec = lambda _ : tf.ones(dimension, dtype=dtype)
+                self._scalevec = lambda _: tf.ones(dimension, dtype=dtype)
             if roto:
                 self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype)
             else:
-                self._rotvec = lambda _ : tf.zeros(dimension*(dimension-1)//2, dtype=dtype)
-                
-            
+                self._rotvec = lambda _: tf.zeros(dimension*(dimension-1)//2, dtype=dtype)
+
             super(ScaleRotoShift, self).__init__(
                 forward_min_event_ndims=0,
                 is_constant_jacobian=False,
@@ -217,16 +216,16 @@ class ScaleRotoShift(tfb.Bijector):
     def _is_increasing(cls):
         return True
 
-    def _getaff_invaff(self, x):        
+    def _getaff_invaff(self, x):
         L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
         L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, -1)).T, self._rotvec(x))
-        Lambda2 = tf.linalg.diag(tf.math.abs(self._scalevec(x)))        
+        Lambda2 = tf.linalg.diag(tf.math.abs(self._scalevec(x)))
         val_update = tf.math.sign(tf.linalg.tensor_diag_part(Lambda2)) * tf.ones(self.dimension)
         L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, val_update)
         Q, R = tf.linalg.qr(L)
         Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
         self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
-        self.invaff = tf.linalg.inv(self.aff)  
+        self.invaff = tf.linalg.inv(self.aff)
         valdet = tf.linalg.logdet(self.aff)
         self.logdet = valdet/self.dimension
 
@@ -250,13 +249,10 @@ class ScaleRotoShift(tfb.Bijector):
         if not hasattr(self, 'logdet'):
             self._getaff_invaff(x)
         return self.logdet
-    
+
     def _inverse_log_det_jacobian(self, y):
-      return -self._forward_log_det_jacobian(self._inverse(y))
+        return -self._forward_log_det_jacobian(self._inverse(y))
 
     @classmethod
     def _parameter_properties(cls, dtype):
         return {'shift': parameter_properties.ParameterProperties()}
-
-    
-    
