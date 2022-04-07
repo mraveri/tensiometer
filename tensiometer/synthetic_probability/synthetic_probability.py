@@ -359,7 +359,8 @@ class DiffFlowCallback(Callback):
         # Training:
         self.samples = self.fixed_bijector.inverse(chain.samples[self.training_idx, :][:, ind]).numpy().astype(np_prec)
         self.jac_true_preabs = self.fixed_bijector.inverse_log_det_jacobian(chain.samples[self.training_idx, :][:, ind], event_ndims=1)
-        self.logP_preabs = -1.*self.chain_loglikes[self.training_idx] - self.jac_true_preabs
+        if self.has_loglikes:
+            self.logP_preabs = -1.*self.chain_loglikes[self.training_idx] - self.jac_true_preabs
 
         self.weights = chain.weights[self.training_idx]
         self.weights *= len(self.weights) / np.sum(self.weights)  # weights normalized to number of samples
@@ -369,7 +370,8 @@ class DiffFlowCallback(Callback):
         # Test:
         self.samples_test = self.fixed_bijector.inverse(chain.samples[self.test_idx, :][:, ind]).numpy().astype(np_prec)
         self.jac_true_test_preabs = self.fixed_bijector.inverse_log_det_jacobian(chain.samples[self.test_idx, :][:, ind], event_ndims=1)
-        self.logP_preabs_test = -1.*self.chain_loglikes[self.test_idx] - self.jac_true_test_preabs
+        if self.has_loglikes:
+            self.logP_preabs_test = -1.*self.chain_loglikes[self.test_idx] - self.jac_true_test_preabs
 
         # self.Y_test = np.array(self.Y2X_bijector.inverse(self.samples_test.astype(np_prec)))
         self.weights_test = chain.weights[self.test_idx]
@@ -462,7 +464,7 @@ class DiffFlowCallback(Callback):
             # callback to stop if weights start getting worse:
             callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
                                                            **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
-        # Run training:
+        # # Run training:
         hist = self.model.fit(x=self.training_dataset.batch(batch_size),
                               batch_size=batch_size,
                               epochs=epochs,
@@ -1211,7 +1213,7 @@ class DiffFlowCallback(Callback):
         # decide whether to plot:
         do_plots = self.feedback and matplotlib.get_backend() != 'agg'
         if do_plots and isinstance(self.feedback, int):
-            if epoch + 1 % self.feedback:
+            if (epoch + 1) % self.feedback:
                 do_plots = False
 
         # do the plots:

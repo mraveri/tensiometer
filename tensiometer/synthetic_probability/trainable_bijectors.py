@@ -110,3 +110,61 @@ class SimpleMAF(object):
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
+
+
+class TrainableRationalQuadraticSpline(tfb.Bijector):
+    def __init__(self, nbins, range_min, range_max, validate_args=False, name="TRQS", min_bin_width=None, min_slope=1e-8):
+        self._nbins = nbins
+        self._range_min = range_min
+        self._range_max = range_max
+        self._interval_width = self._range_max - self._range_min
+        self._built = False
+        if min_bin_width is None:
+            min_bin_width = self._interval_width / nbins / 100.
+        self._min_bin_width = min_bin_width
+        self._min_slope = min_slope
+        super(TrainableRationalQuadraticSpline, self).__init__(validate_args=validate_args, forward_min_event_ndims=0, name=name)
+
+    def _bin_positions(self,x):
+        out_shape = tf.concat((tf.shape(x)[:-1], (self._nbins,)), 0)
+        x = tf.reshape(x, out_shape)
+        return tf.math.softmax(x, axis=-1) * (self._interval_width - self._nbins * self._min_bin_width) + self._min_bin_width
+
+    def _slopes(self,x):
+        out_shape = tf.concat((tf.shape(x)[:-1], (self._nbins - 1,)), 0)
+        x = tf.reshape(x, out_shape)
+        return tf.math.softplus(x) + self._min_slope
+        
+    def _get_rqs(self, x):
+        with tf.name_scope(self.name) as name:
+            if not self._built:
+                self._bin_widths = tfp.layers.VariableLayer(self._nbins, name=name+'w')
+                self._bin_heights = tfp.layers.VariableLayer(self._nbins, name=name+'h')
+                self._knot_slopes = tfp.layers.VariableLayer(self._nbins-1, name=name+'s')
+
+            self._built = True
+        
+            return tfb.RationalQuadraticSpline(bin_widths=self._bin_positions(self._bin_widths(x)),
+                                           bin_heights=self._bin_positions(self._bin_heights(x)),
+                                           knot_slopes=self._slopes(self._knot_slopes(x)),
+                                           range_min=self._range_min,
+                                           name=name
+                                           )
+    
+    def _inverse_log_det_jacobian(self, y):
+        return self._get_rqs(y).inverse_log_det_jacobian(y)
+    
+    def forward(self, x):
+        return self._get_rqs(x).forward(x)
+
+    def inverse(self, y):
+        return self._get_rqs(y).inverse(y)
+
+
+def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., range_max=3., name=None, **kwargs):
+    # Build one-dimensional bijectors
+    temp_bijectors = [TrainableRationalQuadraticSpline(nbins, range_min=range_min, range_max=range_max, name=f'TQRS{i}', **kwargs) for i in range(num_params)]
+    # Need Split() to split/merge inputs
+    split = tfb.Split(num_params, axis=-1)
+    # Chain all
+    return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
