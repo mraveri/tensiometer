@@ -18,6 +18,7 @@ tfd = tfp.distributions
 ###############################################################################
 # helper class to build a masked-autoregressive flow:
 
+
 class SimpleMAF(object):
     """
     A class to implement a simple Masked AutoRegressive Flow (MAF) using the implementation :class:`tfp.bijectors.AutoregressiveNetwork` from from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_. Additionally, this class provides utilities to load/save models, including random permutations.
@@ -113,9 +114,9 @@ class SimpleMAF(object):
         checkpoint.read(path)
         return maf
 
-
 ###############################################################################
 # class to build trainable rational splines:
+
 
 class TrainableRationalQuadraticSpline(tfb.Bijector):
     def __init__(self, nbins, range_min, range_max, validate_args=False, name="TRQS", min_bin_width=None, min_slope=1e-8):
@@ -130,16 +131,16 @@ class TrainableRationalQuadraticSpline(tfb.Bijector):
         self._min_slope = min_slope
         super(TrainableRationalQuadraticSpline, self).__init__(validate_args=validate_args, forward_min_event_ndims=0, name=name)
 
-    def _bin_positions(self,x):
+    def _bin_positions(self, x):
         out_shape = tf.concat((tf.shape(x)[:-1], (self._nbins,)), 0)
         x = tf.reshape(x, out_shape)
         return tf.math.softmax(x, axis=-1) * (self._interval_width - self._nbins * self._min_bin_width) + self._min_bin_width
 
-    def _slopes(self,x):
+    def _slopes(self, x):
         out_shape = tf.concat((tf.shape(x)[:-1], (self._nbins - 1,)), 0)
         x = tf.reshape(x, out_shape)
         return tf.math.softplus(x) + self._min_slope
-        
+
     def _get_rqs(self, x):
         with tf.name_scope(self.name) as name:
             if not self._built:
@@ -148,17 +149,17 @@ class TrainableRationalQuadraticSpline(tfb.Bijector):
                 self._knot_slopes = tfp.layers.VariableLayer(self._nbins-1, name=name+'s')
 
             self._built = True
-        
+
             return tfb.RationalQuadraticSpline(bin_widths=self._bin_positions(self._bin_widths(x)),
-                                           bin_heights=self._bin_positions(self._bin_heights(x)),
-                                           knot_slopes=self._slopes(self._knot_slopes(x)),
-                                           range_min=self._range_min,
-                                           name=name
-                                           )
-    
+                                               bin_heights=self._bin_positions(self._bin_heights(x)),
+                                               knot_slopes=self._slopes(self._knot_slopes(x)),
+                                               range_min=self._range_min,
+                                               name=name
+                                               )
+
     def _inverse_log_det_jacobian(self, y):
         return self._get_rqs(y).inverse_log_det_jacobian(y)
-    
+
     def forward(self, x):
         return self._get_rqs(x).forward(x)
 
@@ -248,7 +249,7 @@ class Affine(tfb.Bijector):
             self.dimension = dimension
             self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
             self._rotvec = tfp.layers.VariableLayer(dimension*(dimension+1)//2, initializer='random_normal', trainable=True, dtype=dtype)
-            
+
             super(Affine, self).__init__(
                 forward_min_event_ndims=0,
                 is_constant_jacobian=False,
@@ -275,7 +276,7 @@ class Affine(tfb.Bijector):
         Q, R = tf.linalg.qr(L)
         Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
         self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
-        self.invaff = tf.linalg.inv(self.aff)  
+        self.invaff = tf.linalg.inv(self.aff)
         valdet = tf.linalg.logdet(self.aff)
         self.logdet = valdet
 
@@ -303,5 +304,3 @@ class Affine(tfb.Bijector):
     @classmethod
     def _parameter_properties(cls, dtype):
         return {'shift': parameter_properties.ParameterProperties()}
-
-    
