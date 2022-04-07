@@ -68,7 +68,7 @@ from . import prior_bijectors as pb
 
 ###############################################################################
 # loss function for hybrid density and log-likelihood optimization:
-def custom_loss(alv=1.0, blv=0.0):
+def custom_loss(alv=1.0):
     def loss(y_true_inp, y_pred):
         # unpack the weights:
         y_true, weights = tf.unstack(y_true_inp, axis=1)
@@ -84,7 +84,7 @@ def custom_loss(alv=1.0, blv=0.0):
         # compute density loss function:
         loss_orig = y_pred
         # combine into total loss function:
-        loss_comb = -alv*(loss_orig + blv) + (1. - alv)*std_diff
+        loss_comb = -alv*(loss_orig) + (1. - alv)*std_diff
         return loss_comb
     return loss
 
@@ -368,7 +368,7 @@ class FlowCallback(Callback):
         self.model = Model(x_, log_prob_)
 
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv, blv=self.beta_lossv))
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv))
 
         # feedback:
         if self.feedback:
@@ -1089,10 +1089,10 @@ class FlowCallback(Callback):
         Plot behavior of density and likelihood loss as training progresses.
         """
         # compute density loss on validation data:
-        temp_rho_loss = custom_loss(1.0, self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_rho_loss = custom_loss(1.0)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
         temp_rho_loss = np.average(temp_rho_loss.numpy(), weights=self.weights_test)
         # compute likelihood loss on validation data:
-        temp_like_loss = custom_loss(0.0, self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_like_loss = custom_loss(0.0)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
         temp_like_loss = np.average(temp_like_loss.numpy(), weights=self.weights_test)
         # add to log:
         self.log["rho_loss"].append(temp_rho_loss)

@@ -119,6 +119,7 @@ class SimpleMAF(object):
 
 
 class TrainableRationalQuadraticSpline(tfb.Bijector):
+
     def __init__(self, nbins, range_min, range_max, validate_args=False, name="TRQS", min_bin_width=None, min_slope=1e-8):
         self._nbins = nbins
         self._range_min = range_min
@@ -175,9 +176,9 @@ def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., r
     # Chain all
     return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
 
-
 ###############################################################################
 # class to build a rotation and shift bijector:
+
 
 class Rotoshift(tfb.Bijector):
 
@@ -188,6 +189,8 @@ class Rotoshift(tfb.Bijector):
             self.dimension = dimension
             self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
             self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype)
+            self.indexes_low_tri = np.array(np.tril_indices(self.dimension, -1)).T
+            self.indexes_diag = np.array(np.diag_indices(self.dimension)).T
 
             super(Rotoshift, self).__init__(
                 forward_min_event_ndims=0,
@@ -208,8 +211,8 @@ class Rotoshift(tfb.Bijector):
 
     def _getrot_invrot(self, x):
         L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
-        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
-        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, tf.ones(self.dimension))
+        L = tf.tensor_scatter_nd_update(L, self.indexes_low_tri, self._rotvec(x))
+        L = tf.tensor_scatter_nd_update(L, self.indexes_diag, tf.ones(self.dimension))
         Q, R = tf.linalg.qr(L)
         self.rot = tf.linalg.matmul(L, tf.linalg.inv(R))
         self.invrot = tf.transpose(self.rot)
@@ -237,6 +240,8 @@ class Rotoshift(tfb.Bijector):
     def _parameter_properties(cls, dtype):
         return {'shift': parameter_properties.ParameterProperties()}
 
+###############################################################################
+# class to build an affine invertible bijector:
 
 
 class Affine(tfb.Bijector):
