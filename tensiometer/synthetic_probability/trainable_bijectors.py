@@ -184,17 +184,18 @@ class Rotoshift(tfb.Bijector):
         parameters = dict(locals())
 
         with tf.name_scope(name) as name:
-            self.dtype = dtype
             self.dimension = dimension
-            self._shift = tfp.layers.VariableLayer(dimension, dtype=self.dtype)
-            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=self.dtype)
+            self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
+            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype)
 
             super(Rotoshift, self).__init__(
                 forward_min_event_ndims=0,
                 is_constant_jacobian=True,
                 validate_args=validate_args,
                 parameters=parameters,
-                name=name)
+                dtype=dtype,
+                name=name
+                )
 
     @property
     def shift(self):
