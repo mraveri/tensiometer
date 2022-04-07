@@ -2,10 +2,13 @@
 # initial imports and set-up:
 
 import numpy as np
-import tensorflow as tf
-import tensorflow_probability as tfp
 import pickle
 from collections.abc import Iterable
+
+import tensorflow as tf
+import tensorflow_probability as tfp
+from tensorflow_probability.python.internal import dtype_util
+from tensorflow_probability.python.internal import parameter_properties
 
 from .. import utilities as utils
 
@@ -14,7 +17,6 @@ tfd = tfp.distributions
 
 ###############################################################################
 # helper class to build a masked-autoregressive flow:
-
 
 class SimpleMAF(object):
     """
@@ -112,6 +114,9 @@ class SimpleMAF(object):
         return maf
 
 
+###############################################################################
+# class to build trainable rational splines:
+
 class TrainableRationalQuadraticSpline(tfb.Bijector):
     def __init__(self, nbins, range_min, range_max, validate_args=False, name="TRQS", min_bin_width=None, min_slope=1e-8):
         self._nbins = nbins
@@ -168,3 +173,134 @@ def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., r
     split = tfb.Split(num_params, axis=-1)
     # Chain all
     return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
+
+
+###############################################################################
+# class to build a rotation and shift bijector:
+
+class Rotoshift(tfb.Bijector):
+
+    def __init__(self, dimension, validate_args=False, name='rotoshift', dtype=tf.float32):
+        parameters = dict(locals())
+
+        with tf.name_scope(name) as name:
+            self.dtype = dtype
+            self.dimension = dimension
+            self._shift = tfp.layers.VariableLayer(dimension, dtype=self.dtype)
+            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=self.dtype)
+
+            super(Rotoshift, self).__init__(
+                forward_min_event_ndims=0,
+                is_constant_jacobian=True,
+                validate_args=validate_args,
+                parameters=parameters,
+                name=name)
+
+    @property
+    def shift(self):
+        return self._shift
+
+    @classmethod
+    def _is_increasing(cls):
+        return True
+
+    def _getrot_invrot(self, x):
+        L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
+        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, tf.ones(self.dimension))
+        Q, R = tf.linalg.qr(L)
+        self.rot = tf.linalg.matmul(L, tf.linalg.inv(R))
+        self.invrot = tf.transpose(self.rot)
+
+    def _forward(self, x):
+        if hasattr(self, 'rot'):
+            _rot = self.rot
+        else:
+            self._getrot_invrot(x)
+            _rot = self.rot
+        return tf.transpose(tf.linalg.matmul(_rot, tf.transpose(x))) + self._shift(x)[None, :]
+
+    def _inverse(self, y):
+        if hasattr(self, 'invrot'):
+            _invrot = self.invrot
+        else:
+            self._getrot_invrot(y)
+            _invrot = self.invrot
+        return tf.transpose(tf.linalg.matmul(_invrot, tf.transpose(y - self._shift(y)[None, :])))
+
+    def _forward_log_det_jacobian(self, x):
+        return tf.zeros([], dtype=dtype_util.base_dtype(x.dtype))
+
+    @classmethod
+    def _parameter_properties(cls, dtype):
+        return {'shift': parameter_properties.ParameterProperties()}
+
+
+
+class Affine(tfb.Bijector):
+
+    def __init__(self, dimension, validate_args=False, name='Affine', dtype=tf.float32):
+        parameters = dict(locals())
+
+        with tf.name_scope(name) as name:
+
+            self.dimension = dimension
+            self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
+            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension+1)//2, initializer='random_normal', trainable=True, dtype=dtype)
+            
+            super(Affine, self).__init__(
+                forward_min_event_ndims=0,
+                is_constant_jacobian=False,
+                validate_args=validate_args,
+                parameters=parameters,
+                dtype=dtype,
+                name=name)
+
+    @property
+    def shift(self):
+        return self._shift
+
+    @classmethod
+    def _is_increasing(cls):
+        return True
+
+    def _getaff_invaff(self, x):
+
+        L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
+        Lambda2 = tf.linalg.diag(tf.math.abs(tf.linalg.tensor_diag_part(L)))
+        val_update = tf.math.sign(tf.linalg.tensor_diag_part(L)) * tf.ones(self.dimension)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, val_update)
+        Q, R = tf.linalg.qr(L)
+        Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
+        self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
+        self.invaff = tf.linalg.inv(self.aff)  
+        valdet = tf.linalg.logdet(self.aff)
+        self.logdet = valdet
+
+    def _forward(self, x):
+        if hasattr(self, 'rot'):
+            _aff = self.aff
+        else:
+            self._getaff_invaff(x)
+            _aff = self.aff
+        return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
+
+    def _inverse(self, y):
+        if hasattr(self, 'invrot'):
+            _invaff = self.invaff
+        else:
+            self._getaff_invaff(y)
+            _invaff = self.invaff
+        return tf.transpose(tf.linalg.matmul(_invaff, tf.transpose(y - self._shift(y)[None, :])))
+
+    def _forward_log_det_jacobian(self, x):
+        if not hasattr(self, 'logdet'):
+            self._getaff_invaff(x)
+        return self.logdet
+
+    @classmethod
+    def _parameter_properties(cls, dtype):
+        return {'shift': parameter_properties.ParameterProperties()}
+
+    

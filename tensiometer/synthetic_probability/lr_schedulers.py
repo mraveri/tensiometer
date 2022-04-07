@@ -135,7 +135,60 @@ class ExponentialDecayScheduler(Callback):
         self.step = 0
         self.Annealer = ExponentialDecayAnnealer(lr_max, lr_min, roll_off_step, steps)
         self.lrs = []
-        self.moms = []
+
+    def on_train_begin(self, logs=None):
+        self.step = 0
+        self.set_lr(self.Annealer.start)
+
+    def on_train_batch_begin(self, batch, logs=None):
+        self.lrs.append(self.get_lr())
+
+    def on_train_batch_end(self, batch, logs=None):
+        self.step += 1
+        self.set_lr(self.Annealer.step())
+
+    def get_lr(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.lr)
+        except AttributeError:
+            return None
+
+    def set_lr(self, lr):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+        except AttributeError:
+            pass  # ignore
+
+###############################################################################
+# Power law decay:
+
+
+class PowerLawDecayAnnealer():
+    """
+    """
+
+    def __init__(self, start, end, power, steps):
+        self.start = start
+        self.end = end
+        self.p = power
+        self.steps = float(steps)
+        self.n = 0
+
+    def step(self):
+        self.n += 1
+        return self.start/(self.n/(self.steps*(self.end/self.start)**(1/self.p)))**self.p
+
+
+class PowerLawDecayScheduler(Callback):
+    """
+    """
+
+    def __init__(self, lr_max, lr_min, power, steps):
+        super(PowerLawDecayScheduler, self).__init__()
+
+        self.step = 0
+        self.Annealer = PowerLawDecayAnnealer(lr_max, lr_min, power, steps)
+        self.lrs = []
 
     def on_train_begin(self, logs=None):
         self.step = 0

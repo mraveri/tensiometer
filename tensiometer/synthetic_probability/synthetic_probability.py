@@ -63,59 +63,7 @@ except ModuleNotFoundError:
 # local imports:
 from . import lr_schedulers as lr
 from . import trainable_bijectors as tb
-
-###############################################################################
-# helper function to generate analytic prior bijectors
-def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, **kwargs):
-    """
-    Example usage
-
-    # uniform on x
-    a = -1
-    b = 3
-
-    # gaussian on y
-    mu = 0.5
-    sig = 3.
-
-    prior = prior_bijector_helper([{'lower':a, 'upper':b}, {'mean':mu, 'scale':sig}])
-    diff = DiffFlowCallback(chain, trainable_bijector=prior, Y2X_is_identity=True)
-
-    """
-    def uniform(a, b):
-        return tfb.Chain([tfb.Shift(np_prec((a+b)/2)), tfb.Scale(np_prec(b-a)), tfb.Shift(-0.5), tfb.NormalCDF()])
-
-    def normal(mu, sig):
-        return tfb.Chain([tfb.Shift(np_prec(mu)), tfb.Scale(np_prec(sig))])
-
-    def multivariate_normal(loc, cov):
-        return tfd.MultivariateNormalTriL(loc=loc.astype(np_prec), scale_tril=tf.linalg.cholesky(cov.astype(np_prec))).bijector
-
-    if prior_dict_list is not None:  # Mix of uniform and gaussian one-dimensional priors
-
-        # Build one-dimensional bijectors
-        n = len(prior_dict_list)
-        temp_bijectors = []
-        for i in range(n):
-            if 'lower' in prior_dict_list[i].keys():
-                temp_bijectors.append(uniform(prior_dict_list[i]['lower'], prior_dict_list[i]['upper']))
-            elif 'mean' in prior_dict_list[i].keys():
-                temp_bijectors.append(normal(prior_dict_list[i]['mean'], prior_dict_list[i]['scale']))
-            else:
-                raise ValueError
-
-        # Need Split() to split/merge inputs
-        split = tfb.Split(n, axis=-1)
-
-        # Chain all
-        return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
-
-    elif loc is not None:  # Multivariate Gaussian prior
-        assert cov is not None
-        return multivariate_normal(loc, cov)
-
-    else:
-        raise ValueError
+from . import prior_bijectors as pb
 
 
 ###############################################################################
@@ -144,7 +92,7 @@ def custom_loss(alv=1.0, blv=0.0):
 # main class to compute NF-based tension:
 
 
-class DiffFlowCallback(Callback):
+class FlowCallback(Callback):
     """
     A class to compute the normalizing flow interpolation of a probability density given the samples.
 
@@ -163,7 +111,7 @@ class DiffFlowCallback(Callback):
     .. code-block:: python
 
         # Initialize the flow and model
-        diff_flow_callback = DiffFlowCallback(chain, trainable_bijector='MAF')
+        diff_flow_callback = FlowCallback(chain, trainable_bijector='MAF')
         # Train the model
         diff_flow_callback.train()
         # Compute the shift probability and confidence interval
@@ -197,7 +145,7 @@ class DiffFlowCallback(Callback):
     kwargs={}
     param_ranges = None
     param_names
-    self = DiffFlowCallback(chain, param_names=param_names, feedback=1)
+    self = FlowCallback(chain, param_names=param_names, feedback=1)
     """
 
     def __init__(self, chain, param_names=None, param_ranges=None, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', learning_rate=1e-3, feedback=1, validation_split=0.1, alpha_lossv=1.0, **kwargs):
@@ -300,7 +248,7 @@ class DiffFlowCallback(Callback):
                 eps = 0.001
                 temp_ranges.append({'lower': self.cast(center - 0.5*length*(1.+eps)), 'upper': self.cast(center + 0.5*length*(1.+eps))})
             # define bijector:
-            self.prior_bijector = prior_bijector_helper(temp_ranges)
+            self.prior_bijector = pb.prior_bijector_helper(temp_ranges)
         elif isinstance(prior_bijector, tfp.bijectors.Bijector):
             self.prior_bijector = prior_bijector
         elif prior_bijector is None or prior_bijector is False:
@@ -456,8 +404,9 @@ class DiffFlowCallback(Callback):
             # learning rate scheduler:
             total_steps = steps_per_epoch * epochs
             initial_lr = self.model.optimizer.lr.numpy()
-            #lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), total_steps, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
+            # lr_schedule = lr.OneCycleScheduler(self.model.optimizer.lr.numpy(), total_steps, **utils.filter_kwargs(kwargs, lr.OneCycleScheduler))
             lr_schedule = lr.ExponentialDecayScheduler(initial_lr, initial_lr/100., 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            # lr_schedule = lr.PowerLawDecayScheduler(initial_lr, initial_lr/100., 0.5, total_steps, **utils.filter_kwargs(kwargs, lr.PowerLawDecayScheduler))
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
             callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
@@ -1213,7 +1162,7 @@ class DiffFlowCallback(Callback):
         # decide whether to plot:
         do_plots = self.feedback and matplotlib.get_backend() != 'agg'
         if do_plots and isinstance(self.feedback, int):
-            if (epoch + 1) % self.feedback:
+            if ((epoch + 1) % self.feedback) > 0:
                 do_plots = False
 
         # do the plots:
@@ -1255,7 +1204,7 @@ class DiffFlowCallback(Callback):
 # Transformed flow:
 
 
-class TransformedDiffFlowCallback(DiffFlowCallback):
+class TransformedFlowCallback(FlowCallback):
 
     def __init__(self, flow, transformation):
         """
@@ -1337,10 +1286,10 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         # initialize flow:
         if 'trainable_bijector' in kwargs:
             kwargs.pop('trainable_bijector')
-        flow = DiffFlowCallback(chain, trainable_bijector=temp_MAF.bijector, **kwargs)
+        flow = FlowCallback(chain, trainable_bijector=temp_MAF.bijector, **kwargs)
     else:
         # initialize posterior flow:
-        flow = DiffFlowCallback(chain, **kwargs)
+        flow = FlowCallback(chain, **kwargs)
         # train posterior flow:
         flow.global_train(**kwargs)
         # save trained model:
