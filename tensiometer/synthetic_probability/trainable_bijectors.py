@@ -188,17 +188,17 @@ class ScaleRotoShift(tfb.Bijector):
 
             self.dimension = dimension
             if shift:
-                self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
+                self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype, name='shift')
             else:
-                self._shift = lambda _: tf.zeros(dimension, dtype=dtype)
+                self._shift = lambda _: tf.zeros(dimension, dtype=dtype, name='shift')
             if scale:
-                self._scalevec = tfp.layers.VariableLayer(dimension, initializer='ones', dtype=dtype)
+                self._scalevec = tfp.layers.VariableLayer(dimension, initializer='ones', dtype=dtype, name='scale')
             else:
-                self._scalevec = lambda _: tf.ones(dimension, dtype=dtype)
+                self._scalevec = lambda _: tf.ones(dimension, dtype=dtype, name='scale')
             if roto:
-                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype)
+                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype, name='roto')
             else:
-                self._rotvec = lambda _: tf.zeros(dimension*(dimension-1)//2, dtype=dtype)
+                self._rotvec = lambda _: tf.zeros(dimension*(dimension-1)//2, dtype=dtype, name='roto')
 
             super(ScaleRotoShift, self).__init__(
                 forward_min_event_ndims=0,
@@ -230,24 +230,17 @@ class ScaleRotoShift(tfb.Bijector):
         self.logdet = valdet/self.dimension
 
     def _forward(self, x):
-        if hasattr(self, 'aff'):
-            _aff = self.aff
-        else:
-            self._getaff_invaff(x)
-            _aff = self.aff
+        self._getaff_invaff(x)
+        _aff = self.aff
         return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
 
     def _inverse(self, y):
-        if hasattr(self, 'invaff'):
-            _invaff = self.invaff
-        else:
-            self._getaff_invaff(y)
-            _invaff = self.invaff
+        self._getaff_invaff(y)
+        _invaff = self.invaff
         return tf.transpose(tf.linalg.matmul(_invaff, tf.transpose(y - self._shift(y)[None, :])))
 
     def _forward_log_det_jacobian(self, x):
-        if not hasattr(self, 'logdet'):
-            self._getaff_invaff(x)
+        self._getaff_invaff(x)
         return self.logdet
 
     def _inverse_log_det_jacobian(self, y):
