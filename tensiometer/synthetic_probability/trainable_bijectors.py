@@ -180,82 +180,28 @@ def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., r
 # class to build a rotation and shift bijector:
 
 
-class Rotoshift(tfb.Bijector):
-
-    def __init__(self, dimension, validate_args=False, name='rotoshift', dtype=tf.float32):
-        parameters = dict(locals())
-
-        with tf.name_scope(name) as name:
-            self.dimension = dimension
-            self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
-            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype)
-            self.indexes_low_tri = np.array(np.tril_indices(self.dimension, -1)).T
-            self.indexes_diag = np.array(np.diag_indices(self.dimension)).T
-
-            super(Rotoshift, self).__init__(
-                forward_min_event_ndims=0,
-                is_constant_jacobian=True,
-                validate_args=validate_args,
-                parameters=parameters,
-                dtype=dtype,
-                name=name
-                )
-
-    @property
-    def shift(self):
-        return self._shift
-
-    @classmethod
-    def _is_increasing(cls):
-        return True
-
-    def _getrot_invrot(self, x):
-        L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
-        L = tf.tensor_scatter_nd_update(L, self.indexes_low_tri, self._rotvec(x))
-        L = tf.tensor_scatter_nd_update(L, self.indexes_diag, tf.ones(self.dimension))
-        Q, R = tf.linalg.qr(L)
-        self.rot = tf.linalg.matmul(L, tf.linalg.inv(R))
-        self.invrot = tf.transpose(self.rot)
-
-    def _forward(self, x):
-        if hasattr(self, 'rot'):
-            _rot = self.rot
-        else:
-            self._getrot_invrot(x)
-            _rot = self.rot
-        return tf.transpose(tf.linalg.matmul(_rot, tf.transpose(x))) + self._shift(x)[None, :]
-
-    def _inverse(self, y):
-        if hasattr(self, 'invrot'):
-            _invrot = self.invrot
-        else:
-            self._getrot_invrot(y)
-            _invrot = self.invrot
-        return tf.transpose(tf.linalg.matmul(_invrot, tf.transpose(y - self._shift(y)[None, :])))
-
-    def _forward_log_det_jacobian(self, x):
-        return tf.zeros([], dtype=dtype_util.base_dtype(x.dtype))
-
-    @classmethod
-    def _parameter_properties(cls, dtype):
-        return {'shift': parameter_properties.ParameterProperties()}
-
-###############################################################################
-# class to build an affine invertible bijector:
-
-
-class Affine(tfb.Bijector):
-
-    def __init__(self, dimension, validate_args=False, name='Affine', dtype=tf.float32):
+class ScaleRotoShift(tfb.Bijector):
+    def __init__(self, dimension, scale=True, roto=True, shift=True, validate_args=False, name='Affine', dtype=tf.float32):
         parameters = dict(locals())
 
         with tf.name_scope(name) as name:
 
             self.dimension = dimension
-            self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
-            self._rotvec = tfp.layers.VariableLayer(dimension*(dimension+1)//2, initializer='random_normal', trainable=True, dtype=dtype)
-
-            super(Affine, self).__init__(
+            if shift:
+                self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype)
+            else:
+                self._shift = lambda _ : tf.zeros(dimension, dtype=dtype)
+            if scale:
+                self._scalevec = tfp.layers.VariableLayer(dimension, initializer='ones', dtype=dtype)
+            else:
+                self._scalevec = lambda _ : tf.ones(dimension, dtype=dtype)
+            if roto:
+                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype)
+            else:
+                self._rotvec = lambda _ : tf.zeros(dimension*(dimension-1)//2, dtype=dtype)
+                
+            
+            super(ScaleRotoShift, self).__init__(
                 forward_min_event_ndims=0,
                 is_constant_jacobian=False,
                 validate_args=validate_args,
@@ -271,19 +217,18 @@ class Affine(tfb.Bijector):
     def _is_increasing(cls):
         return True
 
-    def _getaff_invaff(self, x):
-
+    def _getaff_invaff(self, x):        
         L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
-        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, 0)).T, self._rotvec(x))
-        Lambda2 = tf.linalg.diag(tf.math.abs(tf.linalg.tensor_diag_part(L)))
-        val_update = tf.math.sign(tf.linalg.tensor_diag_part(L)) * tf.ones(self.dimension)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, -1)).T, self._rotvec(x))
+        Lambda2 = tf.linalg.diag(tf.math.abs(self._scalevec(x)))        
+        val_update = tf.math.sign(tf.linalg.tensor_diag_part(Lambda2)) * tf.ones(self.dimension)
         L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, val_update)
         Q, R = tf.linalg.qr(L)
         Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
         self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
-        self.invaff = tf.linalg.inv(self.aff)
+        self.invaff = tf.linalg.inv(self.aff)  
         valdet = tf.linalg.logdet(self.aff)
-        self.logdet = valdet
+        self.logdet = valdet/self.dimension
 
     def _forward(self, x):
         if hasattr(self, 'rot'):
@@ -305,7 +250,13 @@ class Affine(tfb.Bijector):
         if not hasattr(self, 'logdet'):
             self._getaff_invaff(x)
         return self.logdet
+    
+    def _inverse_log_det_jacobian(self, y):
+      return -self._forward_log_det_jacobian(self._inverse(y))
 
     @classmethod
     def _parameter_properties(cls, dtype):
         return {'shift': parameter_properties.ParameterProperties()}
+
+    
+    
