@@ -16,6 +16,80 @@ tfb = tfp.bijectors
 tfd = tfp.distributions
 
 ###############################################################################
+# class to build a scaling, rotation and shift bijector:
+
+
+class ScaleRotoShift(tfb.Bijector):
+    def __init__(self, dimension, scale=True, roto=True, shift=True, validate_args=False, name='Affine', dtype=tf.float32):
+        parameters = dict(locals())
+
+        with tf.name_scope(name) as name:
+
+            self.dimension = dimension
+            if shift:
+                self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype, name=name+'_shift')
+            else:
+                self._shift = lambda _: tf.zeros(dimension, dtype=dtype, name=name+'_shift')
+            if scale:
+                self._scalevec = tfp.layers.VariableLayer(dimension, initializer='zeros', dtype=dtype, name=name+'_scale')
+            else:
+                self._scalevec = lambda _: tf.zeros(dimension, dtype=dtype, name=name+'_scale')
+            if roto:
+                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype, name=name+'_roto')
+            else:
+                self._rotvec = lambda _: tf.zeros(dimension*(dimension-1)//2, dtype=dtype, name=name+'_roto')
+
+            super(ScaleRotoShift, self).__init__(
+                forward_min_event_ndims=0,
+                is_constant_jacobian=False,
+                validate_args=validate_args,
+                parameters=parameters,
+                dtype=dtype,
+                name=name)
+
+    @property
+    def shift(self):
+        return self._shift
+
+    @classmethod
+    def _is_increasing(cls):
+        return True
+
+    def _getaff_invaff(self, x):
+        L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, -1)).T, self._rotvec(x))
+        Lambda2 = tf.linalg.diag(tf.math.exp(self._scalevec(x)))
+        val_update = tf.ones(self.dimension)
+        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, val_update)
+        Q, R = tf.linalg.qr(L)
+        Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
+        self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
+        self.invaff = tf.linalg.inv(self.aff)
+        valdet = tf.linalg.logdet(self.aff)
+        self.logdet = valdet/self.dimension
+
+    def _forward(self, x):
+        self._getaff_invaff(x)
+        _aff = self.aff
+        return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
+
+    def _inverse(self, y):
+        self._getaff_invaff(y)
+        _invaff = self.invaff
+        return tf.transpose(tf.linalg.matmul(_invaff, tf.transpose(y - self._shift(y)[None, :])))
+
+    def _forward_log_det_jacobian(self, x):
+        self._getaff_invaff(x)
+        return self.logdet
+
+    def _inverse_log_det_jacobian(self, y):
+        return -self._forward_log_det_jacobian(self._inverse(y))
+
+    @classmethod
+    def _parameter_properties(cls, dtype):
+        return {'shift': parameter_properties.ParameterProperties()}
+
+###############################################################################
 # helper class to build a masked-autoregressive flow:
 
 
@@ -115,6 +189,44 @@ class SimpleMAF(object):
         return maf
 
 ###############################################################################
+# helper class to build a masked-autoregressive affine flow:
+
+
+class AMAF(object):
+    """
+    Stack of MADE and Affine transformations
+    """
+
+    def __init__(self, num_params, n_maf=None, hidden_units=None, affine=True,
+                 activation=tf.math.asinh, kernel_initializer='glorot_uniform',
+                 feedback=0, **kwargs):
+
+        if n_maf is None:
+            n_maf = 2*num_params
+        event_shape = (num_params,)
+
+        if hidden_units is None:
+            hidden_units = [num_params*2]*2
+
+        # Build transformed distribution
+        bijectors = []
+        for i, _ in enumerate(range(n_maf)):
+            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
+            shift_and_log_scale_fn = made
+            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
+            bijectors.append(maf)
+            if affine:
+                bijectors.append(ScaleRotoShift(num_params, name='affine_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
+
+        self.bijector = tfb.Chain(bijectors)
+
+        if feedback > 0:
+            print("Building Affine MAF")
+            print("    - number of MAFs:", n_maf)
+            print("    - activation:", activation)
+            print("    - hidden_units:", hidden_units)
+
+###############################################################################
 # class to build trainable rational splines:
 
 
@@ -175,77 +287,3 @@ def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., r
     split = tfb.Split(num_params, axis=-1)
     # Chain all
     return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
-
-###############################################################################
-# class to build a scaling, rotation and shift bijector:
-
-
-class ScaleRotoShift(tfb.Bijector):
-    def __init__(self, dimension, scale=True, roto=True, shift=True, validate_args=False, name='Affine', dtype=tf.float32):
-        parameters = dict(locals())
-
-        with tf.name_scope(name) as name:
-
-            self.dimension = dimension
-            if shift:
-                self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype, name='shift')
-            else:
-                self._shift = lambda _: tf.zeros(dimension, dtype=dtype, name='shift')
-            if scale:
-                self._scalevec = tfp.layers.VariableLayer(dimension, initializer='ones', dtype=dtype, name='scale')
-            else:
-                self._scalevec = lambda _: tf.ones(dimension, dtype=dtype, name='scale')
-            if roto:
-                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype, name='roto')
-            else:
-                self._rotvec = lambda _: tf.zeros(dimension*(dimension-1)//2, dtype=dtype, name='roto')
-
-            super(ScaleRotoShift, self).__init__(
-                forward_min_event_ndims=0,
-                is_constant_jacobian=False,
-                validate_args=validate_args,
-                parameters=parameters,
-                dtype=dtype,
-                name=name)
-
-    @property
-    def shift(self):
-        return self._shift
-
-    @classmethod
-    def _is_increasing(cls):
-        return True
-
-    def _getaff_invaff(self, x):
-        L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
-        L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, -1)).T, self._rotvec(x))
-        Lambda2 = tf.linalg.diag(tf.math.abs(self._scalevec(x)))
-        val_update = tf.math.sign(tf.linalg.tensor_diag_part(Lambda2)) * tf.ones(self.dimension)
-        L = tf.tensor_scatter_nd_update(L, np.array(np.diag_indices(self.dimension)).T, val_update)
-        Q, R = tf.linalg.qr(L)
-        Phi2 = tf.linalg.matmul(L, tf.linalg.inv(R))
-        self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
-        self.invaff = tf.linalg.inv(self.aff)
-        valdet = tf.linalg.logdet(self.aff)
-        self.logdet = valdet/self.dimension
-
-    def _forward(self, x):
-        self._getaff_invaff(x)
-        _aff = self.aff
-        return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
-
-    def _inverse(self, y):
-        self._getaff_invaff(y)
-        _invaff = self.invaff
-        return tf.transpose(tf.linalg.matmul(_invaff, tf.transpose(y - self._shift(y)[None, :])))
-
-    def _forward_log_det_jacobian(self, x):
-        self._getaff_invaff(x)
-        return self.logdet
-
-    def _inverse_log_det_jacobian(self, y):
-        return -self._forward_log_det_jacobian(self._inverse(y))
-
-    @classmethod
-    def _parameter_properties(cls, dtype):
-        return {'shift': parameter_properties.ParameterProperties()}

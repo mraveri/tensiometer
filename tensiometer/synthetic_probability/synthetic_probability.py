@@ -68,7 +68,7 @@ from . import prior_bijectors as pb
 
 ###############################################################################
 # loss function for hybrid density and log-likelihood optimization:
-def custom_loss(alv=1.0):
+def custom_loss(alv=1.0, blv=0.0):
     def loss(y_true_inp, y_pred):
         # unpack the weights:
         y_true, weights = tf.unstack(y_true_inp, axis=1)
@@ -84,7 +84,7 @@ def custom_loss(alv=1.0):
         # compute density loss function:
         loss_orig = y_pred
         # combine into total loss function:
-        loss_comb = -alv*(loss_orig) + (1. - alv)*std_diff
+        loss_comb = -alv*(loss_orig + blv) + (1. - alv)*std_diff
         return loss_comb
     return loss
 
@@ -163,7 +163,9 @@ class FlowCallback(Callback):
             print("    - trainable parameters:", self.model.count_params())
         # Metrics
         if self.has_loglikes:
-            keys = ["loss", "val_loss", "rho_loss", "like_loss", "lr", "chi2Z_ks", "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
+            keys = ["loss", "val_loss", "rho_loss", "like_loss",
+                    "rho_loss_rate", "like_loss_rate", "lr", "chi2Z_ks",
+                    "chi2Z_ks_p", "evidence", "evidence_error", "smoothness_score"]
         else:
             keys = ["loss", "val_loss", "lr", "chi2Z_ks", "chi2Z_ks_p"]
         self.log = {_k: [] for _k in keys}
@@ -368,7 +370,7 @@ class FlowCallback(Callback):
         self.model = Model(x_, log_prob_)
 
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv))
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv, blv=self.beta_lossv))
 
         # feedback:
         if self.feedback:
@@ -1016,6 +1018,7 @@ class FlowCallback(Callback):
             ax.set_title("Training Loss")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel("Loss")
+            #ax.set_yscale('symlog', linthresh=1., linscale=0.5)
             ax.set_yscale('log')
             ax.legend()
 
@@ -1089,24 +1092,43 @@ class FlowCallback(Callback):
         Plot behavior of density and likelihood loss as training progresses.
         """
         # compute density loss on validation data:
-        temp_rho_loss = custom_loss(1.0)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_rho_loss = custom_loss(1.0, blv=self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
         temp_rho_loss = np.average(temp_rho_loss.numpy(), weights=self.weights_test)
         # compute likelihood loss on validation data:
-        temp_like_loss = custom_loss(0.0)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
+        temp_like_loss = custom_loss(0.0, blv=self.beta_lossv)(self.cast(np.array([self.logP_preabs_test, self.weights_test]).T), self.model.predict(self.samples_test))
         temp_like_loss = np.average(temp_like_loss.numpy(), weights=self.weights_test)
         # add to log:
         self.log["rho_loss"].append(temp_rho_loss)
         self.log["like_loss"].append(temp_like_loss)
         # plot:
         if ax is not None:
-            # evidence error:
             ax.plot(np.abs(self.log["rho_loss"]), lw=1., ls='-', label='density loss')
             ax.plot(np.abs(self.log["like_loss"]), lw=1., ls='-', label='likelihood loss')
             ax.set_title(r"Loss breakdown")
             ax.set_xlabel(r"Epoch $\#$")
+            #ax.set_yscale('symlog', linthresh=1., linscale=0.5)
             ax.set_yscale('log')
             # legend:
-            ax.legend(loc=1)
+            ax.legend()
+
+    def _plot_losses_rate(self, ax, logs={}):
+        """
+        Plot evolution of loss function.
+        """
+        if len(self.log["rho_loss"]) < 2:
+            self.log["rho_loss_rate"].append(0.0)
+            self.log["like_loss_rate"].append(0.0)
+        else:
+            self.log["rho_loss_rate"].append(self.log["rho_loss"][-1] - self.log["rho_loss"][-2])
+            self.log["like_loss_rate"].append(self.log["like_loss"][-1] - self.log["like_loss"][-2])
+        if ax is not None:
+            ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
+            ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
+            ax.set_yscale('log')
+            ax.set_title(r"Loss improvement rate")
+            ax.set_xlabel(r"Epoch $\#$")
+            # legend:
+            ax.legend()
 
     def _plot_evidence_error(self, ax, logs={}):
         """
@@ -1185,6 +1207,7 @@ class FlowCallback(Callback):
         self._plot_chi2_ks_p(axes[0, 3], logs=logs)
         if self.has_loglikes:
             self._plot_losses(axes[1, 0], logs=logs)
+            self._plot_losses_rate(axes[1, 1], logs=logs)
             self._plot_evidence_error(axes[1, 2], logs=logs)
             self._plot_smoothness_score(axes[1, 3], logs=logs)
 
