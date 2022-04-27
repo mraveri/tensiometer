@@ -157,9 +157,10 @@ class SimpleMAF(object):
 
         if feedback > 0:
             print("Building MAF")
-            print("    - number of MAFs:", n_maf)
-            print("    - activation:", activation)
-            print("    - hidden_units:", hidden_units)
+            print("    - permutations   :", permutations)
+            print("    - number of MAFs :", n_maf)
+            print("    - activation     :", activation)
+            print("    - hidden_units   :", hidden_units)
 
     def save(self, path):
         """
@@ -222,9 +223,10 @@ class AMAF(object):
 
         if feedback > 0:
             print("Building Affine MAF")
-            print("    - number of MAFs:", n_maf)
-            print("    - activation:", activation)
-            print("    - hidden_units:", hidden_units)
+            print("    - affine         :", affine)
+            print("    - number of MAFs :", n_maf)
+            print("    - activation     :", activation)
+            print("    - hidden_units   :", hidden_units)
 
 ###############################################################################
 # class to build trainable rational splines:
@@ -280,10 +282,52 @@ class TrainableRationalQuadraticSpline(tfb.Bijector):
         return self._get_rqs(y).inverse(y)
 
 
-def trainable_ndim_spline_bijector_helper(num_params, nbins=16, range_min=-3., range_max=3., name=None, **kwargs):
+def trainable_ndim_spline_bijector_helper(num_params, nbins=64, range_min=-4., range_max=4., name=None, **kwargs):
     # Build one-dimensional bijectors
     temp_bijectors = [TrainableRationalQuadraticSpline(nbins, range_min=range_min, range_max=range_max, name=f'TQRS{i}', **kwargs) for i in range(num_params)]
     # Need Split() to split/merge inputs
     split = tfb.Split(num_params, axis=-1)
     # Chain all
     return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
+
+###############################################################################
+# helper class to build a spline masked-autoregressive affine flow:
+
+
+class SplineAMAF(object):
+    """
+    Stack of Splines, MADE and Affine transformations
+    """
+
+    def __init__(self, num_params, n_maf=None, hidden_units=None, affine=True,
+                 spline=True, activation=tf.math.asinh, kernel_initializer='glorot_uniform',
+                 feedback=0, **kwargs):
+
+        if n_maf is None:
+            n_maf = 2*num_params
+        event_shape = (num_params,)
+
+        if hidden_units is None:
+            hidden_units = [num_params*2]*2
+
+        # Build transformed distribution
+        bijectors = []
+        for i, _ in enumerate(range(n_maf)):
+            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
+            shift_and_log_scale_fn = made
+            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
+            bijectors.append(maf)
+            if affine:
+                bijectors.append(ScaleRotoShift(num_params, name='affine_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
+            if spline:
+                bijectors.append(trainable_ndim_spline_bijector_helper(num_params, name='spline_'+str(i), **utils.filter_kwargs(kwargs, trainable_ndim_spline_bijector_helper)))
+
+        self.bijector = tfb.Chain(bijectors)
+
+        if feedback > 0:
+            print("Building Spline Affine MAF")
+            print("    - affine           :", affine)
+            print("    - spline           :", spline)
+            print("    - number of layers :", n_maf)
+            print("    - activation       :", activation)
+            print("    - hidden_units     :", hidden_units)
