@@ -284,7 +284,7 @@ class TrainableRationalQuadraticSpline(tfb.Bijector):
 
 def trainable_ndim_spline_bijector_helper(num_params, nbins=64, range_min=-4., range_max=4., name=None, **kwargs):
     # Build one-dimensional bijectors
-    temp_bijectors = [TrainableRationalQuadraticSpline(nbins, range_min=range_min, range_max=range_max, name=f'TQRS{i}', **kwargs) for i in range(num_params)]
+    temp_bijectors = [TrainableRationalQuadraticSpline(nbins, range_min=range_min, range_max=range_max, name=name+f'TQRS{i}', **kwargs) for i in range(num_params)]
     # Need Split() to split/merge inputs
     split = tfb.Split(num_params, axis=-1)
     # Chain all
