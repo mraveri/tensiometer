@@ -9,6 +9,8 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability.python.internal import dtype_util
 from tensorflow_probability.python.internal import parameter_properties
+from tensorflow_probability.python.internal import samplers
+from tensorflow.keras.layers import Layer
 
 from .. import utilities as utils
 
@@ -291,6 +293,94 @@ def trainable_ndim_spline_bijector_helper(num_params, nbins=64, range_min=-4., r
     return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
 
 ###############################################################################
+# helper for spline flow 2:
+
+
+def build_trainable_RQSpline(nbins, min_bin_width, interval_width, min_slope, range_min, seed, dtype, validate_args):
+    """
+
+    """
+    bin_position_bijector = tfb.Chain([
+        tfb.Shift(min_bin_width),
+        tfb.Scale(interval_width - min_bin_width * nbins),
+        tfb.SoftmaxCentered()
+    ])
+    slope_bijector = tfb.Softplus(low=min_slope)
+
+    bin_widths_seed, bin_heights_seed, knot_slopes_seed = samplers.split_seed(seed, n=3)
+    unconstrained_bin_widths_initial_values = samplers.normal(
+        shape=[nbins-1], mean=0., stddev=.1, seed=bin_widths_seed)
+    unconstrained_bin_heights_initial_values = samplers.normal(
+        shape=[nbins-1], mean=0., stddev=.1, seed=bin_heights_seed)
+    unconstrained_knot_slopes_initial_values = samplers.normal(
+        shape=[nbins-1], mean=0., stddev=.01, seed=knot_slopes_seed)
+    return tfb.RationalQuadraticSpline(
+        bin_widths=tfp.util.TransformedVariable(
+            initial_value=bin_position_bijector.forward(
+                unconstrained_bin_widths_initial_values),
+            bijector=bin_position_bijector,
+            dtype=dtype),
+        bin_heights=tfp.util.TransformedVariable(
+            initial_value=bin_position_bijector.forward(
+                unconstrained_bin_heights_initial_values),
+            bijector=bin_position_bijector,
+            dtype=dtype),
+        knot_slopes=tfp.util.TransformedVariable(
+            initial_value=slope_bijector.forward(
+                unconstrained_knot_slopes_initial_values),
+            bijector=slope_bijector,
+            dtype=dtype),
+        range_min=range_min,
+        validate_args=validate_args
+    )
+
+
+class RQSplineFlow(Layer):
+
+    def __init__(self, num_params, nbins, range_min, range_max, min_bin_width=None, min_slope=1e-8, seed=None, validate_args=False, name=None):
+        """
+
+        """
+        super(RQSplineFlow, self).__init__(name=name)
+        self.nbins = nbins
+        self.range_min = range_min
+        self.range_max = range_max
+        self.interval_width = range_max - range_min
+        if min_bin_width is None:
+            min_bin_width = self.interval_width / nbins / 100.
+        self.min_bin_width = min_bin_width
+        self.min_slope = min_slope
+        self.seed = seed
+        self.validate_args = validate_args
+
+        ## build bijector:
+        #ndim = num_params
+        #seeds = samplers.split_seed(self.seed, ndim)
+        #flow_bijectors = []
+        #for i in range(ndim):
+        #    temp_bij = build_trainable_RQSpline(
+        #        self.nbins, self.min_bin_width, self.interval_width, self.min_slope, self.range_min, seeds[i], self.dtype, self.validate_args)
+        #    flow_bijectors.append(temp_bij)
+        #self.bijectors = flow_bijectors
+        #split = tfb.Split(ndim, axis=-1)
+        #self.bijector = tfb.Chain([tfb.Invert(split), tfb.JointMap(self.bijectors), split])
+        self.bijector = None
+
+    def build(self, input_shape):
+        # build bijector:
+        ndim = input_shape[-1]
+        seeds = samplers.split_seed(self.seed, ndim)
+        flow_bijectors = []
+        for i in range(ndim):
+            temp_bij = build_trainable_RQSpline(
+                self.nbins, self.min_bin_width, self.interval_width, self.min_slope, self.range_min, seeds[i], self.dtype, self.validate_args)
+            flow_bijectors.append(temp_bij)
+        self.bijectors = flow_bijectors
+
+        split = tfb.Split(ndim, axis=-1)
+        self.bijector = tfb.Chain([tfb.Invert(split), tfb.JointMap(self.bijectors), split])
+
+###############################################################################
 # helper class to build a spline masked-autoregressive affine flow:
 
 
@@ -318,9 +408,12 @@ class SplineAMAF(object):
             maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
             bijectors.append(maf)
             if affine:
-                bijectors.append(ScaleRotoShift(num_params, name='affine_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
+                bijectors.append(ScaleRotoShift(num_params, name='affine1_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
             if spline:
-                bijectors.append(trainable_ndim_spline_bijector_helper(num_params, name='spline_'+str(i), **utils.filter_kwargs(kwargs, trainable_ndim_spline_bijector_helper)))
+                bijectors.append(RQSplineFlow(num_params, 8, -3., 3., name='spline_'+str(i)).bijector)
+                #bijectors.append(trainable_ndim_spline_bijector_helper(num_params, name='spline_'+str(i), **utils.filter_kwargs(kwargs, trainable_ndim_spline_bijector_helper)))
+            if affine:
+                bijectors.append(ScaleRotoShift(num_params, name='affine2_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
 
         self.bijector = tfb.Chain(bijectors)
 
