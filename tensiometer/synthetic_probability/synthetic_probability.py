@@ -299,6 +299,7 @@ class FlowCallback(Callback):
         # feedback:
         if self.feedback:
             print(f'Gaussian density loss asymptotic constant: %.4g' % (self.beta_lossv))
+        self.beta_lossv = 0.
 
         # Split training/test:
         n = chain.samples.shape[0]
@@ -370,7 +371,7 @@ class FlowCallback(Callback):
         self.model = Model(x_, log_prob_)
 
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv, blv=self.beta_lossv))
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate), loss=custom_loss(alv=self.alpha_lossv, blv=self.beta_lossv), weighted_metrics=[])
 
         # feedback:
         if self.feedback:
@@ -1013,12 +1014,11 @@ class FlowCallback(Callback):
         self.log["loss"].append(logs.get('loss'))
         self.log["val_loss"].append(logs.get('val_loss'))
         if ax is not None:
-            ax.plot(np.abs(self.log["loss"]), ls='-', lw=1., label='Training')
-            ax.plot(np.abs(self.log["val_loss"]), ls='-', lw=1., label='Testing')
+            ax.plot(self.log["loss"], ls='-', lw=1., label='Training')
+            ax.plot(self.log["val_loss"], ls='-', lw=1., label='Testing')
             ax.set_title("Training Loss")
             ax.set_xlabel(r"Epoch $\#$")
             ax.set_ylabel("Loss")
-            #ax.set_yscale('symlog', linthresh=1., linscale=0.5)
             ax.set_yscale('log')
             ax.legend()
 

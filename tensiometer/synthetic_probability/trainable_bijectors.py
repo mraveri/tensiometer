@@ -7,7 +7,6 @@ from collections.abc import Iterable
 
 import tensorflow as tf
 import tensorflow_probability as tfp
-from tensorflow_probability.python.internal import dtype_util
 from tensorflow_probability.python.internal import parameter_properties
 from tensorflow_probability.python.internal import samplers
 from tensorflow.keras.layers import Layer
@@ -22,6 +21,7 @@ tfd = tfp.distributions
 
 
 class ScaleRotoShift(tfb.Bijector):
+
     def __init__(self, dimension, scale=True, roto=True, shift=True, validate_args=False, name='Affine', dtype=tf.float32):
         parameters = dict(locals())
 
@@ -68,7 +68,7 @@ class ScaleRotoShift(tfb.Bijector):
         self.aff = tf.linalg.matmul(tf.linalg.matmul(tf.transpose(Phi2), Lambda2), Phi2)
         self.invaff = tf.linalg.inv(self.aff)
         valdet = tf.linalg.logdet(self.aff)
-        self.logdet = valdet/self.dimension
+        self.logdet = valdet / self.dimension
 
     def _forward(self, x):
         self._getaff_invaff(x)
