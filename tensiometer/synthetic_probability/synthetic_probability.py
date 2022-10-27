@@ -68,9 +68,26 @@ from . import prior_bijectors as pb
 
 ###############################################################################
 # loss function for hybrid density and log-likelihood optimization:
+
 def custom_loss(alv=1.0, blv=0.0):
     def loss(y_true_inp, y_pred):
-        # unpack the weights:
+        # unpack hidden info:
+        y_true, weights = tf.unstack(y_true_inp, axis=1)
+        # compute difference between true and predicted likelihoods:
+        diffs = (y_true - y_pred)
+        # compute its variance:
+        var_diff = tf.abs(diffs)
+        # compute density loss function:
+        loss_orig = y_pred
+        # combine into total loss function:
+        loss_comb = -alv*(loss_orig + blv) + (1. - alv)*var_diff
+        return loss_comb
+    return loss
+
+
+def custom_loss(alv=1.0, blv=0.0):
+    def loss(y_true_inp, y_pred):
+        # unpack hidden info:
         y_true, weights = tf.unstack(y_true_inp, axis=1)
         # compute difference between true and predicted likelihoods:
         diffs = (y_true - y_pred)
@@ -79,12 +96,11 @@ def custom_loss(alv=1.0, blv=0.0):
         # compute overall offset:
         mean_diff = tf.reduce_sum(diffs*weights) / tot_weights
         # compute its variance:
-        var_diff = tf.reduce_sum((tf.square(diffs - mean_diff))*weights) / tot_weights
-        std_diff = tf.sqrt(var_diff)
+        var_diff = tf.abs(diffs - mean_diff)
         # compute density loss function:
         loss_orig = y_pred
         # combine into total loss function:
-        loss_comb = -alv*(loss_orig + blv) + (1. - alv)*std_diff
+        loss_comb = -alv*(loss_orig + blv) + (1. - alv)*var_diff
         return loss_comb
     return loss
 
@@ -156,7 +172,7 @@ class FlowCallback(Callback):
         # initialize internal samples from chain:
         self._init_chain(chain, param_names=param_names, param_ranges=param_ranges, validation_split=validation_split, prior_bijector=prior_bijector, apply_pregauss=apply_pregauss, trainable_bijector=trainable_bijector, alpha_lossv=alpha_lossv)
 
-        # Transformed distribution
+        # Transformed distribution:
         self._init_transf_dist(trainable_bijector, learning_rate=learning_rate, **kwargs)
         if feedback > 0:
             print("Building flow")
@@ -367,7 +383,13 @@ class FlowCallback(Callback):
 
         # Construct model (using only trainable bijector)
         x_ = Input(shape=(self.num_params,), dtype=prec)
+
+        # MR IW:
+        #self.LogEvidence = tfp.layers.VariableLayer(1, initializer='zeros', dtype=prec, name='logE')
+        #log_prob_ = tfd.TransformedDistribution(distribution=base_distribution, bijector=self.trainable_bijector).log_prob(x_) + self.LogEvidence(x_)
+
         log_prob_ = tfd.TransformedDistribution(distribution=base_distribution, bijector=self.trainable_bijector).log_prob(x_)
+
         self.model = Model(x_, log_prob_)
 
         # compile model:
@@ -416,8 +438,9 @@ class FlowCallback(Callback):
             # callback to stop if weights start getting worse:
             callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
                                                            **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
-        # # Run training:
-        hist = self.model.fit(x=self.training_dataset.batch(batch_size),
+        # Run training:
+        self.batched_dataset = self.training_dataset.batch(batch_size)
+        hist = self.model.fit(x=self.batched_dataset,
                               batch_size=batch_size,
                               epochs=epochs,
                               steps_per_epoch=steps_per_epoch,
@@ -493,7 +516,7 @@ class FlowCallback(Callback):
 
         :param coord: input parameter value
         """
-        return self.distribution.log_prob(coord)
+        return self.distribution.log_prob(coord) #+ self.LogEvidence(coord)  # MR IW
 
     @tf.function()
     def log_probability_jacobian(self, coord):
