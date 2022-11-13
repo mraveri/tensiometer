@@ -111,6 +111,7 @@ class OneCycleScheduler(Callback):
 
 class ExponentialDecayAnnealer():
     """
+    Utility function describing the exponential decay
     """
 
     def __init__(self, start, end, roll_off_step, steps):
@@ -127,6 +128,7 @@ class ExponentialDecayAnnealer():
 
 class ExponentialDecayScheduler(Callback):
     """
+    Exponential decay learning rate
     """
 
     def __init__(self, lr_max, lr_min, roll_off_step, steps):
@@ -165,6 +167,7 @@ class ExponentialDecayScheduler(Callback):
 
 class PowerLawDecayAnnealer():
     """
+    Utility function describing the power law decay
     """
 
     def __init__(self, start, end, power, steps):
@@ -181,6 +184,7 @@ class PowerLawDecayAnnealer():
 
 class PowerLawDecayScheduler(Callback):
     """
+    Power law decay in learning rate
     """
 
     def __init__(self, lr_max, lr_min, power, steps):
