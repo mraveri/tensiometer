@@ -71,19 +71,6 @@ except ModuleNotFoundError:
     pass
 
 ###############################################################################
-# hard coded options:
-
-tensorflow_function_options = {
-                               'autograph': True,
-                               'jit_compile': True,
-                               'reduce_retracing': True,
-                               'experimental_implements': None,
-                               'experimental_autograph_options': None,
-                               'experimental_relax_shapes': None,
-                               'experimental_follow_type_hints': None
-                            }
-
-###############################################################################
 # main class to compute NF-based tension:
 
 
@@ -618,7 +605,7 @@ class FlowCallback(Callback):
         """
         return tf.cast(v, dtype=prec)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_probability(self, coord):
         """
         Returns learned log probability in parameter space.
@@ -627,7 +614,7 @@ class FlowCallback(Callback):
         """
         return self.distribution.log_prob(coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_probability_jacobian(self, coord):
         """
         Computes the Jacobian of log probability in parameter space.
@@ -639,7 +626,7 @@ class FlowCallback(Callback):
             f = self.log_probability(coord)
         return tape.gradient(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_probability_hessian(self, coord):
         """
         Computes the Hessian of log probability in parameter space.
@@ -651,7 +638,7 @@ class FlowCallback(Callback):
             f = self.log_probability_jacobian(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_probability_abs(self, abs_coord):
         """
         Returns learned log probability in original parameter space as a function of abstract coordinates.
@@ -663,7 +650,7 @@ class FlowCallback(Callback):
         temp_2 = self.distribution.bijector.forward_log_det_jacobian(abs_coord, event_ndims=1)
         return temp_1 - temp_2
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_probability_abs_jacobian(self, abs_coord):
         """
         Jacobian of the original parameter space log probability with respect to abstract coordinates.
@@ -675,7 +662,7 @@ class FlowCallback(Callback):
             f = self.log_probability_abs(abs_coord)
         return tape.gradient(f, abs_coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_probability_abs_hessian(self, abs_coord):
         """
         Hessian of the original parameter space log probability with respect to abstract coordinates.
@@ -685,9 +672,9 @@ class FlowCallback(Callback):
         with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
             tape.watch(abs_coord)
             f = self.log_probability_abs_jacobian(abs_coord)
-        return tape.gradient(f, abs_coord)
+        return tape.batch_jacobian(f, abs_coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def sample(self, N):
         """
         Return samples from the synthetic probablity.
@@ -756,21 +743,21 @@ class FlowCallback(Callback):
     ###############################################################################
     # Information geometry base methods:
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def map_to_abstract_coord(self, coord):
         """
         Map from parameter space to abstract space
         """
         return self.bijector.inverse(coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def map_to_original_coord(self, coord):
         """
         Map from abstract space to parameter space
         """
         return self.bijector(coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def log_det_metric(self, coord):
         """
         Computes the log determinant of the metric
@@ -781,7 +768,7 @@ class FlowCallback(Callback):
         else:
             return 2.*log_det
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def direct_jacobian(self, coord):
         """
         Computes the Jacobian of the parameter transformation at one point in (original) parameter space
@@ -792,7 +779,7 @@ class FlowCallback(Callback):
             f = self.map_to_original_coord(abs_coord)
         return tape.batch_jacobian(f, abs_coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def inverse_jacobian(self, coord):
         """
         Computes the inverse Jacobian of the parameter transformation at one point in (original) parameter space
@@ -802,7 +789,7 @@ class FlowCallback(Callback):
             f = self.map_to_abstract_coord(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def inverse_jacobian_coord_derivative(self, coord):
         """
         Compute the coordinate derivative of the inverse Jacobian at a given point in (original) parameter space
@@ -812,7 +799,7 @@ class FlowCallback(Callback):
             f = self.inverse_jacobian(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def metric(self, coord):
         """
         Computes the metric at a given point or array of points in (original) parameter space
@@ -830,7 +817,7 @@ class FlowCallback(Callback):
         #
         return metric
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def inverse_metric(self, coord):
         """
         Computes the inverse metric at a given point or array of points in (original) parameter space
@@ -848,7 +835,7 @@ class FlowCallback(Callback):
         #
         return metric
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def coord_metric_derivative(self, coord):
         """
         Compute the coordinate derivative of the metric at a given point in (original) parameter space
@@ -858,7 +845,7 @@ class FlowCallback(Callback):
             f = self.metric(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def coord_inverse_metric_derivative(self, coord):
         """
         Compute the coordinate derivative of the inverse metric at a given point in (original) parameter space
@@ -868,7 +855,7 @@ class FlowCallback(Callback):
             f = self.inverse_metric(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def coord_metric_derivative_2(self, coord):
         """
         Compute the second coordinate derivative of the metric at a given point in (original) parameter space
@@ -878,7 +865,7 @@ class FlowCallback(Callback):
             f = self.coord_metric_derivative(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def coord_inverse_metric_derivative_2(self, coord):
         """
         Compute the second coordinate derivative of the inverse metric at a given point in (original) parameter space
@@ -888,7 +875,7 @@ class FlowCallback(Callback):
             f = self.coord_inverse_metric_derivative(coord)
         return tape.batch_jacobian(f, coord)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def levi_civita_connection(self, coord):
         """
         Compute the Levi-Civita connection, gives Gamma^i_j_k
@@ -918,7 +905,7 @@ class FlowCallback(Callback):
         #
         return connection
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def geodesic_distance(self, coord_1, coord_2, **kwargs):
         """
         Compute geodesic distance between pair of points
@@ -929,7 +916,7 @@ class FlowCallback(Callback):
         # metric there is Euclidean:
         return tf.linalg.norm(abs_coord_1 - abs_coord_2, **kwargs)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def geodesic_bvp(self, pos_start, pos_end, num_points=1000):
         """
         Solve geodesic boundary value problem.
@@ -951,7 +938,7 @@ class FlowCallback(Callback):
         #
         return self.map_to_original_coord(_traj)
 
-    @tf.function(**tensorflow_function_options)
+    @tf.function()
     def geodesic_ivp(self, pos, velocity, solution_times):
         """
         Solve geodesic initial value problem.
