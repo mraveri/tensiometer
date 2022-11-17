@@ -205,10 +205,18 @@ class MaskedAutoregressiveFlowSpline(tfb.MaskedAutoregressiveFlow):
                event_ndims=1,
                name=None,
                spline_knots=2,
-               range_max=5.
+               range_max=5.,
+               range_min=None,
+               slope_min=0.1,
               ):
     parameters = dict(locals())
     name = name or 'masked_autoregressive_flow'
+    
+    if range_min is None:
+        assert range_max>0.
+        range_min = -range_max
+    interval_width = range_max - range_min
+    
     with tf.name_scope(name) as name:
       self._unroll_loop = unroll_loop
       self._event_ndims = event_ndims
@@ -220,7 +228,7 @@ class MaskedAutoregressiveFlowSpline(tfb.MaskedAutoregressiveFlow):
         def _bijector_fn(x, **condition_kwargs):
 
             def reshape(params):
-                factor=tf.cast(2*abs(range_max),dtype=tf.float32)
+                factor=tf.cast(interval_width,dtype=tf.float32)
                 
                 bin_widths=params[:,:,:spline_knots]
                 bin_widths=tf.math.softmax(bin_widths)
@@ -231,14 +239,16 @@ class MaskedAutoregressiveFlowSpline(tfb.MaskedAutoregressiveFlow):
                 bin_heights=tf.math.scalar_mul(factor,bin_heights)
         
                 knot_slopes=params[:,:,spline_knots*2:]
-                knot_slopes=tf.math.softplus(knot_slopes)
+                # knot_slopes=tf.math.softplus(knot_slopes)
+                # knot_slopes=slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                knot_slopes=2.*tf.math.sigmoid(knot_slopes)
 
-                return bin_widths,bin_heights,knot_slopes
+                return bin_widths, bin_heights, knot_slopes
   
-            params=shift_and_log_scale_fn(x, **condition_kwargs)
-            bin_widths,bin_heights,knot_slopes=reshape(params)
+            params = shift_and_log_scale_fn(x, **condition_kwargs)
+            bin_widths, bin_heights, knot_slopes = reshape(params)
       
-            return tfb.RationalQuadraticSpline(bin_widths=bin_widths, bin_heights=bin_heights, knot_slopes=knot_slopes, range_min=-range_max, validate_args=False)
+            return tfb.RationalQuadraticSpline(bin_widths=bin_widths, bin_heights=bin_heights, knot_slopes=knot_slopes, range_min=range_min, validate_args=False)
 
         bijector_fn = _bijector_fn
         
@@ -278,8 +288,8 @@ class SplineMAF(object):
     :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
     """
 
-    def __init__(self, num_params, range_max, spline_knots, n_maf=None, hidden_units=None, permutations=True, activation='softplus', kernel_initializer='glorot_uniform', int_np_prec=np.int32,
-                 feedback=0, **kwargs):
+    def __init__(self, num_params, spline_knots, range_max=5., n_maf=None, hidden_units=None, permutations=True, activation='softplus', kernel_initializer='glorot_uniform', int_np_prec=np.int32,
+                 feedback=0, map_to_unitsq=False, **kwargs):
 
         if n_maf is None:
             n_maf = 2*num_params
@@ -306,16 +316,22 @@ class SplineMAF(object):
         for i in range(n_maf):
             if _permutations:
                 bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
+            if map_to_unitsq:
+                bijectors.append(tfb.Invert(tfb.NormalCDF()))
             made = tfb.AutoregressiveNetwork(params=3*spline_knots - 1, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
             shift_and_log_scale_fn = made
-            maf = MaskedAutoregressiveFlowSpline(shift_and_log_scale_fn=shift_and_log_scale_fn, spline_knots=spline_knots, range_max=range_max)
+            if map_to_unitsq:
+                maf = MaskedAutoregressiveFlowSpline(shift_and_log_scale_fn=shift_and_log_scale_fn, spline_knots=spline_knots, range_min=0., range_max=1.)
+            else:
+                maf = MaskedAutoregressiveFlowSpline(shift_and_log_scale_fn=shift_and_log_scale_fn, spline_knots=spline_knots, range_max=range_max)
             bijectors.append(maf)
-
+            if map_to_unitsq:
+                bijectors.append(tfb.NormalCDF())
             if _permutations:  # add the inverse permutation
                 inv_perm = np.zeros_like(_permutations[i])
                 inv_perm[_permutations[i]] = np.arange(len(inv_perm))
                 bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
-
+                
         self.bijector = tfb.Chain(bijectors)
         
         if feedback > 0:
