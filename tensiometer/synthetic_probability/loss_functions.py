@@ -204,3 +204,35 @@ class random_weight_loss(variable_weight_loss):
             self.lambda_2 = 1. - self.lambda_1
         #
         return None
+
+
+class annealed_weight_loss(variable_weight_loss):
+    """
+    Slowly go from density to likelihood loss.
+    """
+
+    def __init__(self, initial_random_epoch=50, lambda_1=1.0, beta=0.0, roll_off_nepoch=10, **kwargs):
+        """
+        Initialize loss function
+        """
+        # initialize:
+        super(variable_weight_loss, self).__init__()
+        # set parameters:
+        self.lambda_1 = lambda_1
+        self.lambda_2 = 1. - self.lambda_1
+        self.initial_random_epoch = initial_random_epoch
+        self.beta = beta
+        self.roll_off_nepoch = roll_off_nepoch
+        #
+        return None
+
+    def update_lambda_values_on_epoch_begin(self, epoch, **kwargs):
+        """
+        Update values of lambda at epoch start. Takes in every kwargs to not
+        crowd the interface...
+        """
+        if epoch > self.initial_random_epoch:
+            self.lambda_1 = np.exp(-1.*(epoch - self.initial_random_epoch)/self.roll_off_nepoch)
+            self.lambda_2 = 1. - self.lambda_1
+        #
+        return None
