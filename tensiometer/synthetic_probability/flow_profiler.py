@@ -510,7 +510,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         _temp_interp = interp1d(_result_x, np.exp(_result_logP), kind='cubic', bounds_error=False, fill_value=0.0)
         _temp_x = np.linspace(marge_density.view_ranges[0], marge_density.view_ranges[1], num_points_1D)
         _temp_P = _temp_interp(_temp_x)
-        density1D = Density1D(_temp_x, P=np.exp(_temp_P), view_ranges=marge_density.view_ranges)
+        density1D = Density1D(_temp_x, P=_temp_P, view_ranges=marge_density.view_ranges)
         density1D.normalize('max', in_place=True)
 
         # cache result:
