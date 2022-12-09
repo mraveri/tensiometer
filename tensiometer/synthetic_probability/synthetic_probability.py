@@ -435,7 +435,7 @@ class FlowCallback(Callback):
             if self.loss_mode == 'random':
                 print('    - using random density and likelihood loss function')
             if self.loss_mode == 'annealed':
-                print('    - using annealing from density to likelihood loss function')                
+                print('    - using annealing from density to likelihood loss function')
         # construct model (using only trainable bijector)
         x_ = Input(shape=(self.num_params,), dtype=prec)
         log_prob_ = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.trainable_bijector).log_prob(x_)
@@ -448,7 +448,9 @@ class FlowCallback(Callback):
         elif self.loss_mode == 'random':
             self.loss = loss.random_weight_loss(**kwargs)
         elif self.loss_mode == 'annealed':
-            self.loss = loss.annealed_weight_loss(**kwargs)            
+            self.loss = loss.annealed_weight_loss(**kwargs)
+        elif self.loss_mode == 'softadapt':
+            self.loss = loss.SoftAdapt_weight_loss(**kwargs)
         # compile model:
         self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate), loss=self.loss, weighted_metrics=[])
         # feedback:

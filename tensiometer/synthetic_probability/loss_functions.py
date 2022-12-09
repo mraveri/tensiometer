@@ -236,3 +236,49 @@ class annealed_weight_loss(variable_weight_loss):
             self.lambda_2 = 1. - self.lambda_1
         #
         return None
+
+
+class SoftAdapt_weight_loss(variable_weight_loss):
+    """
+    Implement SoftAdapt as in arXiv:1912.12355
+    """
+
+    def __init__(self, tau=1.0, beta=0.0, smoothing=True, smoothing_tau=10, **kwargs):
+        """
+        Initialize loss function
+        """
+        # initialize:
+        super(variable_weight_loss, self).__init__()
+        # set parameters:
+        self.tau = tau
+        self.beta = beta
+        self.smoothing = smoothing
+        self.smoothing_alpha = 1. / smoothing_tau
+        #
+        return None
+
+    def update_lambda_values_on_epoch_begin(self, epoch, **kwargs):
+        """
+        Update values of lambda at epoch start. Takes in every kwargs to not
+        crowd the interface...
+        """
+        # get logs:
+        logs = kwargs.get('logs')
+        # get the two rates:
+        like_loss_rate = logs['like_loss_rate']
+        rho_loss_rate = logs['rho_loss_rate']
+        # protect for initial phase:
+        if len(rho_loss_rate) == 0 or rho_loss_rate[-1] == 0.0:
+            self.lambda_1 = 1.0
+        else:
+            lambda_1 = np.exp(self.tau * rho_loss_rate[-1])
+            lambda_2 = np.exp(self.tau * like_loss_rate[-1])
+            _tot = lambda_1 + lambda_2
+            if self.smoothing:
+                self.lambda_1 = self.smoothing_alpha * lambda_1 / _tot + (1. - self.smoothing_alpha) * self.lambda_1
+            else:
+                self.lambda_1 = lambda_1 / _tot
+        # set second by enforcing sum to one:
+        self.lambda_2 = 1. - self.lambda_1
+        #
+        return None
