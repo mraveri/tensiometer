@@ -243,7 +243,7 @@ class SoftAdapt_weight_loss(variable_weight_loss):
     Implement SoftAdapt as in arXiv:1912.12355, with optional smoothing
     """
 
-    def __init__(self, tau=1.0, beta=0.0, smoothing=True, smoothing_tau=10, **kwargs):
+    def __init__(self, tau=1.0, beta=0.0, smoothing=True, smoothing_tau=5, **kwargs):
         """
         Initialize loss function
         """

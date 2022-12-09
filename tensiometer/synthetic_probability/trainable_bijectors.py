@@ -7,6 +7,7 @@ from collections.abc import Iterable
 
 import tensorflow as tf
 import tensorflow_probability as tfp
+from tensorflow_probability.python.bijectors import bijector as bijector_lib
 from tensorflow_probability.python.internal import parameter_properties
 from tensorflow_probability.python.internal import samplers
 from tensorflow.keras.layers import Layer
@@ -190,105 +191,91 @@ class SimpleMAF(object):
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
-    
 
-from tensorflow_probability.python.bijectors import bijector as bijector_lib
+###############################################################################
+# helper class to build a spline-autoregressive flow, base spline class:
+
 
 class MaskedAutoregressiveFlowSpline(tfb.MaskedAutoregressiveFlow):
 
-  def __init__(self,
-               shift_and_log_scale_fn=None,
-               bijector_fn=None,
-               is_constant_jacobian=False,
-               validate_args=False,
-               unroll_loop=False,
-               event_ndims=1,
-               name=None,
-               spline_knots=2,
-               range_max=5.,
-               range_min=None,
-               slope_min=0.1,
-              ):
-    parameters = dict(locals())
-    name = name or 'masked_autoregressive_flow'
-    
-    if range_min is None:
-        assert range_max>0.
-        range_min = -range_max
-    interval_width = range_max - range_min
-    
-    with tf.name_scope(name) as name:
-      self._unroll_loop = unroll_loop
-      self._event_ndims = event_ndims
-      if bool(shift_and_log_scale_fn) == bool(bijector_fn):
-        raise ValueError('Exactly one of `shift_and_log_scale_fn` and '
-                         '`bijector_fn` should be specified.')
-      if shift_and_log_scale_fn:
-        
-        def _bijector_fn(x, **condition_kwargs):
+    def __init__(self,
+                 shift_and_log_scale_fn=None,
+                 bijector_fn=None,
+                 is_constant_jacobian=False,
+                 validate_args=False,
+                 unroll_loop=False,
+                 event_ndims=1,
+                 name=None,
+                 spline_knots=2,
+                 range_max=5.,
+                 range_min=None,
+                 slope_min=0.1,
+                 ):
+        parameters = dict(locals())
+        name = name or 'masked_autoregressive_flow'
 
-            def reshape(params):
-                factor=tf.cast(interval_width,dtype=tf.float32)
-                
-                bin_widths=params[:,:,:spline_knots]
-                bin_widths=tf.math.softmax(bin_widths)
-                bin_widths=tf.math.scalar_mul(factor,bin_widths)
-        
-                bin_heights=params[:,:,spline_knots:spline_knots*2]
-                bin_heights=tf.math.softmax(bin_heights)
-                bin_heights=tf.math.scalar_mul(factor,bin_heights)
-        
-                knot_slopes=params[:,:,spline_knots*2:]
-                # knot_slopes=tf.math.softplus(knot_slopes)
-                # knot_slopes=slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
-                knot_slopes=2.*tf.math.sigmoid(knot_slopes)
+        if range_min is None:
+            assert range_max > 0.
+            range_min = -range_max
+        interval_width = range_max - range_min
 
-                return bin_widths, bin_heights, knot_slopes
-  
-            params = shift_and_log_scale_fn(x, **condition_kwargs)
-            bin_widths, bin_heights, knot_slopes = reshape(params)
-      
-            return tfb.RationalQuadraticSpline(bin_widths=bin_widths, bin_heights=bin_heights, knot_slopes=knot_slopes, range_min=range_min, validate_args=False)
+        with tf.name_scope(name) as name:
+            self._unroll_loop = unroll_loop
+            self._event_ndims = event_ndims
+            if bool(shift_and_log_scale_fn) == bool(bijector_fn):
+                raise ValueError('Exactly one of `shift_and_log_scale_fn` and '
+                                 '`bijector_fn` should be specified.')
+            if shift_and_log_scale_fn:
 
-        bijector_fn = _bijector_fn
-        
-      # if validate_args:
-      #   bijector_fn = _validate_bijector_fn(bijector_fn)
-      # Still do this assignment for variable tracking.
-      self._shift_and_log_scale_fn = shift_and_log_scale_fn
-      self._bijector_fn = bijector_fn
-      
-      # Call the init method of the Bijector class and not that of MaskedAutoregressiveFlow which we are overriding 
-      bijector_lib.Bijector.__init__(self,
-          forward_min_event_ndims=self._event_ndims,
-          is_constant_jacobian=is_constant_jacobian,
-          validate_args=validate_args,
-          parameters=parameters,
-          name=name)
-      
+                def _bijector_fn(x, **condition_kwargs):
+
+                    def reshape(params):
+                        factor = tf.cast(interval_width, dtype=tf.float32)
+
+                        bin_widths = params[:, :, :spline_knots]
+                        bin_widths = tf.math.softmax(bin_widths)
+                        bin_widths = tf.math.scalar_mul(factor, bin_widths)
+
+                        bin_heights = params[:, :, spline_knots:spline_knots*2]
+                        bin_heights = tf.math.softmax(bin_heights)
+                        bin_heights = tf.math.scalar_mul(factor, bin_heights)
+
+                        knot_slopes = params[:, :, spline_knots*2:]
+                        # knot_slopes=tf.math.softplus(knot_slopes)
+                        # knot_slopes=slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                        knot_slopes = 2.*tf.math.sigmoid(knot_slopes)
+
+                        return bin_widths, bin_heights, knot_slopes
+
+                    params = shift_and_log_scale_fn(x, **condition_kwargs)
+                    bin_widths, bin_heights, knot_slopes = reshape(params)
+
+                    return tfb.RationalQuadraticSpline(bin_widths=bin_widths, bin_heights=bin_heights, knot_slopes=knot_slopes, range_min=range_min, validate_args=False)
+
+                bijector_fn = _bijector_fn
+
+            # Still do this assignment for variable tracking.
+            self._shift_and_log_scale_fn = shift_and_log_scale_fn
+            self._bijector_fn = bijector_fn
+
+            # Call the init method of the Bijector class and not that of MaskedAutoregressiveFlow which we are overriding
+            bijector_lib.Bijector.__init__(self,
+                                           forward_min_event_ndims=self._event_ndims,
+                                           is_constant_jacobian=is_constant_jacobian,
+                                           validate_args=validate_args,
+                                           parameters=parameters,
+                                           name=name)
+
+###############################################################################
+# helper class to build a spline-autoregressive flow:
+
+
 class SplineMAF(object):
-    
     """
-    A class to implement a simple Masked AutoRegressive Flow (MAF) using the implementation :class:`tfp.bijectors.AutoregressiveNetwork` from from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_. Additionally, this class provides utilities to load/save models, including random permutations.
-
-    :param num_params: number of parameters, ie the dimension of the space of which the bijector is defined.
-    :type num_params: int
-    :param n_maf: number of MAFs to stack. Defaults to None, in which case it is set to `2*num_params`.
-    :type n_maf: int, optional
-    :param hidden_units: a list of the number of nodes per hidden layers. Defaults to None, in which case it is set to `[num_params*2]*2`.
-    :type hidden_units: list, optional
-    :param permutations: whether to use shuffle dimensions between stacked MAFs, defaults to True.
-    :type permutations: bool, optional
-    :param activation: activation function to use in all layers, defaults to :func:`tf.math.asinh`.
-    :type activation: optional
-    :param kernel_initializer: kernel initializer, defaults to 'glorot_uniform'.
-    :type kernel_initializer: str, optional
-    :param feedback: print the model architecture, defaults to 0.
-    :type feedback: int, optional
-    :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
     """
 
-    def __init__(self, num_params, spline_knots, range_max=5., n_maf=None, hidden_units=None, permutations=True, activation='softplus', kernel_initializer='glorot_uniform', int_np_prec=np.int32,
+    def __init__(self, num_params, spline_knots, range_max=5., n_maf=None, hidden_units=None, permutations=True,
+                 activation=tf.math.asinh, kernel_initializer='glorot_uniform', int_np_prec=np.int32,
                  feedback=0, map_to_unitsq=False, **kwargs):
 
         if n_maf is None:
@@ -331,15 +318,16 @@ class SplineMAF(object):
                 inv_perm = np.zeros_like(_permutations[i])
                 inv_perm[_permutations[i]] = np.arange(len(inv_perm))
                 bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
-                
+
         self.bijector = tfb.Chain(bijectors)
-        
+
         if feedback > 0:
             print("Building MAF")
             print("    - permutations   :", permutations)
-            print("    - number of MAFs :", n_maf)
+            print("    - number of Spline MAFs :", n_maf)
+            print("    - activation     :", activation)
             print("    - hidden_units   :", hidden_units)
-    
+
     def save(self, path):
         """
         Save a `SplineMAF` object.
@@ -405,198 +393,3 @@ class AMAF(object):
             print("    - number of MAFs :", n_maf)
             print("    - activation     :", activation)
             print("    - hidden_units   :", hidden_units)
-
-###############################################################################
-# class to build trainable rational splines:
-
-
-class TrainableRationalQuadraticSpline(tfb.Bijector):
-
-    def __init__(self, nbins, range_min, range_max, validate_args=False, name="TRQS", min_bin_width=None, min_slope=1e-8):
-        self._nbins = nbins
-        self._range_min = range_min
-        self._range_max = range_max
-        self._interval_width = self._range_max - self._range_min
-        self._built = False
-        if min_bin_width is None:
-            min_bin_width = self._interval_width / nbins / 100.
-        self._min_bin_width = min_bin_width
-        self._min_slope = min_slope
-        super(TrainableRationalQuadraticSpline, self).__init__(validate_args=validate_args, forward_min_event_ndims=0, name=name)
-
-    def _bin_positions(self, x):
-        out_shape = tf.concat((tf.shape(x)[:-1], (self._nbins,)), 0)
-        x = tf.reshape(x, out_shape)
-        return tf.math.softmax(x, axis=-1) * (self._interval_width - self._nbins * self._min_bin_width) + self._min_bin_width
-
-    def _slopes(self, x):
-        out_shape = tf.concat((tf.shape(x)[:-1], (self._nbins - 1,)), 0)
-        x = tf.reshape(x, out_shape)
-        return tf.math.softplus(x) + self._min_slope
-
-    def _get_rqs(self, x):
-        with tf.name_scope(self.name) as name:
-            if not self._built:
-                self._bin_widths = tfp.layers.VariableLayer(self._nbins, name=name+'w')
-                self._bin_heights = tfp.layers.VariableLayer(self._nbins, name=name+'h')
-                self._knot_slopes = tfp.layers.VariableLayer(self._nbins-1, name=name+'s')
-
-            self._built = True
-
-            return tfb.RationalQuadraticSpline(bin_widths=self._bin_positions(self._bin_widths(x)),
-                                               bin_heights=self._bin_positions(self._bin_heights(x)),
-                                               knot_slopes=self._slopes(self._knot_slopes(x)),
-                                               range_min=self._range_min,
-                                               name=name
-                                               )
-
-    def _inverse_log_det_jacobian(self, y):
-        return self._get_rqs(y).inverse_log_det_jacobian(y)
-
-    def forward(self, x):
-        return self._get_rqs(x).forward(x)
-
-    def inverse(self, y):
-        return self._get_rqs(y).inverse(y)
-
-
-def trainable_ndim_spline_bijector_helper(num_params, nbins=64, range_min=-4., range_max=4., name=None, **kwargs):
-    # Build one-dimensional bijectors
-    temp_bijectors = [TrainableRationalQuadraticSpline(nbins, range_min=range_min, range_max=range_max, name=name+f'TQRS{i}', **kwargs) for i in range(num_params)]
-    # Need Split() to split/merge inputs
-    split = tfb.Split(num_params, axis=-1)
-    # Chain all
-    return tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name=name)
-
-###############################################################################
-# helper for spline flow 2:
-
-
-def build_trainable_RQSpline(nbins, min_bin_width, interval_width, min_slope, range_min, seed, dtype, validate_args):
-    """
-
-    """
-    bin_position_bijector = tfb.Chain([
-        tfb.Shift(min_bin_width),
-        tfb.Scale(interval_width - min_bin_width * nbins),
-        tfb.SoftmaxCentered()
-    ])
-    slope_bijector = tfb.Softplus(low=min_slope)
-
-    bin_widths_seed, bin_heights_seed, knot_slopes_seed = samplers.split_seed(seed, n=3)
-    unconstrained_bin_widths_initial_values = samplers.normal(
-        shape=[nbins-1], mean=0., stddev=.1, seed=bin_widths_seed)
-    unconstrained_bin_heights_initial_values = samplers.normal(
-        shape=[nbins-1], mean=0., stddev=.1, seed=bin_heights_seed)
-    unconstrained_knot_slopes_initial_values = samplers.normal(
-        shape=[nbins-1], mean=0., stddev=.01, seed=knot_slopes_seed)
-    return tfb.RationalQuadraticSpline(
-        bin_widths=tfp.util.TransformedVariable(
-            initial_value=bin_position_bijector.forward(
-                unconstrained_bin_widths_initial_values),
-            bijector=bin_position_bijector,
-            dtype=dtype),
-        bin_heights=tfp.util.TransformedVariable(
-            initial_value=bin_position_bijector.forward(
-                unconstrained_bin_heights_initial_values),
-            bijector=bin_position_bijector,
-            dtype=dtype),
-        knot_slopes=tfp.util.TransformedVariable(
-            initial_value=slope_bijector.forward(
-                unconstrained_knot_slopes_initial_values),
-            bijector=slope_bijector,
-            dtype=dtype),
-        range_min=range_min,
-        validate_args=validate_args
-    )
-
-
-class RQSplineFlow(Layer):
-
-    def __init__(self, num_params, nbins, range_min, range_max, min_bin_width=None, min_slope=1e-8, seed=None, validate_args=False, name=None):
-        """
-
-        """
-        super(RQSplineFlow, self).__init__(name=name)
-        self.nbins = nbins
-        self.range_min = range_min
-        self.range_max = range_max
-        self.interval_width = range_max - range_min
-        if min_bin_width is None:
-            min_bin_width = self.interval_width / nbins / 100.
-        self.min_bin_width = min_bin_width
-        self.min_slope = min_slope
-        self.seed = seed
-        self.validate_args = validate_args
-
-        ## build bijector:
-        #ndim = num_params
-        #seeds = samplers.split_seed(self.seed, ndim)
-        #flow_bijectors = []
-        #for i in range(ndim):
-        #    temp_bij = build_trainable_RQSpline(
-        #        self.nbins, self.min_bin_width, self.interval_width, self.min_slope, self.range_min, seeds[i], self.dtype, self.validate_args)
-        #    flow_bijectors.append(temp_bij)
-        #self.bijectors = flow_bijectors
-        #split = tfb.Split(ndim, axis=-1)
-        #self.bijector = tfb.Chain([tfb.Invert(split), tfb.JointMap(self.bijectors), split])
-        self.bijector = None
-
-    def build(self, input_shape):
-        # build bijector:
-        ndim = input_shape[-1]
-        seeds = samplers.split_seed(self.seed, ndim)
-        flow_bijectors = []
-        for i in range(ndim):
-            temp_bij = build_trainable_RQSpline(
-                self.nbins, self.min_bin_width, self.interval_width, self.min_slope, self.range_min, seeds[i], self.dtype, self.validate_args)
-            flow_bijectors.append(temp_bij)
-        self.bijectors = flow_bijectors
-
-        split = tfb.Split(ndim, axis=-1)
-        self.bijector = tfb.Chain([tfb.Invert(split), tfb.JointMap(self.bijectors), split])
-
-###############################################################################
-# helper class to build a spline masked-autoregressive affine flow:
-
-
-class SplineAMAF(object):
-    """
-    Stack of Splines, MADE and Affine transformations
-    """
-
-    def __init__(self, num_params, n_maf=None, hidden_units=None, affine=True,
-                 spline=True, activation=tf.math.asinh, kernel_initializer='glorot_uniform',
-                 feedback=0, **kwargs):
-
-        if n_maf is None:
-            n_maf = 2*num_params
-        event_shape = (num_params,)
-
-        if hidden_units is None:
-            hidden_units = [num_params*2]*2
-
-        # Build transformed distribution
-        bijectors = []
-        for i, _ in enumerate(range(n_maf)):
-            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
-            shift_and_log_scale_fn = made
-            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
-            bijectors.append(maf)
-            if affine:
-                bijectors.append(ScaleRotoShift(num_params, name='affine1_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
-            if spline:
-                bijectors.append(RQSplineFlow(num_params, 8, -3., 3., name='spline_'+str(i)).bijector)
-                #bijectors.append(trainable_ndim_spline_bijector_helper(num_params, name='spline_'+str(i), **utils.filter_kwargs(kwargs, trainable_ndim_spline_bijector_helper)))
-            if affine:
-                bijectors.append(ScaleRotoShift(num_params, name='affine2_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
-
-        self.bijector = tfb.Chain(bijectors)
-
-        if feedback > 0:
-            print("Building Spline Affine MAF")
-            print("    - affine           :", affine)
-            print("    - spline           :", spline)
-            print("    - number of layers :", n_maf)
-            print("    - activation       :", activation)
-            print("    - hidden_units     :", hidden_units)

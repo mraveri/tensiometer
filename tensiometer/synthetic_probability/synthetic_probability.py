@@ -65,6 +65,7 @@ except Exception as e:
     Callback = object
     HAS_FLOW = False
 
+# detect where plotting is happening:
 try:
     from IPython.display import clear_output
 except ModuleNotFoundError:
