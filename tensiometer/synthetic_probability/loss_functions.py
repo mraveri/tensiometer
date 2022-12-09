@@ -232,7 +232,7 @@ class annealed_weight_loss(variable_weight_loss):
         crowd the interface...
         """
         if epoch > self.initial_random_epoch:
-            self.lambda_1 = np.exp(-1.*(epoch - self.initial_random_epoch)/self.roll_off_nepoch)
+            self.lambda_1 *= np.exp(-1.*(epoch - self.initial_random_epoch)/self.roll_off_nepoch)
             self.lambda_2 = 1. - self.lambda_1
         #
         return None
