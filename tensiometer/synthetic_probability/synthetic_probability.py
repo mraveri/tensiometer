@@ -1,20 +1,4 @@
 """
-For testing purposes:
-
-import getdist
-chains_dir = './test_chains/'
-settings = {'ignore_rows':0, 'smooth_scale_1D':0.3, 'smooth_scale_2D':0.3}
-chain = getdist.mcsamples.loadMCSamples(file_root=chains_dir+'DES', no_cache=True, settings=settings)
-param_names = ['omegam', 'sigma8']
-from tensorflow.keras.callbacks import Callback
-self = Callback()
-
-from tensiometer import utilities as utils
-from tensiometer import gaussian_tension
-
-from tensiometer.synthetic_probability import lr_schedulers as lr
-from tensiometer.synthetic_probability import trainable_bijectors as tb
-from tensiometer.synthetic_probability import prior_bijectors as pb
 
 """
 
@@ -30,9 +14,11 @@ import scipy
 import scipy.integrate
 from scipy.spatial import cKDTree
 import scipy.stats
+from collections.abc import Iterable
+
+# plotting:
 import matplotlib
 from matplotlib import pyplot as plt
-from collections.abc import Iterable
 
 # local imports:
 from . import lr_schedulers as lr
@@ -65,11 +51,16 @@ except Exception as e:
     Callback = object
     HAS_FLOW = False
 
-# detect where plotting is happening:
+# plotting global settings:
+matplotlib_backend = matplotlib.get_backend()
 try:
     from IPython.display import clear_output
 except ModuleNotFoundError:
     pass
+ipython_plotting = 'inline' in matplotlib_backend
+cluster_plotting = 'agg' in matplotlib_backend
+if not ipython_plotting and not cluster_plotting:
+    plt.ion()
 
 ###############################################################################
 # main class to compute NF-based tension:
@@ -1311,6 +1302,38 @@ class FlowCallback(Callback):
         #
         return None
 
+    def _create_figure(self):
+        """
+        Utility to create figure
+        """
+        if issubclass(type(self.loss), loss.standard_loss):
+            self.fig = plt.figure(figsize=(16, 3))
+        elif issubclass(type(self.loss), loss.constant_weight_loss):
+            self.fig = plt.figure(figsize=(16, 6))
+        elif issubclass(type(self.loss), loss.variable_weight_loss):
+            self.fig = plt.figure(figsize=(16, 6))
+        #
+        return None
+
+    def on_train_begin(self, logs):
+        """
+        Execute on beginning of training
+        """
+        if not ipython_plotting:
+            self._create_figure()
+        #
+        return None
+
+    def on_train_end(self, logs):
+        """
+        Execute at end of training
+        """
+        if not ipython_plotting:
+            del self.fig
+            plt.close('all')
+        #
+        return None
+
     def on_epoch_end(self, epoch, logs={}):
         """
         This method is used by Keras to show progress during training if `feedback` is True.
@@ -1332,7 +1355,7 @@ class FlowCallback(Callback):
                     logs[met] = self.log[met][-1]
 
         # decide whether to plot:
-        do_plots = self.feedback > 0 and self.plot_every > 0 and matplotlib.get_backend() != 'agg'
+        do_plots = self.feedback > 0 and self.plot_every > 0 and not cluster_plotting
         if do_plots:
             if ((epoch + 1) % self.plot_every) > 0:
                 do_plots = False
@@ -1340,43 +1363,52 @@ class FlowCallback(Callback):
         # do the plots:
         if do_plots:
             # clear output to restart the plot:
-            clear_output(wait=True)
+            if ipython_plotting:
+                clear_output(wait=True)
+                self._create_figure()
+            else:
+                plt.clf()
+
             # create figure:
             if issubclass(type(self.loss), loss.standard_loss):
-                fig, axes = plt.subplots(1, 5, figsize=(16, 3))
+                gs = self.fig.add_gridspec(nrows=1, ncols=5)
+                axes = [self.fig.add_subplot(_g) for _g in gs]
                 self._plot_loss(axes[0], logs=logs)
                 self._plot_losses_rate(axes[1], logs=logs)
                 self._plot_lr(axes[2], logs=logs)
                 self._plot_chi2_dist(axes[3], logs=logs)
                 self._plot_chi2_ks_p(axes[4], logs=logs)
             elif issubclass(type(self.loss), loss.constant_weight_loss):
-                fig, axes = plt.subplots(2, 4, figsize=(16, 6))
-                self._plot_loss(axes[0, 0], logs=logs)
-                self._plot_density_likelihood_losses(axes[0, 1], logs=logs)
-                self._plot_losses_rate(axes[0, 2], logs=logs)
-                self._plot_lr(axes[0, 3], logs=logs)
-                self._plot_evidence(axes[1, 0], logs=logs)
-                self._plot_evidence_error(axes[1, 1], logs=logs)
-                self._plot_chi2_dist(axes[1, 2], logs=logs)
-                self._plot_chi2_ks_p(axes[1, 3], logs=logs)
+                gs = self.fig.add_gridspec(nrows=2, ncols=4)
+                axes = [self.fig.add_subplot(_g) for _g in gs]
+                self._plot_loss(axes[0], logs=logs)
+                self._plot_density_likelihood_losses(axes[1], logs=logs)
+                self._plot_losses_rate(axes[2], logs=logs)
+                self._plot_lr(axes[3], logs=logs)
+                self._plot_evidence(axes[4], logs=logs)
+                self._plot_evidence_error(axes[5], logs=logs)
+                self._plot_chi2_dist(axes[6], logs=logs)
+                self._plot_chi2_ks_p(axes[7], logs=logs)
             elif issubclass(type(self.loss), loss.variable_weight_loss):
-                fig, axes = plt.subplots(2, 5, figsize=(16, 6))
-                self._plot_loss(axes[0, 0], logs=logs)
-                self._plot_density_likelihood_losses(axes[0, 1], logs=logs)
-                self._plot_lambda_values(axes[0, 2], logs=logs)
-                self._plot_weighted_density_likelihood_losses(axes[0, 3], logs=logs)
-                self._plot_losses_rate(axes[0, 4], logs=logs)
-                self._plot_lr(axes[1, 0], logs=logs)
-                self._plot_evidence(axes[1, 1], logs=logs)
-                self._plot_evidence_error(axes[1, 2], logs=logs)
-                self._plot_chi2_dist(axes[1, 3], logs=logs)
-                self._plot_chi2_ks_p(axes[1, 4], logs=logs)
+                gs = self.fig.add_gridspec(nrows=2, ncols=5)
+                axes = [self.fig.add_subplot(_g) for _g in gs]
+                self._plot_loss(axes[0], logs=logs)
+                self._plot_density_likelihood_losses(axes[1], logs=logs)
+                self._plot_lambda_values(axes[2], logs=logs)
+                self._plot_weighted_density_likelihood_losses(axes[3], logs=logs)
+                self._plot_losses_rate(axes[4], logs=logs)
+                self._plot_lr(axes[5], logs=logs)
+                self._plot_evidence(axes[6], logs=logs)
+                self._plot_evidence_error(axes[7], logs=logs)
+                self._plot_chi2_dist(axes[8], logs=logs)
+                self._plot_chi2_ks_p(axes[9], logs=logs)
 
             # plot title:
             if 'population' in self.log.keys():
                 plt.suptitle('Training population '+str(self.log['population']))
             # finalize plot:
             plt.tight_layout(pad=0.4, w_pad=0.5, h_pad=0.5)
+            plt.pause(0.00001)
             plt.show()
         #
         return None
