@@ -2,6 +2,8 @@
 This file contains the loss functions for the normalizing flow training.
 
 Since we are combining different loss functions we have different options.
+
+This file seems to be working fine. Add documentation.
 """
 
 ###############################################################################
@@ -105,7 +107,7 @@ class constant_weight_loss(tf.keras.losses.Loss):
                 )
 
 ###############################################################################
-# density and evidence loss with trainable weights:
+# density and evidence loss with variable weights:
 
 
 class variable_weight_loss(tf.keras.losses.Loss):

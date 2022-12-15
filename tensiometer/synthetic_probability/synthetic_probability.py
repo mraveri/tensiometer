@@ -41,6 +41,7 @@ try:
     from tensorflow.keras.layers import Input
     from tensorflow.keras.callbacks import Callback
     import tensorflow.keras.callbacks as keras_callbacks
+    import tensorflow.python.eager.def_function as tf_defun
 
     HAS_FLOW = True
     # tensorflow precision:
@@ -61,6 +62,24 @@ ipython_plotting = 'inline' in matplotlib_backend
 cluster_plotting = 'agg' in matplotlib_backend
 if not ipython_plotting and not cluster_plotting:
     plt.ion()
+
+# options for all plots:
+plot_options = {
+                # lines:
+                'lines.linewidth': 1.0,  # line width in points
+                # axes:
+                'axes.linewidth': 0.8,  # edge line width
+                'axes.titlelocation': 'left',  # alignment of the title: {left, right, center}
+                'axes.titlesize': 10,  # font size of the axes title
+                'axes.labelsize': 8,  # font size of the x and y labels
+                # ticks:
+                'xtick.labelsize': 8,  # font size of the tick labels
+                'ytick.labelsize': 8,  # font size of the tick labels
+                # legend:
+                'legend.loc': 'best',
+                'legend.frameon': False,  # if True, draw the legend on a background patch
+                'legend.fontsize': 8,
+                }
 
 ###############################################################################
 # main class to compute NF-based tension:
@@ -391,10 +410,27 @@ class FlowCallback(Callback):
         if self.feedback > 0:
             print('* Initializing transformed distribution')
 
-        # full distribution
+        # full distribution:
         self.base_distribution = tfd.MultivariateNormalDiag(tf.zeros(self.num_params, dtype=prec), tf.ones(self.num_params, dtype=prec))
         self.distribution = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.bijector)  # samples from std gaussian mapped to original space
+        # abstract space distribution:
+        self.trained_distribution = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.trainable_bijector)
+        #
+        return None
 
+    def _compile_model(self):
+        """
+        Utility function to compile model
+        """
+        # compile model:
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate), loss=self.loss, weighted_metrics=[])
+        # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
+        _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
+        # get the methods that are tensorflow functions:
+        _tf_functions = [func for func in _self_functions if isinstance(getattr(self, func), tf_defun.Function)]
+        # rebuild them (with cloning). I can see this causing memory leaks but I am blaming it on tf
+        for func in _tf_functions:
+            setattr(self, func, getattr(self, func)._clone(None))
         #
         return None
 
@@ -428,10 +464,6 @@ class FlowCallback(Callback):
                 print('    - using random density and likelihood loss function')
             if self.loss_mode == 'annealed':
                 print('    - using annealing from density to likelihood loss function')
-        # construct model (using only trainable bijector)
-        x_ = Input(shape=(self.num_params,), dtype=prec)
-        log_prob_ = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.trainable_bijector).log_prob(x_)
-        self.model = Model(x_, log_prob_)
         # allocate and initialize loss model:
         if self.loss_mode == 'standard':
             self.loss = loss.standard_loss()
@@ -443,8 +475,11 @@ class FlowCallback(Callback):
             self.loss = loss.annealed_weight_loss(**kwargs)
         elif self.loss_mode == 'softadapt':
             self.loss = loss.SoftAdapt_weight_loss(**kwargs)
+        # build model:
+        x_ = Input(shape=(self.num_params,), dtype=prec)
+        self.model = Model(x_, self.trained_distribution.log_prob(x_))
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate), loss=self.loss, weighted_metrics=[])
+        self._compile_model()
         # feedback:
         if self.feedback > 1:
             print('    - trainable parameters :', self.model.count_params())
@@ -550,12 +585,14 @@ class FlowCallback(Callback):
             self.log['population'] = ind
             if best_loss is not None:
                 self.log['best_loss'] = best_loss
-            # reset learning rate:
-            tf.keras.backend.set_value(self.model.optimizer.lr, self.initial_learning_rate)
 
             # build the random weights:
             for layer in self.model.layers:
                 layer.build(layer.input_shape)
+
+            # re-compile model:
+            self._compile_model()
+
             # train:
             history = self.train(**kwargs)
             # save log:
@@ -564,16 +601,16 @@ class FlowCallback(Callback):
 
             # if improvement save weights:
             if best_val_loss is None:
-                best_log = self.log
-                best_loss = history.history['loss'][-1]
-                best_val_loss = history.history['val_loss'][-1]
-                best_weights = self.model.get_weights()
+                best_log = copy.deepcopy(self.log)
+                best_loss = copy.deepcopy(history.history['loss'][-1])
+                best_val_loss = copy.deepcopy(history.history['val_loss'][-1])
+                best_weights = copy.deepcopy(self.model.get_weights())
             else:
                 if history.history['val_loss'][-1] < best_val_loss:
-                    best_log = self.log
-                    best_loss = history.history['loss'][-1]
-                    best_val_loss = history.history['val_loss'][-1]
-                    best_weights = self.model.get_weights()
+                    best_log = copy.deepcopy(self.log)
+                    best_loss = copy.deepcopy(history.history['loss'][-1])
+                    best_val_loss = copy.deepcopy(history.history['val_loss'][-1])
+                    best_weights = copy.deepcopy(self.model.get_weights())
 
             # update counter:
             ind += 1
@@ -1131,6 +1168,7 @@ class FlowCallback(Callback):
                 self.log["rho_loss_rate"].append(self.log["rho_loss"][-1] - self.log["rho_loss"][-2])
                 self.log["like_loss_rate"].append(self.log["like_loss"][-1] - self.log["like_loss"][-2])
 
+    @matplotlib.rc_context(plot_options)
     def _plot_loss(self, ax, logs={}):
         """
         Utility function to plot loss for training and validation samples
@@ -1140,16 +1178,16 @@ class FlowCallback(Callback):
         ax.plot(self.log["val_loss"], ls='--', lw=1., color='k', label='testing')
         # plot best population loss so far (if any):
         if 'best_loss' in self.log.keys():
-            ax.axhline(self.log['best_loss'], ls='--', lw=1., color='tab:blue')
+            ax.axhline(self.log['best_loss'], ls='--', lw=1., color='tab:blue', label='pop best')
         # finish plot:
         ax.set_title("Loss function")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel("Loss")
         ax.set_yscale('log')
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_lr(self, ax, logs={}):
         """
         Utility function to plot learning rate per epoch
@@ -1158,11 +1196,11 @@ class FlowCallback(Callback):
         ax.set_ylim([0.8*self.final_learning_rate, 1.2*self.initial_learning_rate])
         ax.set_title("Learning rate")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel("Rate")
         ax.set_yscale('log')
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_chi2_dist(self, ax, logs={}):
         """
         Utility function to plot chi2 distribution vs histogram.
@@ -1174,10 +1212,11 @@ class FlowCallback(Callback):
         ax.hist(self.chi2Z, bins=bins, density=True, histtype='step', label='Post-NF ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]), lw=1., ls='-')
         ax.set_title(r'$\chi^2_{{{}}}$ PDF'.format(self.num_params))
         ax.set_xlabel(r'$\chi^2$')
-        ax.legend(fontsize=8)
+        ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_chi2_ks_p(self, ax, logs={}):
         """
         Utility function to plot the KS test results.
@@ -1194,10 +1233,11 @@ class FlowCallback(Callback):
         # legend:
         lns = ln1+ln2
         labs = [l.get_label() for l in lns]
-        ax2.legend(lns, labs, loc=1)
+        ax2.legend(lns, labs)
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_density_likelihood_losses(self, ax, logs={}):
         """
         Plot behavior of density and likelihood loss as training progresses.
@@ -1214,6 +1254,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_lambda_values(self, ax, logs={}):
         """
         Plot balance between the two loss functions
@@ -1228,6 +1269,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_weighted_density_likelihood_losses(self, ax, logs={}):
         """
         Plot behavior of density and likelihood loss as training progresses.
@@ -1244,6 +1286,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_losses_rate(self, ax, logs={}):
         """
         Plot evolution of loss function.
@@ -1260,14 +1303,15 @@ class FlowCallback(Callback):
             ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
             ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
         ax.set_yscale('log')
-        ax.set_title(r"Loss improvement rate")
+        ax.set_title(r"$\Delta$ Loss / epoch")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel(r"$\Delta$ Loss / epoch")
+        #ax.set_ylabel(r"$\Delta$ Loss / epoch")
         # legend:
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_evidence(self, ax, logs={}):
         """
         Utility function to plot the evidence and error on evidence as a function of training.
@@ -1276,15 +1320,15 @@ class FlowCallback(Callback):
         ax.plot(np.abs(self.log["evidence"]), lw=1.2, ls='--', color='k', label='all')
         ax.plot(np.abs(self.log["training_evidence"]), lw=1., ls='-', label='training')
         ax.plot(np.abs(self.log["test_evidence"]), lw=1., ls='-', label='validation')
-        ax.set_title(r"Flow evidence")
+        ax.set_title(r"Flow |evidence|")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel(r"|Evidence|")
         ax.set_yscale('log')
         # legend:
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_evidence_error(self, ax, logs={}):
         """
         Utility function to plot the evidence and error on evidence as a function of training.
@@ -1295,13 +1339,13 @@ class FlowCallback(Callback):
         ax.plot(self.log["test_evidence_error"], lw=1., ls='-', label='validation')
         ax.set_title(r"Flow evidence error")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel(r"Evidence error")
         ax.set_yscale('log')
         # legend:
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _create_figure(self):
         """
         Utility to create figure
@@ -1315,6 +1359,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def on_train_begin(self, logs):
         """
         Execute on beginning of training
@@ -1324,6 +1369,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def on_train_end(self, logs):
         """
         Execute at end of training
@@ -1334,6 +1380,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def on_epoch_end(self, epoch, logs={}):
         """
         This method is used by Keras to show progress during training if `feedback` is True.
@@ -1405,9 +1452,9 @@ class FlowCallback(Callback):
 
             # plot title:
             if 'population' in self.log.keys():
-                plt.suptitle('Training population '+str(self.log['population']))
+                plt.suptitle('Training population '+str(self.log['population']), fontweight='bold')
             # finalize plot:
-            plt.tight_layout(pad=0.4, w_pad=0.5, h_pad=0.5)
+            plt.tight_layout(pad=0.5, w_pad=0.5, h_pad=0.5)
             plt.pause(0.00001)
             plt.show()
         #
