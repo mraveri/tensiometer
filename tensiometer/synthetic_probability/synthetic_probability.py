@@ -737,7 +737,7 @@ class FlowCallback(Callback):
         #
         return mc_samples
 
-    def evidence(self, indexes=None):
+    def evidence(self, indexes=None, weighted=False):
         """
         Get evidence from the flow. Can pass indexes to use only some of the samples for the estimate.
         """
@@ -752,6 +752,10 @@ class FlowCallback(Callback):
             _weights = self.chain_weights
         # compute log likes:
         flow_log_likes = self.log_probability(self.cast(_samples))
+        # use distance weights if required:
+        if weighted:
+            evidence_weights = scipy.stats.chi2.sf(2.0*(_loglikes - np.amin(_loglikes)), self.num_params)
+            _weights = _weights * evidence_weights
         # compute residuals:
         diffs = -_loglikes - flow_log_likes
         # compute average and error:
