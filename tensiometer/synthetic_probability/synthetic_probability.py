@@ -385,11 +385,21 @@ class FlowCallback(Callback):
         self.test_weights *= len(self.test_weights) / np.sum(self.test_weights)  # weights normalized to number of validation samples
 
         # initialize tensorflow sample generator:
-        self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.training_samples),
-                                                                    self.cast(self.training_logP_preabs),
-                                                                    self.cast(self.training_weights),))
+        if self.has_loglikes:
+            self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.training_samples),
+                                                                        self.cast(self.training_logP_preabs),
+                                                                        self.cast(self.training_weights),))
+        else:
+            self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.training_samples),
+                                                                        self.cast(self.training_weights),))
         self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
         self.training_dataset = self.training_dataset.shuffle(self.num_training_samples, reshuffle_each_iteration=True).repeat()
+
+        # initialize validation data:
+        if self.has_loglikes:
+            self.validation_dataset = (self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights))
+        else:
+            self.validation_dataset = (self.cast(self.test_samples), self.cast(self.test_weights))
 
         # final feedback
         if self.feedback > 1:
@@ -445,7 +455,7 @@ class FlowCallback(Callback):
             print('* Initializing loss function')
 
         # set loss functions relative weights:
-        if not self.has_loglikes and not self.loss_mode == 'standard':
+        if not self.has_loglikes and not loss_mode == 'standard':
             raise ValueError('Cannot use likelihood based loss functions if the input chain does not have likelihood values')
         # save in:
         self.alpha_lossv = alpha_lossv
@@ -480,11 +490,18 @@ class FlowCallback(Callback):
         self.model = Model(x_, self.trained_distribution.log_prob(x_))
         # compile model:
         self._compile_model()
+        num_model_params = self.model.count_params()
         # feedback:
         if self.feedback > 1:
-            print('    - trainable parameters :', self.model.count_params())
+            print('    - trainable parameters :', num_model_params)
             print('    - maximum learning rate: %.3g' % (self.initial_learning_rate))
             print('    - minimum learning rate: %.3g' % (self.final_learning_rate))
+        # check that number of parameters is less than data:
+        num_data = self.training_samples.shape[0] * self.training_samples.shape[1]
+        if num_data < num_model_params:
+            print('WARNING: more parameters than data')
+            print('    - trainable parameters :', num_model_params)
+            print('    - number of data values:', num_data)
         #
         return None
 
@@ -552,7 +569,7 @@ class FlowCallback(Callback):
                               batch_size=batch_size,
                               epochs=epochs,
                               steps_per_epoch=steps_per_epoch,
-                              validation_data=(self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights)),
+                              validation_data=self.validation_dataset,
                               verbose=verbose,
                               callbacks=[tf.keras.callbacks.TerminateOnNaN(), self]+callbacks,
                               **utils.filter_kwargs(kwargs, self.model.fit))
