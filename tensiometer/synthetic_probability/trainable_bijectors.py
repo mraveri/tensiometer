@@ -9,8 +9,6 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability.python.bijectors import bijector as bijector_lib
 from tensorflow_probability.python.internal import parameter_properties
-from tensorflow_probability.python.internal import samplers
-from tensorflow.keras.layers import Layer
 
 from .. import utilities as utils
 
@@ -18,27 +16,52 @@ tfb = tfp.bijectors
 tfd = tfp.distributions
 
 ###############################################################################
+# Weight initializer class:
+
+
+class IdentityPerturbation(tf.keras.initializers.VarianceScaling):
+    """
+    Weight initializer that perturbs the identity.
+    Strangely enough this is not part of tensorflow.
+    """
+
+    def __init__(self, gain=1.0, scale=1.0, mode='fan_avg', distribution='truncated_normal', seed=None):
+        super().__init__(scale=scale, mode=mode, distribution=distribution, seed=seed)
+        self.gain = gain
+
+    def _generate_init_val(self, shape, dtype):
+        _identity = self.gain * tf.eye(*shape, dtype=dtype)
+        _perturbation = super()._generate_init_val(shape, dtype)
+        return _identity + _perturbation
+
+###############################################################################
 # class to build a scaling, rotation and shift bijector:
 
 
 class ScaleRotoShift(tfb.Bijector):
 
-    def __init__(self, dimension, scale=True, roto=True, shift=True, validate_args=False, name='Affine', dtype=tf.float32):
+    def __init__(self, dimension, scale=True, roto=True, shift=True, validate_args=False, initializer='zeros', name='Affine', dtype=tf.float32):
+        """
+        Bijector performing a shift, scaling and rotation.
+        Note that scale is exponential so that we can do unbounded optimization.
+        Initialized to identity but can be changed with optional argument.
+        """
+
         parameters = dict(locals())
 
         with tf.name_scope(name) as name:
 
             self.dimension = dimension
             if shift:
-                self._shift = tfp.layers.VariableLayer(dimension, dtype=dtype, name=name+'_shift')
+                self._shift = tfp.layers.VariableLayer(dimension, initializer=initializer, dtype=dtype, name=name+'_shift')
             else:
                 self._shift = lambda _: tf.zeros(dimension, dtype=dtype, name=name+'_shift')
             if scale:
-                self._scalevec = tfp.layers.VariableLayer(dimension, initializer='zeros', dtype=dtype, name=name+'_scale')
+                self._scalevec = tfp.layers.VariableLayer(dimension, initializer=initializer, dtype=dtype, name=name+'_scale')
             else:
                 self._scalevec = lambda _: tf.zeros(dimension, dtype=dtype, name=name+'_scale')
             if roto:
-                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer='random_normal', trainable=True, dtype=dtype, name=name+'_roto')
+                self._rotvec = tfp.layers.VariableLayer(dimension*(dimension-1)//2, initializer=initializer, trainable=True, dtype=dtype, name=name+'_roto')
             else:
                 self._rotvec = lambda _: tf.zeros(dimension*(dimension-1)//2, dtype=dtype, name=name+'_roto')
 
@@ -59,7 +82,7 @@ class ScaleRotoShift(tfb.Bijector):
         return True
 
     def _getaff_invaff(self, x):
-        L = tf.zeros((self.dimension, self.dimension), dtype=tf.float32)
+        L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
         L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, -1)).T, self._rotvec(x))
         Lambda2 = tf.linalg.diag(tf.math.exp(self._scalevec(x)))
         val_update = tf.ones(self.dimension)
@@ -118,9 +141,10 @@ class SimpleMAF(object):
     """
 
     def __init__(self, num_params, n_maf=None, hidden_units=None, permutations=True,
-                 activation=tf.math.asinh, kernel_initializer='glorot_uniform', int_np_prec=np.int32,
+                 activation=tf.math.asinh, kernel_initializer=None, int_np_prec=np.int32,
                  feedback=0, **kwargs):
 
+        # initialize hidden units:
         if n_maf is None:
             n_maf = 2*num_params
         event_shape = (num_params,)
@@ -128,6 +152,7 @@ class SimpleMAF(object):
         if hidden_units is None:
             hidden_units = [num_params*2]*2
 
+        # initialize permutations:
         if permutations is None:
             _permutations = False
         elif isinstance(permutations, Iterable):
@@ -138,20 +163,23 @@ class SimpleMAF(object):
                 _permutations = [np.random.permutation(num_params) for _ in range(n_maf)]
             else:
                 _permutations = False
-
         self.permutations = _permutations
 
         # Build transformed distribution
         bijectors = []
         for i in range(n_maf):
+            # add permutations:
             if _permutations:
                 bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
-            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation, kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
-            shift_and_log_scale_fn = made
-            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
+            # add MAF layer:
+            if kernel_initializer is None:
+                kernel_initializer = IdentityPerturbation(scale=1./n_maf)
+            made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation,
+                                             kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
+            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made)
             bijectors.append(maf)
-
-            if _permutations:  # add the inverse permutation
+            # add the inverse permutation:
+            if _permutations:
                 inv_perm = np.zeros_like(_permutations[i])
                 inv_perm[_permutations[i]] = np.arange(len(inv_perm))
                 bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
@@ -160,7 +188,7 @@ class SimpleMAF(object):
 
         if feedback > 0:
             print("Building MAF")
-            print("    - permutations   :", permutations)
+            print("    - permutations   :", permutations is not None)
             print("    - number of MAFs :", n_maf)
             print("    - activation     :", activation)
             print("    - hidden_units   :", hidden_units)

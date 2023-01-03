@@ -2,8 +2,6 @@
 This file contains the loss functions for the normalizing flow training.
 
 Since we are combining different loss functions we have different options.
-
-This file seems to be working fine. Add documentation.
 """
 
 ###############################################################################

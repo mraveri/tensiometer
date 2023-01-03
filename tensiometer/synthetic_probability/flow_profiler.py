@@ -15,7 +15,6 @@ import numpy as np
 
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d
-from scipy.stats import binned_statistic_2d
 from scipy.interpolate import LinearNDInterpolator
 
 from numba import njit

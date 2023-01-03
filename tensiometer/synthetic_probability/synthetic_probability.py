@@ -1103,12 +1103,11 @@ class FlowCallback(Callback):
         # do KS test:
         if "chi2Z_ks" in self.training_metrics:
             self.chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.test_samples))**2, axis=1)
-            _s = np.isfinite(self.chi2Z)
-            assert np.any(_s)
-            self.chi2Z = self.chi2Z[_s]
             # Run KS test
             try:
                 # Note that scipy.stats.kstest does not handle weights yet so we need to resample.
+                _s = np.isfinite(self.chi2Z)
+                self.chi2Z = self.chi2Z[_s]
                 if self.has_weights:
                     self.chi2Z = np.random.choice(self.chi2Z, size=len(self.chi2Z), replace=True, p=self.test_weights[_s]/np.sum(self.test_weights[_s]))
                 chi2Z_ks, chi2Z_ks_p = scipy.stats.kstest(self.chi2Z, 'chi2', args=(self.num_params,))
