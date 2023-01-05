@@ -433,7 +433,7 @@ class FlowCallback(Callback):
         Utility function to compile model
         """
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate), loss=self.loss, weighted_metrics=[])
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate, clipnorm=self.clipnorm), loss=self.loss, weighted_metrics=[])
         # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
         _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
         # get the methods that are tensorflow functions:
@@ -444,7 +444,7 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_model(self, learning_rate=1.e-3, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs):
+    def _init_model(self, learning_rate=1.e-3, clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs):
         """
         Initialize the loss function.
 
@@ -462,6 +462,7 @@ class FlowCallback(Callback):
         self.beta_lossv = beta_lossv
         self.initial_learning_rate = learning_rate
         self.final_learning_rate = learning_rate/100.
+        self.clipnorm = clipnorm
         self.loss_mode = loss_mode
         # feedback:
         if self.feedback > 1:
@@ -474,6 +475,8 @@ class FlowCallback(Callback):
                 print('    - using random density and likelihood loss function')
             if self.loss_mode == 'annealed':
                 print('    - using annealing from density to likelihood loss function')
+            if self.loss_mode == 'softadapt':
+                print('    - using softadapt from density to likelihood loss function')
         # allocate and initialize loss model:
         if self.loss_mode == 'standard':
             self.loss = loss.standard_loss()

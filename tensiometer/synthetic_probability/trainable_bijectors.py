@@ -16,25 +16,6 @@ tfb = tfp.bijectors
 tfd = tfp.distributions
 
 ###############################################################################
-# Weight initializer class:
-
-
-class IdentityPerturbation(tf.keras.initializers.VarianceScaling):
-    """
-    Weight initializer that perturbs the identity.
-    Strangely enough this is not part of tensorflow.
-    """
-
-    def __init__(self, gain=1.0, scale=1.0, mode='fan_avg', distribution='truncated_normal', seed=None):
-        super().__init__(scale=scale, mode=mode, distribution=distribution, seed=seed)
-        self.gain = gain
-
-    def _generate_init_val(self, shape, dtype):
-        _identity = self.gain * tf.eye(*shape, dtype=dtype)
-        _perturbation = super()._generate_init_val(shape, dtype)
-        return _identity + _perturbation
-
-###############################################################################
 # class to build a scaling, rotation and shift bijector:
 
 
@@ -153,9 +134,8 @@ class SimpleMAF(object):
             hidden_units = [num_params*2]*2
 
         # initialize permutations:
-        if permutations is None:
-            _permutations = False
-        elif isinstance(permutations, Iterable):
+        _permutations = False
+        if isinstance(permutations, Iterable):
             assert len(permutations) == n_maf
             _permutations = permutations
         elif isinstance(permutations, bool):
@@ -173,7 +153,7 @@ class SimpleMAF(object):
                 bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
             # add MAF layer:
             if kernel_initializer is None:
-                kernel_initializer = IdentityPerturbation(scale=1./n_maf)
+                kernel_initializer = tf.keras.initializers.VarianceScaling(scale=1./n_maf, mode='fan_avg', distribution='truncated_normal')
             made = tfb.AutoregressiveNetwork(params=2, event_shape=event_shape, hidden_units=hidden_units, activation=activation,
                                              kernel_initializer=kernel_initializer, **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
             maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made)
