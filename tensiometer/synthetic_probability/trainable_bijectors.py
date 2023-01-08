@@ -16,6 +16,24 @@ tfb = tfp.bijectors
 tfd = tfp.distributions
 
 ###############################################################################
+# generic class:
+
+class TrainableTransformation(object):
+
+    def save(self, path):
+        """
+        Save to file(s) the state of the bijector.
+        """
+        raise NotImplementedError
+
+    @classmethod
+    def load(cls, path, **kwargs):
+        """
+        Load the trainable bijector.
+        """
+        raise NotImplementedError
+
+###############################################################################
 # class to build a scaling, rotation and shift bijector:
 
 
@@ -100,7 +118,7 @@ class ScaleRotoShift(tfb.Bijector):
 # helper class to build a masked-autoregressive flow:
 
 
-class SimpleMAF(object):
+class SimpleMAF(TrainableTransformation):
     """
     A class to implement a simple Masked AutoRegressive Flow (MAF) using the implementation :class:`tfp.bijectors.AutoregressiveNetwork` from from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_. Additionally, this class provides utilities to load/save models, including random permutations.
 
@@ -198,6 +216,7 @@ class SimpleMAF(object):
         maf = SimpleMAF(num_params=len(permutations[0]), permutations=permutations, **utils.filter_kwargs(kwargs, SimpleMAF))
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
+        #
         return maf
 
 ###############################################################################

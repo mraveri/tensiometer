@@ -15,6 +15,7 @@ import scipy.integrate
 from scipy.spatial import cKDTree
 import scipy.stats
 from collections.abc import Iterable
+import pickle
 
 # plotting:
 import matplotlib
@@ -128,26 +129,6 @@ class FlowCallback(Callback):
     :type validation_split: float, optional
     :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
     """
-
-    """
-    For testing purposes:
-    feedback = 2
-    plot_every = 10
-    validation_split=0.1
-    prior_bijector = 'ranges'
-    apply_pregauss = True
-    trainable_bijector='MAF'
-    learning_rate=1e-3
-    feedback=1
-    validation_split=0.1
-    kwargs={}
-    param_ranges = None
-
-    def cast(v):
-        return tf.cast(v, dtype=prec)
-    self.cast = cast
-    """
-
     def __init__(self, chain, param_names=None, param_ranges=None, feedback=1, plot_every=10, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', validation_split=0.1, **kwargs):
 
         # check input:
@@ -321,26 +302,39 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_trainable_bijector(self, trainable_bijector, **kwargs):
+    def _init_trainable_bijector(self, trainable_bijector, trainable_bijector_path=None, **kwargs):
         """
         Initialize trainable part of the bijector
         """
         # feedback:
         if self.feedback > 0:
             print('* Initializing trainable bijector')
-
-        # select model:
+            
+        # select model for trainable transformation:
         if trainable_bijector == 'MAF':
-            self.MAF = tb.SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
-            self.trainable_bijector = self.MAF.bijector
+            self.trainable_transformation = tb.SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
+        elif isinstance(trainable_bijector, tb.TrainableTransformation):
+            self.trainable_transformation = trainable_bijector
+        elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
+            self.trainable_transformation = None
+        elif trainable_bijector is None or trainable_bijector is False:
+            self.trainable_transformation = None
+        else:
+            raise ValueError
+
+        # load from file:
+        if trainable_bijector_path is not None:
+            if self.trainable_transformation is not None:
+                self.trainable_transformation = self.trainable_transformation.load(trainable_bijector_path, **kwargs)
+
+        # initialize bijector:
+        if self.trainable_transformation is not None:
+            self.trainable_bijector = self.trainable_transformation.bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
             self.trainable_bijector = trainable_bijector
         elif trainable_bijector is None or trainable_bijector is False:
             self.trainable_bijector = tfb.Identity()
-        else:
-            raise ValueError
 
-        # initialize bijectors:
         self.bijectors.append(self.trainable_bijector)
         self.bijector = tfb.Chain(self.bijectors)
 
@@ -592,7 +586,7 @@ class FlowCallback(Callback):
         """
         # initialize:
         best_loss, best_val_loss, best_weights, best_log = None, None, None, None
-        loss, val_loss = [], []
+        loss, val_loss, logs = [], [], []
         ind = 1
         # do the loop:
         while ind <= pop_size:
@@ -618,6 +612,7 @@ class FlowCallback(Callback):
             # save log:
             loss.append(history.history['loss'][-1])
             val_loss.append(history.history['val_loss'][-1])
+            logs.append(copy.deepcopy(self.log))
 
             # if improvement save weights:
             if best_val_loss is None:
@@ -638,6 +633,8 @@ class FlowCallback(Callback):
         # select best:
         self.model.set_weights(best_weights)
         self.log = best_log
+        self.population_logs = logs
+
         if self.feedback > 1:
             _best_idx = np.argmin(val_loss)
             print('* Population optimizer:')
@@ -1002,7 +999,64 @@ class FlowCallback(Callback):
         """
         Solve geodesic initial value problem.
         """
-        pass
+        raise NotImplemented
+
+    ###############################################################################
+    # caching methods:
+
+    def save(self, outroot):
+        """
+        Save the flow model to file
+        """
+        # we need to exclude some TF objects because they cannot be pickled:
+        exclude_objects = [
+                           'prior_bijector',
+                           'base_distribution',
+                           'loss',
+                           'model',
+                           'bijectors', 
+                           'fixed_bijector', 
+                           'trainable_transformation', 
+                           'trainable_bijector', 
+                           'bijector', 
+                           'training_dataset', 
+                           'distribution', 
+                           'trained_distribution'
+                            ]
+
+        # get properties that can be pickled and properties that cannot:
+        pickle_objects = {}
+        for el in self.__dict__:
+            if el not in exclude_objects:
+                if not type(self.__dict__[el])==type(tf.function(lambda x: x)):
+                    pickle_objects[el] = self.__dict__[el]
+        # group and save to pickle all the objects that can be pickled:
+        pickle.dump(pickle_objects, open(outroot+'_flow_cache.pickle', 'wb'))
+ 
+        # save out trainable transformation:
+        if self.trainable_transformation is not None:
+            self.trainable_transformation.save(outroot)
+        #
+        return None
+    
+    @classmethod
+    def load(cls, chain, outroot, **kwargs):
+        """
+        Load the flow model from file
+        """
+        # remove trainable bijector path:
+        temp = kwargs.pop('trainable_bijector_path', None)
+        if temp is not None:
+            print('WARNING: trainable_bijector_path is set and will be ignored by load function')
+        # re-create the object (we have to do this because we cannot pickle all TF things)
+        flow = FlowCallback(chain, trainable_bijector_path=outroot, **kwargs)
+        # load the pickle file:
+        pickle_objects = pickle.load(open(outroot+'_flow_cache.pickle', 'rb'))
+        # load to self:
+        for key in pickle_objects:
+            setattr(flow, key, pickle_objects[key])
+        #
+        return flow
 
     ###############################################################################
     # Training statistics:
@@ -1561,15 +1615,10 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
     if cache_dir is not None:
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
-
+    
     # load from cache:
-    if cache_dir is not None and os.path.isfile(cache_dir+'/'+root_name+'_permutations.pickle'):
-        # load trained model:
-        temp_MAF = tb.SimpleMAF.load(cache_dir+'/'+root_name, **kwargs)
-        # initialize flow:
-        if 'trainable_bijector' in kwargs:
-            kwargs.pop('trainable_bijector')
-        flow = FlowCallback(chain, trainable_bijector=temp_MAF.bijector, **kwargs)
+    if cache_dir is not None and os.path.isfile(cache_dir+'/'+root_name+'_flow_cache.pickle'):       
+        flow = FlowCallback.load(chain, cache_dir+'/'+root_name, **kwargs)
     else:
         # initialize posterior flow:
         flow = FlowCallback(chain, **kwargs)
@@ -1577,6 +1626,6 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         flow.global_train(**kwargs)
         # save trained model:
         if cache_dir is not None:
-            flow.MAF.save(cache_dir+'/'+root_name)
+            flow.save(cache_dir+'/'+root_name)
     #
     return flow
