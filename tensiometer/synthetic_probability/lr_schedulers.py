@@ -1,3 +1,7 @@
+"""
+This file contains the learning rate schedulers.
+"""
+
 ###############################################################################
 # initial imports and set-up:
 

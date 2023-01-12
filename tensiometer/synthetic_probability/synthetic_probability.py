@@ -1,20 +1,4 @@
 """
-For testing purposes:
-
-import getdist
-chains_dir = './test_chains/'
-settings = {'ignore_rows':0, 'smooth_scale_1D':0.3, 'smooth_scale_2D':0.3}
-chain = getdist.mcsamples.loadMCSamples(file_root=chains_dir+'DES', no_cache=True, settings=settings)
-param_names = ['omegam', 'sigma8']
-from tensorflow.keras.callbacks import Callback
-self = Callback()
-
-from tensiometer import utilities as utils
-from tensiometer import gaussian_tension
-
-from tensiometer.synthetic_probability import lr_schedulers as lr
-from tensiometer.synthetic_probability import trainable_bijectors as tb
-from tensiometer.synthetic_probability import prior_bijectors as pb
 
 """
 
@@ -30,9 +14,12 @@ import scipy
 import scipy.integrate
 from scipy.spatial import cKDTree
 import scipy.stats
+from collections.abc import Iterable
+import pickle
+
+# plotting:
 import matplotlib
 from matplotlib import pyplot as plt
-from collections.abc import Iterable
 
 # local imports:
 from . import lr_schedulers as lr
@@ -55,6 +42,7 @@ try:
     from tensorflow.keras.layers import Input
     from tensorflow.keras.callbacks import Callback
     import tensorflow.keras.callbacks as keras_callbacks
+    import tensorflow.python.eager.def_function as tf_defun
 
     HAS_FLOW = True
     # tensorflow precision:
@@ -65,10 +53,34 @@ except Exception as e:
     Callback = object
     HAS_FLOW = False
 
+# plotting global settings:
+matplotlib_backend = matplotlib.get_backend()
 try:
     from IPython.display import clear_output
 except ModuleNotFoundError:
     pass
+ipython_plotting = 'inline' in matplotlib_backend
+cluster_plotting = 'agg' in matplotlib_backend
+if not ipython_plotting and not cluster_plotting:
+    plt.ion()
+
+# options for all plots:
+plot_options = {
+                # lines:
+                'lines.linewidth': 1.0,  # line width in points
+                # axes:
+                'axes.linewidth': 0.8,  # edge line width
+                'axes.titlelocation': 'left',  # alignment of the title: {left, right, center}
+                'axes.titlesize': 10,  # font size of the axes title
+                'axes.labelsize': 8,  # font size of the x and y labels
+                # ticks:
+                'xtick.labelsize': 8,  # font size of the tick labels
+                'ytick.labelsize': 8,  # font size of the tick labels
+                # legend:
+                'legend.loc': 'best',
+                'legend.frameon': False,  # if True, draw the legend on a background patch
+                'legend.fontsize': 8,
+                }
 
 ###############################################################################
 # main class to compute NF-based tension:
@@ -117,26 +129,6 @@ class FlowCallback(Callback):
     :type validation_split: float, optional
     :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
     """
-
-    """
-    For testing purposes:
-    feedback = 2
-    plot_every = 10
-    validation_split=0.1
-    prior_bijector = 'ranges'
-    apply_pregauss = True
-    trainable_bijector='MAF'
-    learning_rate=1e-3
-    feedback=1
-    validation_split=0.1
-    kwargs={}
-    param_ranges = None
-
-    def cast(v):
-        return tf.cast(v, dtype=prec)
-    self.cast = cast
-    """
-
     def __init__(self, chain, param_names=None, param_ranges=None, feedback=1, plot_every=10, prior_bijector='ranges', apply_pregauss=True, trainable_bijector='MAF', validation_split=0.1, **kwargs):
 
         # check input:
@@ -310,26 +302,39 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_trainable_bijector(self, trainable_bijector, **kwargs):
+    def _init_trainable_bijector(self, trainable_bijector, trainable_bijector_path=None, **kwargs):
         """
         Initialize trainable part of the bijector
         """
         # feedback:
         if self.feedback > 0:
             print('* Initializing trainable bijector')
-
-        # select model:
+            
+        # select model for trainable transformation:
         if trainable_bijector == 'MAF':
-            self.MAF = tb.SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
-            self.trainable_bijector = self.MAF.bijector
+            self.trainable_transformation = tb.SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
+        elif isinstance(trainable_bijector, tb.TrainableTransformation):
+            self.trainable_transformation = trainable_bijector
+        elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
+            self.trainable_transformation = None
+        elif trainable_bijector is None or trainable_bijector is False:
+            self.trainable_transformation = None
+        else:
+            raise ValueError
+
+        # load from file:
+        if trainable_bijector_path is not None:
+            if self.trainable_transformation is not None:
+                self.trainable_transformation = self.trainable_transformation.load(trainable_bijector_path, **kwargs)
+
+        # initialize bijector:
+        if self.trainable_transformation is not None:
+            self.trainable_bijector = self.trainable_transformation.bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
             self.trainable_bijector = trainable_bijector
         elif trainable_bijector is None or trainable_bijector is False:
             self.trainable_bijector = tfb.Identity()
-        else:
-            raise ValueError
 
-        # initialize bijectors:
         self.bijectors.append(self.trainable_bijector)
         self.bijector = tfb.Chain(self.bijectors)
 
@@ -374,11 +379,21 @@ class FlowCallback(Callback):
         self.test_weights *= len(self.test_weights) / np.sum(self.test_weights)  # weights normalized to number of validation samples
 
         # initialize tensorflow sample generator:
-        self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.training_samples),
-                                                                    self.cast(self.training_logP_preabs),
-                                                                    self.cast(self.training_weights),))
+        if self.has_loglikes:
+            self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.training_samples),
+                                                                        self.cast(self.training_logP_preabs),
+                                                                        self.cast(self.training_weights),))
+        else:
+            self.training_dataset = tf.data.Dataset.from_tensor_slices((self.cast(self.training_samples),
+                                                                        self.cast(self.training_weights),))
         self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
         self.training_dataset = self.training_dataset.shuffle(self.num_training_samples, reshuffle_each_iteration=True).repeat()
+
+        # initialize validation data:
+        if self.has_loglikes:
+            self.validation_dataset = (self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights))
+        else:
+            self.validation_dataset = (self.cast(self.test_samples), self.cast(self.test_weights))
 
         # final feedback
         if self.feedback > 1:
@@ -399,14 +414,31 @@ class FlowCallback(Callback):
         if self.feedback > 0:
             print('* Initializing transformed distribution')
 
-        # full distribution
+        # full distribution:
         self.base_distribution = tfd.MultivariateNormalDiag(tf.zeros(self.num_params, dtype=prec), tf.ones(self.num_params, dtype=prec))
         self.distribution = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.bijector)  # samples from std gaussian mapped to original space
-
+        # abstract space distribution:
+        self.trained_distribution = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.trainable_bijector)
         #
         return None
 
-    def _init_model(self, learning_rate=1.e-3, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs):
+    def _compile_model(self):
+        """
+        Utility function to compile model
+        """
+        # compile model:
+        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate, clipnorm=self.clipnorm), loss=self.loss, weighted_metrics=[])
+        # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
+        _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
+        # get the methods that are tensorflow functions:
+        _tf_functions = [func for func in _self_functions if isinstance(getattr(self, func), tf_defun.Function)]
+        # rebuild them (with cloning). I can see this causing memory leaks but I am blaming it on tf
+        for func in _tf_functions:
+            setattr(self, func, getattr(self, func)._clone(None))
+        #
+        return None
+
+    def _init_model(self, learning_rate=1.e-3, clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs):
         """
         Initialize the loss function.
 
@@ -417,13 +449,14 @@ class FlowCallback(Callback):
             print('* Initializing loss function')
 
         # set loss functions relative weights:
-        if not self.has_loglikes and not self.loss_mode == 'standard':
+        if not self.has_loglikes and not loss_mode == 'standard':
             raise ValueError('Cannot use likelihood based loss functions if the input chain does not have likelihood values')
         # save in:
         self.alpha_lossv = alpha_lossv
         self.beta_lossv = beta_lossv
         self.initial_learning_rate = learning_rate
         self.final_learning_rate = learning_rate/100.
+        self.clipnorm = clipnorm
         self.loss_mode = loss_mode
         # feedback:
         if self.feedback > 1:
@@ -435,11 +468,9 @@ class FlowCallback(Callback):
             if self.loss_mode == 'random':
                 print('    - using random density and likelihood loss function')
             if self.loss_mode == 'annealed':
-                print('    - using annealing from density to likelihood loss function')                
-        # construct model (using only trainable bijector)
-        x_ = Input(shape=(self.num_params,), dtype=prec)
-        log_prob_ = tfd.TransformedDistribution(distribution=self.base_distribution, bijector=self.trainable_bijector).log_prob(x_)
-        self.model = Model(x_, log_prob_)
+                print('    - using annealing from density to likelihood loss function')
+            if self.loss_mode == 'softadapt':
+                print('    - using softadapt from density to likelihood loss function')
         # allocate and initialize loss model:
         if self.loss_mode == 'standard':
             self.loss = loss.standard_loss()
@@ -448,14 +479,26 @@ class FlowCallback(Callback):
         elif self.loss_mode == 'random':
             self.loss = loss.random_weight_loss(**kwargs)
         elif self.loss_mode == 'annealed':
-            self.loss = loss.annealed_weight_loss(**kwargs)            
+            self.loss = loss.annealed_weight_loss(**kwargs)
+        elif self.loss_mode == 'softadapt':
+            self.loss = loss.SoftAdapt_weight_loss(**kwargs)
+        # build model:
+        x_ = Input(shape=(self.num_params,), dtype=prec)
+        self.model = Model(x_, self.trained_distribution.log_prob(x_))
         # compile model:
-        self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate), loss=self.loss, weighted_metrics=[])
+        self._compile_model()
+        num_model_params = self.model.count_params()
         # feedback:
         if self.feedback > 1:
-            print('    - trainable parameters :', self.model.count_params())
+            print('    - trainable parameters :', num_model_params)
             print('    - maximum learning rate: %.3g' % (self.initial_learning_rate))
             print('    - minimum learning rate: %.3g' % (self.final_learning_rate))
+        # check that number of parameters is less than data:
+        num_data = self.training_samples.shape[0] * self.training_samples.shape[1]
+        if num_data < num_model_params:
+            print('WARNING: more parameters than data')
+            print('    - trainable parameters :', num_model_params)
+            print('    - number of data values:', num_data)
         #
         return None
 
@@ -523,7 +566,7 @@ class FlowCallback(Callback):
                               batch_size=batch_size,
                               epochs=epochs,
                               steps_per_epoch=steps_per_epoch,
-                              validation_data=(self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights)),
+                              validation_data=self.validation_dataset,
                               verbose=verbose,
                               callbacks=[tf.keras.callbacks.TerminateOnNaN(), self]+callbacks,
                               **utils.filter_kwargs(kwargs, self.model.fit))
@@ -543,7 +586,7 @@ class FlowCallback(Callback):
         """
         # initialize:
         best_loss, best_val_loss, best_weights, best_log = None, None, None, None
-        loss, val_loss = [], []
+        loss, val_loss, logs = [], [], []
         ind = 1
         # do the loop:
         while ind <= pop_size:
@@ -556,30 +599,33 @@ class FlowCallback(Callback):
             self.log['population'] = ind
             if best_loss is not None:
                 self.log['best_loss'] = best_loss
-            # reset learning rate:
-            tf.keras.backend.set_value(self.model.optimizer.lr, self.initial_learning_rate)
 
             # build the random weights:
             for layer in self.model.layers:
                 layer.build(layer.input_shape)
+
+            # re-compile model:
+            self._compile_model()
+
             # train:
             history = self.train(**kwargs)
             # save log:
             loss.append(history.history['loss'][-1])
             val_loss.append(history.history['val_loss'][-1])
+            logs.append(copy.deepcopy(self.log))
 
             # if improvement save weights:
             if best_val_loss is None:
-                best_log = self.log
-                best_loss = history.history['loss'][-1]
-                best_val_loss = history.history['val_loss'][-1]
-                best_weights = self.model.get_weights()
+                best_log = copy.deepcopy(self.log)
+                best_loss = copy.deepcopy(history.history['loss'][-1])
+                best_val_loss = copy.deepcopy(history.history['val_loss'][-1])
+                best_weights = copy.deepcopy(self.model.get_weights())
             else:
                 if history.history['val_loss'][-1] < best_val_loss:
-                    best_log = self.log
-                    best_loss = history.history['loss'][-1]
-                    best_val_loss = history.history['val_loss'][-1]
-                    best_weights = self.model.get_weights()
+                    best_log = copy.deepcopy(self.log)
+                    best_loss = copy.deepcopy(history.history['loss'][-1])
+                    best_val_loss = copy.deepcopy(history.history['val_loss'][-1])
+                    best_weights = copy.deepcopy(self.model.get_weights())
 
             # update counter:
             ind += 1
@@ -587,6 +633,8 @@ class FlowCallback(Callback):
         # select best:
         self.model.set_weights(best_weights)
         self.log = best_log
+        self.population_logs = logs
+
         if self.feedback > 1:
             _best_idx = np.argmin(val_loss)
             print('* Population optimizer:')
@@ -706,7 +754,7 @@ class FlowCallback(Callback):
         #
         return mc_samples
 
-    def evidence(self, indexes=None):
+    def evidence(self, indexes=None, weighted=False):
         """
         Get evidence from the flow. Can pass indexes to use only some of the samples for the estimate.
         """
@@ -721,6 +769,10 @@ class FlowCallback(Callback):
             _weights = self.chain_weights
         # compute log likes:
         flow_log_likes = self.log_probability(self.cast(_samples))
+        # use distance weights if required:
+        if weighted:
+            evidence_weights = scipy.stats.chi2.sf(2.0*(_loglikes - np.amin(_loglikes)), self.num_params)
+            _weights = _weights * evidence_weights
         # compute residuals:
         diffs = -_loglikes - flow_log_likes
         # compute average and error:
@@ -947,7 +999,64 @@ class FlowCallback(Callback):
         """
         Solve geodesic initial value problem.
         """
-        pass
+        raise NotImplemented
+
+    ###############################################################################
+    # caching methods:
+
+    def save(self, outroot):
+        """
+        Save the flow model to file
+        """
+        # we need to exclude some TF objects because they cannot be pickled:
+        exclude_objects = [
+                           'prior_bijector',
+                           'base_distribution',
+                           'loss',
+                           'model',
+                           'bijectors', 
+                           'fixed_bijector', 
+                           'trainable_transformation', 
+                           'trainable_bijector', 
+                           'bijector', 
+                           'training_dataset', 
+                           'distribution', 
+                           'trained_distribution'
+                            ]
+
+        # get properties that can be pickled and properties that cannot:
+        pickle_objects = {}
+        for el in self.__dict__:
+            if el not in exclude_objects:
+                if not type(self.__dict__[el])==type(tf.function(lambda x: x)):
+                    pickle_objects[el] = self.__dict__[el]
+        # group and save to pickle all the objects that can be pickled:
+        pickle.dump(pickle_objects, open(outroot+'_flow_cache.pickle', 'wb'))
+ 
+        # save out trainable transformation:
+        if self.trainable_transformation is not None:
+            self.trainable_transformation.save(outroot)
+        #
+        return None
+    
+    @classmethod
+    def load(cls, chain, outroot, **kwargs):
+        """
+        Load the flow model from file
+        """
+        # remove trainable bijector path:
+        temp = kwargs.pop('trainable_bijector_path', None)
+        if temp is not None:
+            print('WARNING: trainable_bijector_path is set and will be ignored by load function')
+        # re-create the object (we have to do this because we cannot pickle all TF things)
+        flow = FlowCallback(chain, trainable_bijector_path=outroot, **kwargs)
+        # load the pickle file:
+        pickle_objects = pickle.load(open(outroot+'_flow_cache.pickle', 'rb'))
+        # load to self:
+        for key in pickle_objects:
+            setattr(flow, key, pickle_objects[key])
+        #
+        return flow
 
     ###############################################################################
     # Training statistics:
@@ -1051,12 +1160,11 @@ class FlowCallback(Callback):
         # do KS test:
         if "chi2Z_ks" in self.training_metrics:
             self.chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.test_samples))**2, axis=1)
-            _s = np.isfinite(self.chi2Z)
-            assert np.any(_s)
-            self.chi2Z = self.chi2Z[_s]
             # Run KS test
             try:
                 # Note that scipy.stats.kstest does not handle weights yet so we need to resample.
+                _s = np.isfinite(self.chi2Z)
+                self.chi2Z = self.chi2Z[_s]
                 if self.has_weights:
                     self.chi2Z = np.random.choice(self.chi2Z, size=len(self.chi2Z), replace=True, p=self.test_weights[_s]/np.sum(self.test_weights[_s]))
                 chi2Z_ks, chi2Z_ks_p = scipy.stats.kstest(self.chi2Z, 'chi2', args=(self.num_params,))
@@ -1137,6 +1245,7 @@ class FlowCallback(Callback):
                 self.log["rho_loss_rate"].append(self.log["rho_loss"][-1] - self.log["rho_loss"][-2])
                 self.log["like_loss_rate"].append(self.log["like_loss"][-1] - self.log["like_loss"][-2])
 
+    @matplotlib.rc_context(plot_options)
     def _plot_loss(self, ax, logs={}):
         """
         Utility function to plot loss for training and validation samples
@@ -1146,16 +1255,16 @@ class FlowCallback(Callback):
         ax.plot(self.log["val_loss"], ls='--', lw=1., color='k', label='testing')
         # plot best population loss so far (if any):
         if 'best_loss' in self.log.keys():
-            ax.axhline(self.log['best_loss'], ls='--', lw=1., color='tab:blue')
+            ax.axhline(self.log['best_loss'], ls='--', lw=1., color='tab:blue', label='pop best')
         # finish plot:
         ax.set_title("Loss function")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel("Loss")
         ax.set_yscale('log')
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_lr(self, ax, logs={}):
         """
         Utility function to plot learning rate per epoch
@@ -1164,11 +1273,11 @@ class FlowCallback(Callback):
         ax.set_ylim([0.8*self.final_learning_rate, 1.2*self.initial_learning_rate])
         ax.set_title("Learning rate")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel("Rate")
         ax.set_yscale('log')
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_chi2_dist(self, ax, logs={}):
         """
         Utility function to plot chi2 distribution vs histogram.
@@ -1180,10 +1289,11 @@ class FlowCallback(Callback):
         ax.hist(self.chi2Z, bins=bins, density=True, histtype='step', label='Post-NF ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]), lw=1., ls='-')
         ax.set_title(r'$\chi^2_{{{}}}$ PDF'.format(self.num_params))
         ax.set_xlabel(r'$\chi^2$')
-        ax.legend(fontsize=8)
+        ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_chi2_ks_p(self, ax, logs={}):
         """
         Utility function to plot the KS test results.
@@ -1200,10 +1310,11 @@ class FlowCallback(Callback):
         # legend:
         lns = ln1+ln2
         labs = [l.get_label() for l in lns]
-        ax2.legend(lns, labs, loc=1)
+        ax2.legend(lns, labs)
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_density_likelihood_losses(self, ax, logs={}):
         """
         Plot behavior of density and likelihood loss as training progresses.
@@ -1220,6 +1331,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_lambda_values(self, ax, logs={}):
         """
         Plot balance between the two loss functions
@@ -1234,6 +1346,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_weighted_density_likelihood_losses(self, ax, logs={}):
         """
         Plot behavior of density and likelihood loss as training progresses.
@@ -1250,6 +1363,7 @@ class FlowCallback(Callback):
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_losses_rate(self, ax, logs={}):
         """
         Plot evolution of loss function.
@@ -1266,14 +1380,15 @@ class FlowCallback(Callback):
             ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
             ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
         ax.set_yscale('log')
-        ax.set_title(r"Loss improvement rate")
+        ax.set_title(r"$\Delta$ Loss / epoch")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel(r"$\Delta$ Loss / epoch")
+        #ax.set_ylabel(r"$\Delta$ Loss / epoch")
         # legend:
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_evidence(self, ax, logs={}):
         """
         Utility function to plot the evidence and error on evidence as a function of training.
@@ -1282,15 +1397,15 @@ class FlowCallback(Callback):
         ax.plot(np.abs(self.log["evidence"]), lw=1.2, ls='--', color='k', label='all')
         ax.plot(np.abs(self.log["training_evidence"]), lw=1., ls='-', label='training')
         ax.plot(np.abs(self.log["test_evidence"]), lw=1., ls='-', label='validation')
-        ax.set_title(r"Flow evidence")
+        ax.set_title(r"Flow |evidence|")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel(r"|Evidence|")
         ax.set_yscale('log')
         # legend:
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
     def _plot_evidence_error(self, ax, logs={}):
         """
         Utility function to plot the evidence and error on evidence as a function of training.
@@ -1301,13 +1416,48 @@ class FlowCallback(Callback):
         ax.plot(self.log["test_evidence_error"], lw=1., ls='-', label='validation')
         ax.set_title(r"Flow evidence error")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_ylabel(r"Evidence error")
         ax.set_yscale('log')
         # legend:
         ax.legend()
         #
         return None
 
+    @matplotlib.rc_context(plot_options)
+    def _create_figure(self):
+        """
+        Utility to create figure
+        """
+        if issubclass(type(self.loss), loss.standard_loss):
+            self.fig = plt.figure(figsize=(16, 3))
+        elif issubclass(type(self.loss), loss.constant_weight_loss):
+            self.fig = plt.figure(figsize=(16, 6))
+        elif issubclass(type(self.loss), loss.variable_weight_loss):
+            self.fig = plt.figure(figsize=(16, 6))
+        #
+        return None
+
+    @matplotlib.rc_context(plot_options)
+    def on_train_begin(self, logs):
+        """
+        Execute on beginning of training
+        """
+        if not ipython_plotting:
+            self._create_figure()
+        #
+        return None
+
+    @matplotlib.rc_context(plot_options)
+    def on_train_end(self, logs):
+        """
+        Execute at end of training
+        """
+        if not ipython_plotting:
+            del self.fig
+            plt.close('all')
+        #
+        return None
+
+    @matplotlib.rc_context(plot_options)
     def on_epoch_end(self, epoch, logs={}):
         """
         This method is used by Keras to show progress during training if `feedback` is True.
@@ -1329,7 +1479,7 @@ class FlowCallback(Callback):
                     logs[met] = self.log[met][-1]
 
         # decide whether to plot:
-        do_plots = self.feedback > 0 and self.plot_every > 0 and matplotlib.get_backend() != 'agg'
+        do_plots = self.feedback > 0 and self.plot_every > 0 and not cluster_plotting
         if do_plots:
             if ((epoch + 1) % self.plot_every) > 0:
                 do_plots = False
@@ -1337,43 +1487,52 @@ class FlowCallback(Callback):
         # do the plots:
         if do_plots:
             # clear output to restart the plot:
-            clear_output(wait=True)
+            if ipython_plotting:
+                clear_output(wait=True)
+                self._create_figure()
+            else:
+                plt.clf()
+
             # create figure:
             if issubclass(type(self.loss), loss.standard_loss):
-                fig, axes = plt.subplots(1, 5, figsize=(16, 3))
+                gs = self.fig.add_gridspec(nrows=1, ncols=5)
+                axes = [self.fig.add_subplot(_g) for _g in gs]
                 self._plot_loss(axes[0], logs=logs)
                 self._plot_losses_rate(axes[1], logs=logs)
                 self._plot_lr(axes[2], logs=logs)
                 self._plot_chi2_dist(axes[3], logs=logs)
                 self._plot_chi2_ks_p(axes[4], logs=logs)
             elif issubclass(type(self.loss), loss.constant_weight_loss):
-                fig, axes = plt.subplots(2, 4, figsize=(16, 6))
-                self._plot_loss(axes[0, 0], logs=logs)
-                self._plot_density_likelihood_losses(axes[0, 1], logs=logs)
-                self._plot_losses_rate(axes[0, 2], logs=logs)
-                self._plot_lr(axes[0, 3], logs=logs)
-                self._plot_evidence(axes[1, 0], logs=logs)
-                self._plot_evidence_error(axes[1, 1], logs=logs)
-                self._plot_chi2_dist(axes[1, 2], logs=logs)
-                self._plot_chi2_ks_p(axes[1, 3], logs=logs)
+                gs = self.fig.add_gridspec(nrows=2, ncols=4)
+                axes = [self.fig.add_subplot(_g) for _g in gs]
+                self._plot_loss(axes[0], logs=logs)
+                self._plot_density_likelihood_losses(axes[1], logs=logs)
+                self._plot_losses_rate(axes[2], logs=logs)
+                self._plot_lr(axes[3], logs=logs)
+                self._plot_evidence(axes[4], logs=logs)
+                self._plot_evidence_error(axes[5], logs=logs)
+                self._plot_chi2_dist(axes[6], logs=logs)
+                self._plot_chi2_ks_p(axes[7], logs=logs)
             elif issubclass(type(self.loss), loss.variable_weight_loss):
-                fig, axes = plt.subplots(2, 5, figsize=(16, 6))
-                self._plot_loss(axes[0, 0], logs=logs)
-                self._plot_density_likelihood_losses(axes[0, 1], logs=logs)
-                self._plot_lambda_values(axes[0, 2], logs=logs)
-                self._plot_weighted_density_likelihood_losses(axes[0, 3], logs=logs)
-                self._plot_losses_rate(axes[0, 4], logs=logs)
-                self._plot_lr(axes[1, 0], logs=logs)
-                self._plot_evidence(axes[1, 1], logs=logs)
-                self._plot_evidence_error(axes[1, 2], logs=logs)
-                self._plot_chi2_dist(axes[1, 3], logs=logs)
-                self._plot_chi2_ks_p(axes[1, 4], logs=logs)
+                gs = self.fig.add_gridspec(nrows=2, ncols=5)
+                axes = [self.fig.add_subplot(_g) for _g in gs]
+                self._plot_loss(axes[0], logs=logs)
+                self._plot_density_likelihood_losses(axes[1], logs=logs)
+                self._plot_lambda_values(axes[2], logs=logs)
+                self._plot_weighted_density_likelihood_losses(axes[3], logs=logs)
+                self._plot_losses_rate(axes[4], logs=logs)
+                self._plot_lr(axes[5], logs=logs)
+                self._plot_evidence(axes[6], logs=logs)
+                self._plot_evidence_error(axes[7], logs=logs)
+                self._plot_chi2_dist(axes[8], logs=logs)
+                self._plot_chi2_ks_p(axes[9], logs=logs)
 
             # plot title:
             if 'population' in self.log.keys():
-                plt.suptitle('Training population '+str(self.log['population']))
+                plt.suptitle('Training population '+str(self.log['population']), fontweight='bold')
             # finalize plot:
-            plt.tight_layout(pad=0.4, w_pad=0.5, h_pad=0.5)
+            plt.tight_layout(pad=0.5, w_pad=0.5, h_pad=0.5)
+            plt.pause(0.00001)
             plt.show()
         #
         return None
@@ -1456,15 +1615,10 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
     if cache_dir is not None:
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
-
+    
     # load from cache:
-    if cache_dir is not None and os.path.isfile(cache_dir+'/'+root_name+'_permutations.pickle'):
-        # load trained model:
-        temp_MAF = tb.SimpleMAF.load(cache_dir+'/'+root_name, **kwargs)
-        # initialize flow:
-        if 'trainable_bijector' in kwargs:
-            kwargs.pop('trainable_bijector')
-        flow = FlowCallback(chain, trainable_bijector=temp_MAF.bijector, **kwargs)
+    if cache_dir is not None and os.path.isfile(cache_dir+'/'+root_name+'_flow_cache.pickle'):       
+        flow = FlowCallback.load(chain, cache_dir+'/'+root_name, **kwargs)
     else:
         # initialize posterior flow:
         flow = FlowCallback(chain, **kwargs)
@@ -1472,6 +1626,6 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         flow.global_train(**kwargs)
         # save trained model:
         if cache_dir is not None:
-            flow.MAF.save(cache_dir+'/'+root_name)
+            flow.save(cache_dir+'/'+root_name)
     #
     return flow
