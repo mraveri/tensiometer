@@ -386,15 +386,15 @@ class SplineMAF(object):
 from tensorflow.keras.layers import Input, Layer, Lambda, Dense
 from tensorflow.keras.models import Model, Sequential
 
-def build_nn(dim_in, dim_out, hidden_units=[], **kwargs):
+def build_nn(dim_in, dim_out, hidden_units=[], activation='softplus', **kwargs):
     if len(hidden_units)==0 or dim_in==0:
         model = Sequential(Dense(dim_out, activation=None, input_shape=(dim_in,)))
     else:
         model = Sequential()
-        units = hidden_units + [dim_out]
-        model.add(Dense(units[0], input_shape=(dim_in,), **kwargs))
-        for n in units[1:]:
-            model.add(Dense(n, **kwargs))
+        model.add(Dense(hidden_units[0], activation=activation, input_shape=(dim_in,), **kwargs))
+        for n in hidden_units[1:]:
+            model.add(Dense(n, activation=activation, **kwargs))
+        model.add(Dense(dim_out, activation=None, **kwargs))
     return model
 
 def build_AR_model(num_params, spline_knots, hidden_units=[], **kwargs):
