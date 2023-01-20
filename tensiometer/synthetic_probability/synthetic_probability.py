@@ -141,7 +141,7 @@ class FlowCallback(Callback):
         self.plot_every = plot_every
 
         # initialize internal samples from chain:
-        self._init_chain(chain, param_names=param_names, param_ranges=param_ranges)
+        self._init_chain(chain, param_names=param_names, param_ranges=param_ranges, **kwargs)
         # initialize fixed bijector:
         self._init_fixed_bijector(prior_bijector=prior_bijector, apply_pregauss=apply_pregauss)
         # initialize trainable bijector:
@@ -160,7 +160,7 @@ class FlowCallback(Callback):
         self.MAP_coord = None
         self.MAP_logP = None
 
-    def _init_chain(self, chain=None, param_names=None, param_ranges=None):
+    def _init_chain(self, chain=None, param_names=None, param_ranges=None, init_nearest=False, **kwargs):
         """
         Read in MCMC sample chain and save internal quantities.
         """
@@ -243,6 +243,16 @@ class FlowCallback(Callback):
         self.has_loglikes = self.chain_loglikes is not None
         self.chain_weights = chain.weights
 
+        # initialize nearest neighbours:
+        if init_nearest:
+            self._init_nearest_samples()
+        #
+        return None
+
+    def _init_nearest_samples(self):
+        """
+        Initializes samples in a tree for nearest neighbour searches. Takes a while in high dimensions...
+        """
         # cache nearest neighbours indexes, in whitened coordinates:
         temp_cov = np.cov(self.chain_samples.T, aweights=self.chain_weights)
         white_samples = np.dot(scipy.linalg.sqrtm(np.linalg.inv(temp_cov)), self.chain_samples.T).T
@@ -426,6 +436,8 @@ class FlowCallback(Callback):
         """
         Utility function to compile model
         """
+        # reset loss function:
+        self.loss.reset()
         # compile model:
         self.model.compile(optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate, clipnorm=self.clipnorm), loss=self.loss, weighted_metrics=[])
         # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
@@ -458,19 +470,6 @@ class FlowCallback(Callback):
         self.final_learning_rate = learning_rate/100.
         self.clipnorm = clipnorm
         self.loss_mode = loss_mode
-        # feedback:
-        if self.feedback > 1:
-            if self.loss_mode == 'standard':
-                print('    - using standard loss function')
-            if self.loss_mode == 'fixed':
-                print('    - using combined density and likelihood loss function')
-                print('    - weight of density loss: %.3g, weight of likelihood-loss: %.3g' % (self.alpha_lossv, 1.-alpha_lossv))
-            if self.loss_mode == 'random':
-                print('    - using random density and likelihood loss function')
-            if self.loss_mode == 'annealed':
-                print('    - using annealing from density to likelihood loss function')
-            if self.loss_mode == 'softadapt':
-                print('    - using softadapt from density to likelihood loss function')
         # allocate and initialize loss model:
         if self.loss_mode == 'standard':
             self.loss = loss.standard_loss()
@@ -482,6 +481,11 @@ class FlowCallback(Callback):
             self.loss = loss.annealed_weight_loss(**kwargs)
         elif self.loss_mode == 'softadapt':
             self.loss = loss.SoftAdapt_weight_loss(**kwargs)
+        elif self.loss_mode == 'sharpstep':
+            self.loss = loss.SharpStep(**kwargs)
+        # print feedback:
+        if self.feedback > 1:
+            self.loss.print_feedback(padding='    - ')
         # build model:
         x_ = Input(shape=(self.num_params,), dtype=prec)
         self.model = Model(x_, self.trained_distribution.log_prob(x_))
@@ -508,7 +512,7 @@ class FlowCallback(Callback):
         """
         # update loss function if needed:
         if issubclass(type(self.loss), loss.variable_weight_loss):
-            self.loss.update_lambda_values_on_epoch_begin(epoch, logs=self.log)
+            self.model.loss.update_lambda_values_on_epoch_begin(epoch, logs=self.log)
         #
         return None
 
@@ -561,6 +565,7 @@ class FlowCallback(Callback):
             # callback to stop if weights start getting worse:
             callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
                                                            **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
+
         # Run training:
         hist = self.model.fit(x=self.training_dataset.batch(batch_size),
                               batch_size=batch_size,
@@ -785,6 +790,9 @@ class FlowCallback(Callback):
         """
         Compute smoothness score for the flow. This measures how much the flow is non-linear in between neares neighbours.
         """
+        # check if nearest neighbours are already initialized:
+        if not hasattr(self,'chain_nearest_index'):
+            self._init_nearest_samples()       
         # get delta log likes and delta params:
         delta_theta = self.chain_samples - self.chain_samples[self.chain_nearest_index[:, 1], :]
         delta_log_likes = -(self.chain_loglikes - self.chain_loglikes[self.chain_nearest_index[:, 1]])

@@ -42,6 +42,19 @@ class standard_loss(tf.keras.losses.Loss):
         distributions.
         """
         return -y_pred
+    
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        print(padding+'using standard loss function')
+
+    def reset(self):
+        """
+        Reset loss functions hyper parameters
+        """
+        pass
+
 
 ###############################################################################
 # density and evidence loss with constant weights:
@@ -72,7 +85,7 @@ class constant_weight_loss(tf.keras.losses.Loss):
         # compute overall offset:
         mean_diff = tf.reduce_sum(diffs*sample_weight) / tot_weights
         # compute its variance:
-        var_diff = tf.abs(diffs - mean_diff)
+        var_diff = (diffs - mean_diff)**2
         # compute density loss function:
         loss_orig = -(y_pred + self.beta)
         #
@@ -104,6 +117,19 @@ class constant_weight_loss(tf.keras.losses.Loss):
                 losses, sample_weight, reduction=self._get_reduction()
                 )
 
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        print(padding+'using combined density and likelihood loss function')
+        print(padding+'weight of density loss: %.3g, weight of likelihood-loss: %.3g' % (self.alpha, 1.-self.alpha))
+
+    def reset(self):
+        """
+        Reset loss functions hyper parameters
+        """
+        pass
+
 ###############################################################################
 # density and evidence loss with variable weights:
 
@@ -117,9 +143,13 @@ class variable_weight_loss(tf.keras.losses.Loss):
         # initialize:
         super(variable_weight_loss, self).__init__()
         # set parameters:
-        self.lambda_1 = lambda_1
-        self.lambda_2 = lambda_2
-        self.beta = beta
+        self.lambda_1 = tf.Variable(lambda_1, trainable=False, name='loss_lambda_1', dtype=type(lambda_1))
+        self.lambda_2 = tf.Variable(lambda_2, trainable=False, name='loss_lambda_2', dtype=type(lambda_2))
+        self.beta = tf.Variable(beta, trainable=False, name='loss_beta', dtype=type(beta))
+        # save initial parameters:
+        self.initial_lambda_1 = lambda_1
+        self.initial_lambda_2 = lambda_2
+        self.initial_beta = beta
         #
         return None
 
@@ -129,9 +159,11 @@ class variable_weight_loss(tf.keras.losses.Loss):
         crowd the interface...
         """
         # base class is empty...
-        return None
+        # use the following sintax:
+        # tf.keras.backend.set_value(self.lambda_1, tf.constant(0.5) * epoch)
+        raise NotImplementedError
 
-    def compute_loss_components(self, y_true, y_pred, sample_weight):
+    def compute_loss_components(self, y_true, y_pred, sample_weight, lambda_1=None, lambda_2=None):
         """
         Compute different components of the loss function
         """
@@ -142,18 +174,23 @@ class variable_weight_loss(tf.keras.losses.Loss):
         # compute overall offset:
         mean_diff = tf.reduce_sum(diffs*sample_weight) / tot_weights
         # compute its variance:
-        var_diff = tf.abs(diffs - mean_diff)
+        var_diff = (diffs - mean_diff)**2
         # compute density loss function:
         loss_orig = -(y_pred + self.beta)
+        # get weights if not passed:
+        if lambda_1 is None:
+            lambda_1 = tf.keras.backend.get_value(self.lambda_1)
+        if lambda_2 is None:
+            lambda_2 = tf.keras.backend.get_value(self.lambda_2)
         #
-        return loss_orig, var_diff, self.lambda_1, self.lambda_2
+        return loss_orig, var_diff, lambda_1, lambda_2
 
     def compute_loss(self, y_true, y_pred, sample_weight):
         """
         Combine density and likelihood loss
         """
         # get components:
-        loss_1, loss_2, lambda_1, lambda_2 = self.compute_loss_components(y_true, y_pred, sample_weight)
+        loss_1, loss_2, lambda_1,lambda_2 = self.compute_loss_components(y_true, y_pred, sample_weight, self.lambda_1, self.lambda_2)
         #
         return lambda_1*loss_1 + lambda_2*loss_2
 
@@ -173,6 +210,18 @@ class variable_weight_loss(tf.keras.losses.Loss):
             return losses_utils.compute_weighted_loss(
                 losses, sample_weight, reduction=self._get_reduction()
                 )
+        
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        raise NotImplementedError
+
+    def reset(self):
+        """
+        Reset loss functions hyper parameters
+        """
+        self.__init__(lambda_1=self.initial_lambda_1, lambda_2=self.initial_lambda_2, beta=self.initial_beta)
 
 
 class random_weight_loss(variable_weight_loss):
@@ -185,12 +234,9 @@ class random_weight_loss(variable_weight_loss):
         Initialize loss function
         """
         # initialize:
-        super(variable_weight_loss, self).__init__()
+        super(random_weight_loss, self).__init__(lambda_1, 1.-lambda_1, beta)
         # set parameters:
-        self.lambda_1 = lambda_1
-        self.lambda_2 = 1. - self.lambda_1
         self.initial_random_epoch = initial_random_epoch
-        self.beta = beta
         #
         return None
 
@@ -200,10 +246,17 @@ class random_weight_loss(variable_weight_loss):
         crowd the interface...
         """
         if epoch > self.initial_random_epoch:
-            self.lambda_1 = np.random.randint(2)
-            self.lambda_2 = 1. - self.lambda_1
-        #
+            _temp_rand = np.random.randint(2)
+            tf.keras.backend.set_value(self.lambda_1, _temp_rand)
+            tf.keras.backend.set_value(self.lambda_2, 1.-_temp_rand)
+        #        
         return None
+
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        print(padding+'using randomized loss function')
 
 
 class annealed_weight_loss(variable_weight_loss):
@@ -211,17 +264,14 @@ class annealed_weight_loss(variable_weight_loss):
     Slowly go from density to likelihood loss.
     """
 
-    def __init__(self, initial_random_epoch=50, lambda_1=1.0, beta=0.0, roll_off_nepoch=10, **kwargs):
+    def __init__(self, anneal_epoch=50, lambda_1=1.0, beta=0.0, roll_off_nepoch=10, **kwargs):
         """
         Initialize loss function
         """
         # initialize:
-        super(variable_weight_loss, self).__init__()
+        super(annealed_weight_loss, self).__init__(lambda_1, 1.-lambda_1, beta)
         # set parameters:
-        self.lambda_1 = lambda_1
-        self.lambda_2 = 1. - self.lambda_1
-        self.initial_random_epoch = initial_random_epoch
-        self.beta = beta
+        self.anneal_epoch = anneal_epoch
         self.roll_off_nepoch = roll_off_nepoch
         #
         return None
@@ -231,11 +281,19 @@ class annealed_weight_loss(variable_weight_loss):
         Update values of lambda at epoch start. Takes in every kwargs to not
         crowd the interface...
         """
-        if epoch > self.initial_random_epoch:
-            self.lambda_1 *= np.exp(-1.*(epoch - self.initial_random_epoch)/self.roll_off_nepoch)
-            self.lambda_2 = 1. - self.lambda_1
+        if epoch > self.anneal_epoch:
+            _lambda_1 = tf.keras.backend.get_value(self.lambda_1)
+            _lambda_1 *= np.exp(-1.*(epoch - self.anneal_epoch)/self.roll_off_nepoch)
+            tf.keras.backend.set_value(self.lambda_1, _lambda_1)
+            tf.keras.backend.set_value(self.lambda_2, 1.-_lambda_1)
         #
         return None
+
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        print(padding+'using annealed loss function')
 
 
 class SoftAdapt_weight_loss(variable_weight_loss):
@@ -248,7 +306,7 @@ class SoftAdapt_weight_loss(variable_weight_loss):
         Initialize loss function
         """
         # initialize:
-        super(variable_weight_loss, self).__init__()
+        super(SoftAdapt_weight_loss, self).__init__()
         # set parameters:
         self.tau = tau
         self.beta = beta
@@ -269,16 +327,67 @@ class SoftAdapt_weight_loss(variable_weight_loss):
         rho_loss_rate = logs['rho_loss_rate']
         # protect for initial phase:
         if len(rho_loss_rate) == 0 or rho_loss_rate[-1] == 0.0:
-            self.lambda_1 = 1.0
+            _lambda_1 = 1.0
         else:
             lambda_1 = np.exp(self.tau * rho_loss_rate[-1])
             lambda_2 = np.exp(self.tau * like_loss_rate[-1])
             _tot = lambda_1 + lambda_2
             if self.smoothing:
-                self.lambda_1 = self.smoothing_alpha * lambda_1 / _tot + (1. - self.smoothing_alpha) * self.lambda_1
+                _lambda_1 = self.smoothing_alpha * lambda_1 / _tot + (1. - self.smoothing_alpha) * tf.keras.backend.get_value(self.lambda_1)
             else:
-                self.lambda_1 = lambda_1 / _tot
+                _lambda_1 = lambda_1 / _tot
         # set second by enforcing sum to one:
-        self.lambda_2 = 1. - self.lambda_1
+        tf.keras.backend.set_value(self.lambda_1, _lambda_1)
+        tf.keras.backend.set_value(self.lambda_2, 1.-tf.keras.backend.get_value(self.lambda_1))
         #
         return None
+
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        print(padding+'using SoftAdapt loss function')
+
+
+class SharpStep(variable_weight_loss):
+    """
+    Implement sharp stepping between two values
+    """
+
+    def __init__(self, step_epoch=50, value_1=1.0, value_2=0.0, beta=0., **kwargs):
+        """
+        Initialize loss function
+        """
+        # initialize:
+        super(SharpStep, self).__init__()
+        # set parameters:
+        self.step_epoch = step_epoch
+        self.value_1 = value_1
+        self.value_2 = value_2
+        # initialize:
+        self.beta = beta
+        #
+        return None
+
+    def update_lambda_values_on_epoch_begin(self, epoch, **kwargs):
+        """
+        Update values of lambda at epoch start. Takes in every kwargs to not
+        crowd the interface...
+        """
+        if epoch < self.step_epoch:
+            lambda_1 = self.value_1
+        else:
+            lambda_1 = self.value_2
+        # set second by enforcing sum to one:
+        lambda_2 = 1. - lambda_1
+        #
+        tf.keras.backend.set_value(self.lambda_1, lambda_1)
+        tf.keras.backend.set_value(self.lambda_2, lambda_2)
+        #
+        return None
+
+    def print_feedback(self, padding=''):
+        """
+        Print feedback to screen
+        """
+        print(padding+'using sharp step loss function')
