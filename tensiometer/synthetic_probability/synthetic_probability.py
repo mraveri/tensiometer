@@ -474,6 +474,7 @@ class FlowCallback(Callback):
         if self.loss_mode == 'standard':
             self.loss = loss.standard_loss()
         elif self.loss_mode == 'fixed':
+            print('alpha is : ',self.alpha_lossv)
             self.loss = loss.constant_weight_loss(self.alpha_lossv, self.beta_lossv)
         elif self.loss_mode == 'random':
             self.loss = loss.random_weight_loss(**kwargs)
@@ -558,13 +559,14 @@ class FlowCallback(Callback):
             # learning rate scheduler:
             total_steps = steps_per_epoch * epochs
             initial_lr = self.model.optimizer.lr.numpy()
-            lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
-            callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
+            # callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
             # callback to stop if weights start getting worse:
-            callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
-                                                           **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
+            # callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
+            #                                                **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
 
         # Run training:
         hist = self.model.fit(x=self.training_dataset.batch(batch_size),
@@ -1203,6 +1205,7 @@ class FlowCallback(Callback):
 
         # compute density loss on validation data:
         if "rho_loss" in self.training_metrics:
+            # import pdb; pdb.set_trace()
             _train_loss_components = self.loss.compute_loss_components(self.cast(self.training_logP_preabs),
                                                                        self.model.call(self.cast(self.training_samples)),
                                                                        self.cast(self.training_weights))
@@ -1231,6 +1234,8 @@ class FlowCallback(Callback):
                 self.log["lambda_2"].append(_test_loss_components[3])
                 self.log["rho_loss"].append(temp_train_rho_loss)
                 self.log["like_loss"].append(temp_train_like_loss)
+                # self.log["rho_loss"].append(self.model.loss.loss1_top)                
+                # self.log["like_loss"].append(self.model.loss.loss2_top)                                
                 self.log["val_rho_loss"].append(temp_val_rho_loss)
                 self.log["val_like_loss"].append(temp_val_like_loss)
 
@@ -1632,6 +1637,9 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         flow = FlowCallback(chain, **kwargs)
         # train posterior flow:
         flow.global_train(**kwargs)
+        # flow.global_train(alpha_lossv=1.0,**kwargs)
+        # flow.global_train(alpha_lossv=0.1,**kwargs)        
+
         # save trained model:
         if cache_dir is not None:
             flow.save(cache_dir+'/'+root_name)

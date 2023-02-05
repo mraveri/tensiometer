@@ -89,6 +89,13 @@ class constant_weight_loss(tf.keras.losses.Loss):
         # compute density loss function:
         loss_orig = -(y_pred + self.beta)
         #
+        # self.loss1_top = tf.reduce_sum(loss_orig*sample_weight) / tot_weights
+        # self.loss2_top = tf.reduce_sum(var_diff*sample_weight) / tot_weights
+        # tf.print(self.alpha, (1. - self.alpha), self.loss1_top, self.loss2_top, self.alpha*self.loss1_top + (1. - self.alpha)*self.loss2_top)                
+        # import pdb; pdb.set_trace()
+        # tf.print(tf.reduce_mean(y_true), tf.reduce_mean(y_pred), tf.reduce_mean(sample_weight))                
+        # tf.print(-1.*tf.reduce_mean(y_pred), loss1_top)                
+
         return loss_orig, var_diff
 
     def compute_loss(self, y_true, y_pred, sample_weight):
@@ -183,6 +190,13 @@ class variable_weight_loss(tf.keras.losses.Loss):
         if lambda_2 is None:
             lambda_2 = tf.keras.backend.get_value(self.lambda_2)
         #
+        # tf.print(tf.reduce_sum(loss_orig*sample_weight) / tot_weights, tf.reduce_sum(var_diff*sample_weight) / tot_weights)       
+        # self.loss1_top = tf.reduce_sum(loss_orig*sample_weight) / tot_weights
+        # self.loss2_top = tf.reduce_sum(var_diff*sample_weight) / tot_weights
+        # tf.print(lambda_1, lambda_2, loss1_top, loss2_top, lambda_1*loss1_top + lambda_2*loss2_top)                
+
+        # tf.print(tf.reduce_mean(y_true), tf.reduce_mean(y_pred), tf.reduce_mean(sample_weight))                
+        # tf.print(-1.*tf.reduce_mean(y_pred), loss1_top)                
         return loss_orig, var_diff, lambda_1, lambda_2
 
     def compute_loss(self, y_true, y_pred, sample_weight):
@@ -192,6 +206,8 @@ class variable_weight_loss(tf.keras.losses.Loss):
         # get components:
         loss_1, loss_2, lambda_1,lambda_2 = self.compute_loss_components(y_true, y_pred, sample_weight, self.lambda_1, self.lambda_2)
         #
+        # import pdb; pdb.set_trace()
+        # tf.print(loss_1, loss_2, lambda_1, lambda_2, lambda_1*loss_1 + lambda_2*loss_2)
         return lambda_1*loss_1 + lambda_2*loss_2
 
     def __call__(self, y_true, y_pred, sample_weight=None):
@@ -264,7 +280,7 @@ class annealed_weight_loss(variable_weight_loss):
     Slowly go from density to likelihood loss.
     """
 
-    def __init__(self, anneal_epoch=50, lambda_1=1.0, beta=0.0, roll_off_nepoch=10, **kwargs):
+    def __init__(self, anneal_epoch=125, lambda_1=1.0, beta=0.0, roll_off_nepoch=10, **kwargs):
         """
         Initialize loss function
         """
