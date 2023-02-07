@@ -370,7 +370,7 @@ class SharpStep(variable_weight_loss):
     Implement sharp stepping between two values
     """
 
-    def __init__(self, step_epoch=50, value_1=1.0, value_2=0.0, beta=0., **kwargs):
+    def __init__(self, step_epoch=50, value_1=1.0, value_2=0.1, beta=0., **kwargs):
         """
         Initialize loss function
         """

@@ -1,5 +1,5 @@
 """
-
+Main file containing the synthetic probability class and methods.
 """
 
 ###############################################################################
@@ -542,7 +542,7 @@ class FlowCallback(Callback):
         # We're trying to loop through the full sample each epoch
         if batch_size is None:
             if steps_per_epoch is None:
-                steps_per_epoch = 100
+                steps_per_epoch = 20
             batch_size = int(self.num_training_samples/steps_per_epoch)
         else:
             if steps_per_epoch is None:
@@ -563,10 +563,17 @@ class FlowCallback(Callback):
             lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
+<<<<<<< HEAD
             # callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
             # callback to stop if weights start getting worse:
             # callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
             #                                                **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
+=======
+            callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
+            ## callback to stop if weights start getting worse:
+            #callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
+            #                                               **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
+>>>>>>> fd4d860 (Small add)
 
         # Run training:
         hist = self.model.fit(x=self.training_dataset.batch(batch_size),
@@ -1219,10 +1226,10 @@ class FlowCallback(Callback):
                 temp_val_rho_loss = np.average(_test_loss_components[0], weights=self.test_weights)
                 temp_val_like_loss = np.average(_test_loss_components[1], weights=self.test_weights)
                 # add to log:
-                self.log["rho_loss"].append(self.loss.alpha*temp_train_rho_loss)
-                self.log["like_loss"].append((1.-self.loss.alpha)*temp_train_like_loss)
-                self.log["val_rho_loss"].append(self.loss.alpha*temp_val_rho_loss)
-                self.log["val_like_loss"].append((1.-self.loss.alpha)*temp_val_like_loss)
+                self.log["rho_loss"].append(temp_train_rho_loss)
+                self.log["like_loss"].append(temp_train_like_loss)
+                self.log["val_rho_loss"].append(temp_val_rho_loss)
+                self.log["val_like_loss"].append(temp_val_like_loss)
             if issubclass(type(self.loss), loss.variable_weight_loss):
                 # average:
                 temp_train_rho_loss = np.average(_train_loss_components[0], weights=self.training_weights)

@@ -220,3 +220,63 @@ class PowerLawDecayScheduler(Callback):
             tf.keras.backend.set_value(self.model.optimizer.lr, lr)
         except AttributeError:
             pass  # ignore
+
+###############################################################################
+# Adaptive learning rate scheduler:
+
+
+class AdaptiveScheduler(Callback):
+    """
+    """
+
+    def __init__(self, lr_max, lr_min, smoothing=True, smoothing_tau=5):
+        super(AdaptiveScheduler, self).__init__()
+
+        self.lr_max = lr_max
+        self.lr_min = lr_min
+        self.smoothing = smoothing
+        self.smoothing_alpha = 1. / smoothing_tau
+
+    def on_train_begin(self, logs=None):
+        self.step = 0
+
+        _initial_lr = 10**(0.5*(np.log10(self.lr_max) + np.log10(self.lr_min)))
+        
+
+        self.set_lr(_initial_lr)
+        #self.set_momentum(self.mom_schedule().start)
+
+    def on_epoch_begin(self, epoch, logs=None):
+        pass
+
+    def on_epoch_end(self, epoch, logs=None):
+
+        self.step += 1
+        _temp_lr = logs['lr'] * 10.**(0.001+logs['loss_rate'])
+        #if self.smoothing:
+        #    _temp_lr = self.smoothing_alpha * _temp_lr + (1. - self.smoothing_alpha) * logs['lr']
+        self.set_lr(_temp_lr)
+
+    def get_lr(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.lr)
+        except AttributeError:
+            return None
+
+    def get_momentum(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.momentum)
+        except AttributeError:
+            return None
+
+    def set_lr(self, lr):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+        except AttributeError:
+            pass  # ignore
+
+    def set_momentum(self, mom):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.momentum, mom)
+        except AttributeError:
+            pass  # ignore

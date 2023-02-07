@@ -1,5 +1,5 @@
 """
-This file does the profiling. Seems to be working fine!
+This file contains the code to perform profiling of the normalizing flow.
 """
 
 ###############################################################################
@@ -16,6 +16,7 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d
 from scipy.interpolate import LinearNDInterpolator
+from scipy.ndimage import gaussian_filter, gaussian_filter1d
 
 from numba import njit
 
@@ -205,8 +206,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         name_tag = kwargs.get('name_tag', flow.name_tag+'_profiler')
         # initialize the parent with the flow (so we can do margestats)
         _samples = flow.sample(num_samples)
+        if type(_samples) is not type(np.array([])):
+            _samples = _samples.numpy()        
         _loglikes = -flow.log_probability(_samples)
-        super(posterior_profile_plotter, self).__init__(samples=_samples.numpy(), loglikes=_loglikes.numpy(),
+        if type(_loglikes) is not type(np.array([])):
+            _loglikes = _loglikes.numpy()  
+        super(posterior_profile_plotter, self).__init__(samples=_samples, loglikes=_loglikes,
                                                         names=flow.param_names, labels=flow.param_labels,
                                                         ranges=flow.parameter_ranges,
                                                         name_tag=name_tag, **utils.filter_kwargs(kwargs, mcsamples.MCSamples))
@@ -477,8 +482,18 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return self.bestfit
 
+    def precompute_1D(self, params, **kwargs):
+        """
+        Precompute profiles for given params.
+        """
+        for name in params:
+            self.get1DDensityGridData(name, **kwargs)
+        #
+        return None
+
     def get1DDensityGridData(self, name, num_points_1D=128, randomize=True,
-                             pre_polish=False, polish=True, use_scipy=True, **kwargs):
+                             pre_polish=True, polish=False, use_scipy=True, 
+                             smoothing=True, **kwargs):
         """
         Compute 1D profile posteriors and return it as a grid density data
         for plotting and analysis.
@@ -637,10 +652,22 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
             raise NotImplementedError()
 
-        # initialize density (note that getdist assumes equispaced so we have to resample...)
+        # evaluate on a regular grid:
         _temp_interp = interp1d(_result_x, np.exp(_result_logP), kind='cubic', bounds_error=False, fill_value=0.0)
         _temp_x = np.linspace(marge_density.view_ranges[0], marge_density.view_ranges[1], num_points_1D)
         _temp_P = _temp_interp(_temp_x)
+
+        # smooth:
+        if smoothing:
+            par = self._initParamRanges(idx, None)
+            _smoothing_sigma = len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par.err
+            _smooth_scale_1D = kwargs.get('smooth_scale_1D', self.smooth_scale_1D)
+            if _smooth_scale_1D <= 0.:
+                _smooth_scale_1D = 0.1
+            _smoothing_sigma = _smooth_scale_1D * _smoothing_sigma
+            _temp_P = gaussian_filter1d(_temp_P, _smoothing_sigma, mode='reflect')
+
+        # initialize the density:
         density1D = Density1D(_temp_x, P=_temp_P, view_ranges=marge_density.view_ranges)
         density1D.normalize('max', in_place=True)
 
@@ -649,7 +676,16 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return density1D
 
-    def get2DDensityGridData(self, j, j2, num_points_2D=64, num_plot_contours=None, **kwargs):
+    def precompute_2D(self, param_pairs, **kwargs):
+        """
+        Precompute profiles for given names.
+        """
+        for names in param_pairs:
+            self.get2DDensityGridData(names[0], names[1], **kwargs)
+        #
+        return None
+
+    def get2DDensityGridData(self, j, j2, num_points_2D=64, smoothing=True, **kwargs):
         """
         Compute 2D profile posteriors and return it as a grid density data
         for plotting and analysis.
@@ -743,6 +779,35 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         _temp_y = np.linspace(marge_density.view_ranges[1][0], marge_density.view_ranges[1][1], num_points_2D)
         _temp_P = _temp_interp(*np.meshgrid(_temp_x, _temp_y))
 
+        t1 = time.time() - t0
+        if self.feedback > 1:
+            print('    - time taken for interpolation {0:.4g} (s)'.format(t1))
+
+        # smooth the results: IW
+        if smoothing:
+            if self.feedback > 1:
+                print('    - smoothing results')
+            t0 = time.time()
+
+            # get analysis for the two parameters:
+            par_1 = self._initParamRanges(idx1, None)
+            par_2 = self._initParamRanges(idx2, None)
+            # get overall smoothing factor:
+            _smooth_scale_2D = kwargs.get('smooth_scale_2D', self.smooth_scale_2D)
+            if _smooth_scale_2D <= 0.:
+                _smooth_scale_2D = 0.1
+            # get smoothing factor: 
+            _smoothing_sigma_1 = _smooth_scale_2D * len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par_1.err
+            _smoothing_sigma_2 = _smooth_scale_2D * len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par_2.err
+
+            # do the smoothing:
+            _temp_P = gaussian_filter(_temp_P, [_smoothing_sigma_1, _smoothing_sigma_2], mode='reflect')
+
+            t1 = time.time() - t0
+            if self.feedback > 1:
+                print('    - time taken for smoothing {0:.4g} (s)'.format(t1))
+
+        # initialize getdist densities:
         density2D = Density2D(_temp_x, _temp_y, P=_temp_P,
                               view_ranges=marge_density.view_ranges)
         density2D.normalize('max', in_place=True)
@@ -750,10 +815,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         density2D_T = Density2D(_temp_y, _temp_x, P=_temp_P.T,
                                 view_ranges=[marge_density.view_ranges[1], marge_density.view_ranges[0]])
         density2D_T.normalize('max', in_place=True)
-
-        t1 = time.time() - t0
-        if self.feedback > 1:
-            print('    - time taken for interpolation {0:.4g} (s)'.format(t1))
 
         # cache results:
         if idx1 not in self.profile_density_2D.keys():
@@ -766,7 +827,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return density2D
 
-    @tf.function(reduce_retracing=True)
+    ####@tf.function(reduce_retracing=True)
     def _masked_gradient_ascent(self, learning_rate, num_interactions, ensemble, mask):
         """
         Masked gradient descent for an ensemble of points.

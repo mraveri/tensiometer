@@ -1,3 +1,10 @@
+"""
+This file contains analytic prior bijectors that are used to pre-Gaussianize
+the prior distribution before running the trainable flow.
+
+These bijectors are meant to be fixed and not trainable.
+"""
+
 ###############################################################################
 # initial imports and set-up:
 
