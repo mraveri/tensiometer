@@ -1,5 +1,5 @@
 """
-This file implements information geometry methods.
+This file implements information geometry methods working on normalizing flows.
 """
 
 ###############################################################################

@@ -1,5 +1,5 @@
 """
-
+Main file containing the synthetic probability class and methods.
 """
 
 ###############################################################################
@@ -96,7 +96,7 @@ class FlowCallback(Callback):
     * `Y` designates samples in the gaussian approximation space, `Y` is obtained by shifting and scaling `X` by its mean and covariance (like a PCA);
     * `Z` designates samples in the gaussianized space, connected to `Y` with a normalizing flow denoted `trainable_bijector`.
 
-    The user may provide the `trainable_bijector` as a :class:`~tfp.bijectors.Bijector` object from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_ or make use of the utility class :class:`~.SimpleMAF` to instantiate a Masked Autoregressive Flow (with `trainable_bijector='MAF'`).
+    The user may provide the `trainable_bijector` as a :class:`~tfp.bijectors.Bijector` object from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_ or make use of the utility class :class:`~.MaskedAutoregressiveFLow` to instantiate a Masked Autoregressive Flow (with `trainable_bijector='MAF'`).
 
     This class derives from :class:`~tf.keras.callbacks.Callback` from Keras, which allows for visualization during training. The normalizing flows (X->Y->Z) are implemented as :class:`~tfp.bijectors.Bijector` objects and encapsulated in a Keras :class:`~tf.keras.Model`.
 
@@ -117,7 +117,7 @@ class FlowCallback(Callback):
         in the calculation. By default all running parameters.
     :type param_names: list, optional
     :param trainable_bijector: either a :class:`~tfp.bijectors.Bijector` object
-        representing the mapping from `Z` to `Y`, or 'MAF' to instantiate a :class:`~.SimpleMAF`, defaults to 'MAF'.
+        representing the mapping from `Z` to `Y`, or 'MAF' to instantiate a :class:`~.MaskedAutoregressiveFLow`, defaults to 'MAF'.
     :type trainable_bijector: optional
     :param learning_rate: initial learning rate, defaults to 1e-3.
     :type learning_rate: float, optional
@@ -322,7 +322,7 @@ class FlowCallback(Callback):
             
         # select model for trainable transformation:
         if trainable_bijector == 'MAF':
-            self.trainable_transformation = tb.SimpleMAF(self.num_params, feedback=self.feedback, **kwargs)
+            self.trainable_transformation = tb.MaskedAutoregressiveFLow(self.num_params, feedback=self.feedback, **kwargs)
         elif isinstance(trainable_bijector, tb.TrainableTransformation):
             self.trainable_transformation = trainable_bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
@@ -542,7 +542,7 @@ class FlowCallback(Callback):
         # We're trying to loop through the full sample each epoch
         if batch_size is None:
             if steps_per_epoch is None:
-                steps_per_epoch = 100
+                steps_per_epoch = 20
             batch_size = int(self.num_training_samples/steps_per_epoch)
         else:
             if steps_per_epoch is None:
@@ -559,8 +559,8 @@ class FlowCallback(Callback):
             # learning rate scheduler:
             total_steps = steps_per_epoch * epochs
             initial_lr = self.model.optimizer.lr.numpy()
-            # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
-            lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
+            lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            #lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
             callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
             # callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
@@ -1219,10 +1219,10 @@ class FlowCallback(Callback):
                 temp_val_rho_loss = np.average(_test_loss_components[0], weights=self.test_weights)
                 temp_val_like_loss = np.average(_test_loss_components[1], weights=self.test_weights)
                 # add to log:
-                self.log["rho_loss"].append(self.loss.alpha*temp_train_rho_loss)
-                self.log["like_loss"].append((1.-self.loss.alpha)*temp_train_like_loss)
-                self.log["val_rho_loss"].append(self.loss.alpha*temp_val_rho_loss)
-                self.log["val_like_loss"].append((1.-self.loss.alpha)*temp_val_like_loss)
+                self.log["rho_loss"].append(temp_train_rho_loss)
+                self.log["like_loss"].append(temp_train_like_loss)
+                self.log["val_rho_loss"].append(temp_val_rho_loss)
+                self.log["val_like_loss"].append(temp_val_like_loss)
             if issubclass(type(self.loss), loss.variable_weight_loss):
                 # average:
                 temp_train_rho_loss = np.average(_train_loss_components[0], weights=self.training_weights)

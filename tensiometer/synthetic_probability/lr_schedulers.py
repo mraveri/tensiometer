@@ -221,68 +221,41 @@ class PowerLawDecayScheduler(Callback):
         except AttributeError:
             pass  # ignore
 
-
 ###############################################################################
-# Step decay:
+# Adaptive learning rate scheduler:
 
-class StepDecayAnnealer():
+
+class AdaptiveScheduler(Callback):
     """
-    Utility function describing the step decay
-    """
-
-    def __init__(self, start=None, change_every=None, steps=None, steps_per_epoch=None, boundaries=None, values=None):
-        self.start = start
-        self.steps_per_epoch = steps_per_epoch
-        if boundaries is not None:
-            self.boundaries = boundaries
-            self.values = values            
-        else:            
-            self.ch = change_every
-            total_changes = int(steps/self.ch)
-            self.end = self.start/(10**total_changes)                
-            self.steps = float(steps)
-
-            self.boundaries = [self.ch*i for i in range(1, total_changes)]
-            self.values = [self.start/(10**i) for i in range(0, total_changes)]
-            
-        self.n = 0
-
-    def step(self):
-        self.n += 1
-        for i in range(len(self.boundaries)):
-            # print(epochv, self.boundaries[i], self.values[i])
-            if self.n < self.boundaries[i]*self.steps_per_epoch:
-                return self.values[i]
-            else:
-                pass
-                # print('')
-        return self.values[-1]
-            #     # print(self.n, self.boundaries, self.values[i])                
-            #     return self.values[-1]
-
-
-class StepDecayScheduler(Callback):
-    """
-    Step decay in learning rate
     """
 
-    def __init__(self, lr_max=None, change_every=None, steps=None, steps_per_epoch=None, boundaries=None, values=None):
-        super(StepDecayScheduler, self).__init__()
+    def __init__(self, lr_max, lr_min, smoothing=True, smoothing_tau=5):
+        super(AdaptiveScheduler, self).__init__()
 
-        self.step = 0
-        self.Annealer = StepDecayAnnealer(lr_max, change_every, steps, steps_per_epoch, boundaries, values)
-        self.lrs = []
+        self.lr_max = lr_max
+        self.lr_min = lr_min
+        self.smoothing = smoothing
+        self.smoothing_alpha = 1. / smoothing_tau
 
     def on_train_begin(self, logs=None):
         self.step = 0
-        self.set_lr(self.Annealer.start)
 
-    def on_train_batch_begin(self, batch, logs=None):
-        self.lrs.append(self.get_lr())
+        _initial_lr = 10**(0.5*(np.log10(self.lr_max) + np.log10(self.lr_min)))
+        
 
-    def on_train_batch_end(self, batch, logs=None):
+        self.set_lr(_initial_lr)
+        #self.set_momentum(self.mom_schedule().start)
+
+    def on_epoch_begin(self, epoch, logs=None):
+        pass
+
+    def on_epoch_end(self, epoch, logs=None):
+
         self.step += 1
-        self.set_lr(self.Annealer.step())
+        _temp_lr = logs['lr'] * 10.**(0.001+logs['loss_rate'])
+        #if self.smoothing:
+        #    _temp_lr = self.smoothing_alpha * _temp_lr + (1. - self.smoothing_alpha) * logs['lr']
+        self.set_lr(_temp_lr)
 
     def get_lr(self):
         try:
@@ -290,8 +263,20 @@ class StepDecayScheduler(Callback):
         except AttributeError:
             return None
 
+    def get_momentum(self):
+        try:
+            return tf.keras.backend.get_value(self.model.optimizer.momentum)
+        except AttributeError:
+            return None
+
     def set_lr(self, lr):
         try:
             tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+        except AttributeError:
+            pass  # ignore
+
+    def set_momentum(self, mom):
+        try:
+            tf.keras.backend.set_value(self.model.optimizer.momentum, mom)
         except AttributeError:
             pass  # ignore
