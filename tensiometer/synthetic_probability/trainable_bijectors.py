@@ -38,7 +38,6 @@ class TrainableTransformation(object):
         raise NotImplementedError
 
 
-
 ###############################################################################
 # Make separate NNs for each dimension:
 from tensorflow.keras.layers import Input, Layer, Lambda, Dense
@@ -181,11 +180,11 @@ class MaskedAutoregressiveFLow(TrainableTransformation):
 
         # initialize hidden units:
         if n_maf is None:
-            n_maf = 2*num_params
+            n_maf = num_params
         event_shape = (num_params,)
 
         if hidden_units is None:
-            hidden_units = [num_params*2]*2
+            hidden_units = [num_params*2, num_params]
 
         # initialize permutations:
         _permutations = False
@@ -221,11 +220,6 @@ class MaskedAutoregressiveFLow(TrainableTransformation):
             if affine:
                 # bijectors.append(ScaleRotoShift(num_params, name='affine_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
                 bijectors.append(ScaleRotoShift(num_params, **utils.filter_kwargs(kwargs, ScaleRotoShift)))                
-            ## add the inverse permutation:
-            #if _permutations:
-            #    inv_perm = np.zeros_like(_permutations[i])
-            #    inv_perm[_permutations[i]] = np.arange(len(inv_perm))
-            #    bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
 
         self.bijector = tfb.Chain(bijectors)
 
