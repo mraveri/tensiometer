@@ -560,10 +560,12 @@ class FlowCallback(Callback):
             total_steps = steps_per_epoch * epochs
             initial_lr = self.model.optimizer.lr.numpy()
             # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
-            #lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
-            # callbacks.append(lr_schedule)
+            boundaries = [int(0.3*total_steps), int(0.6*total_steps), int(0.8*total_steps)]
+            values = [initial_lr, 0.1*initial_lr, 0.01*initial_lr, 0.001*initial_lr]
+            lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, boundaries=boundaries, values=values, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
+            callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
-            callbacks.append(keras_callbacks.ReduceLROnPlateau(verbose=1,factor=0.5,cooldown=20,mode="min",min_delta=0.001,**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
+            # callbacks.append(keras_callbacks.ReduceLROnPlateau(verbose=1,factor=0.5,cooldown=20,mode="min",min_delta=0.001,**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
             # callback to stop if weights start getting worse:
             # callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
             #                                                **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
