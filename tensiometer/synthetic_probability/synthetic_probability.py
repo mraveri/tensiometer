@@ -559,11 +559,11 @@ class FlowCallback(Callback):
             # learning rate scheduler:
             total_steps = steps_per_epoch * epochs
             initial_lr = self.model.optimizer.lr.numpy()
-            lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
             #lr_schedule = lr.StepDecayScheduler(initial_lr, int(0.3*total_steps), total_steps, steps_per_epoch, **utils.filter_kwargs(kwargs, lr.StepDecayScheduler))            
-            callbacks.append(lr_schedule)
+            # callbacks.append(lr_schedule)
             # callback that reduces learning rate when it stops improving:
-            # callbacks.append(keras_callbacks.ReduceLROnPlateau(**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
+            callbacks.append(keras_callbacks.ReduceLROnPlateau(verbose=1,factor=0.5,cooldown=20,mode="min",min_delta=0.001,**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
             # callback to stop if weights start getting worse:
             # callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
             #                                                **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
@@ -1377,22 +1377,44 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_losses_rate(self, ax, logs={}):
+    def _plot_losses_rate(self, ax, logs={}, abs_value=False, epoch_range=20):
         """
         Plot evolution of loss function.
         """
-        if issubclass(type(self.loss), loss.standard_loss):
-            ax.plot(np.abs(self.log["loss_rate"]), lw=1., ls='-', label='training')
-            ax.plot(np.abs(self.log["val_loss_rate"]), lw=1., ls='-', label='validation')
-        elif issubclass(type(self.loss), loss.constant_weight_loss):
-            ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
-            ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
-            ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
-        elif issubclass(type(self.loss), loss.variable_weight_loss):
-            ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
-            ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
-            ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
-        ax.set_yscale('log')
+        if abs_value:
+            if issubclass(type(self.loss), loss.standard_loss):
+                ax.plot(np.abs(self.log["loss_rate"]), lw=1., ls='-', label='training')
+                ax.plot(np.abs(self.log["val_loss_rate"]), lw=1., ls='-', label='validation')
+            elif issubclass(type(self.loss), loss.constant_weight_loss):
+                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
+                ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
+                ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
+            elif issubclass(type(self.loss), loss.variable_weight_loss):
+                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
+                ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
+                ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
+        else:
+            if issubclass(type(self.loss), loss.standard_loss):
+                ax.plot(self.log["loss_rate"], lw=1., ls='-', label='training')
+                ax.plot(self.log["val_loss_rate"], lw=1., ls='-', label='validation')
+            elif issubclass(type(self.loss), loss.constant_weight_loss):
+                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all')
+                ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density')
+                ax.plot(self.log["like_loss_rate"], lw=1., ls='-', label='likelihood')
+            elif issubclass(type(self.loss), loss.variable_weight_loss):
+                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all')
+                ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density')
+                ax.plot(self.log["like_loss_rate"], lw=1., ls='-', label='likelihood')
+        if abs_value:
+            ax.set_yscale('log')
+        else:
+            ax.axhline(0., lw=1.0, ls='--', color='k')
+            # calculate variance of loss rate for last 30 epochs:
+            if len(self.log["val_loss_rate"]) > epoch_range:
+                loss_rate_sig = np.sqrt(np.var(self.log["val_loss_rate"][-epoch_range:]))
+                ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
+            else:
+                ax.set_ylim([-1, 1])
         ax.set_title(r"$\Delta$ Loss / epoch")
         ax.set_xlabel(r"Epoch $\#$")
         #ax.set_ylabel(r"$\Delta$ Loss / epoch")
