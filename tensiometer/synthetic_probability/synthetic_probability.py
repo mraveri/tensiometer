@@ -323,6 +323,8 @@ class FlowCallback(Callback):
         # select model for trainable transformation:
         if trainable_bijector == 'MAF':
             self.trainable_transformation = tb.MaskedAutoregressiveFLow(self.num_params, feedback=self.feedback, **kwargs)
+        elif trainable_bijector == 'MAFSpline':
+            self.trainable_transformation = tb.SplineMaskedAutoregressiveFlow(self.num_params, feedback=self.feedback, **kwargs)
         elif isinstance(trainable_bijector, tb.TrainableTransformation):
             self.trainable_transformation = trainable_bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):

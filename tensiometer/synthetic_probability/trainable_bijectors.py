@@ -414,7 +414,7 @@ class SplineMaskedAutoregressiveFlow(TrainableTransformation):
 
     def save(self, path):
         """
-        Save a `SplineMAF` object.
+        Save a `SplineMaskedAutoregressiveFlow` object.
 
         :param path: path of the directory where to save.
         :type path: str
@@ -426,7 +426,7 @@ class SplineMaskedAutoregressiveFlow(TrainableTransformation):
     @classmethod
     def load(cls, path, **kwargs):
         """
-        Load a saved `SplineMAF` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
+        Load a saved `SplineMaskedAutoregressiveFlow` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
 
         :type num_params: int
         :param path: path of the directory from which to load.
@@ -434,7 +434,7 @@ class SplineMaskedAutoregressiveFlow(TrainableTransformation):
         :return: a :class:`~.SimpleMAF`.
         """
         permutations = pickle.load(open(path+'_permutations.pickle', 'rb'))
-        maf = SplineMAF(num_params=len(permutations[0]), permutations=permutations, **utils.filter_kwargs(kwargs, SplineMAF))
+        maf = SplineMaskedAutoregressiveFlow(num_params=len(permutations[0]), permutations=permutations, **utils.filter_kwargs(kwargs, SplineMaskedAutoregressiveFlow))
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
