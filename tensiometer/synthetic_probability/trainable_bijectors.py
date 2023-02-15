@@ -40,34 +40,6 @@ class TrainableTransformation(object):
 
 
 ###############################################################################
-# Make separate NNs for each dimension:
-from tensorflow.keras.layers import Input, Layer, Lambda, Dense
-from tensorflow.keras.models import Model, Sequential
-
-
-def build_nn(dim_in, dim_out, hidden_units=[], activation='softplus', **kwargs):
-    if len(hidden_units) == 0 or dim_in == 0:
-        model = Sequential(Dense(dim_out, activation=None, input_shape=(dim_in,)))
-    else:
-        model = Sequential()
-        model.add(Dense(hidden_units[0], activation=activation, input_shape=(dim_in,), **kwargs))
-        for n in hidden_units[1:]:
-            model.add(Dense(n, activation=activation, **kwargs))
-        model.add(Dense(dim_out, activation=None, **kwargs))
-    return model
-
-
-def build_AR_model(num_params, nout, hidden_units=[], **kwargs):
-    x = Input(num_params)
-    params = []
-    for dim in range(num_params):
-        nn = build_nn(dim, nout, hidden_units=hidden_units, **kwargs)
-        params.append(nn(x[..., :dim]))
-    params = Lambda(lambda x: tf.stack(x, axis=-2))(params)
-    return Model(x, params)
-
-
-###############################################################################
 # class to build a scaling, rotation and shift bijector:
 
 
@@ -175,147 +147,6 @@ class ScaleRotoShift(tfb.Bijector):
 
 
 ###############################################################################
-# helper class to build a masked-autoregressive flow:
-
-
-class MaskedAutoregressiveFLow(TrainableTransformation):
-    """
-    A class to implement a Masked AutoRegressive Flow (MAF) using the implementation :class:`tfp.bijectors.AutoregressiveNetwork` from from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_. Additionally, this class provides utilities to load/save models, including random permutations.
-
-    :param num_params: number of parameters, ie the dimension of the space of which the bijector is defined.
-    :type num_params: int
-    :param n_maf: number of MAFs to stack. Defaults to None, in which case it is set to `2*num_params`.
-    :type n_maf: int, optional
-    :param hidden_units: a list of the number of nodes per hidden layers. Defaults to None, in which case it is set to `[num_params*2]*2`.
-    :type hidden_units: list, optional
-    :param permutations: whether to use shuffle dimensions between stacked MAFs, defaults to True.
-    :type permutations: bool, optional
-    :param activation: activation function to use in all layers, defaults to :func:`tf.math.asinh`.
-    :type activation: optional
-    :param kernel_initializer: kernel initializer, defaults to 'glorot_uniform'.
-    :type kernel_initializer: str, optional
-    :param feedback: print the model architecture, defaults to 0.
-    :type feedback: int, optional
-    :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
-    """
-
-    def __init__(
-            self,
-            num_params,
-            flex_mode=True,
-            n_maf=None,
-            hidden_units=None,
-            permutations=True,
-            affine=False,
-            activation=tf.math.asinh,
-            kernel_initializer=None,
-            int_np_prec=np.int32,
-            feedback=0,
-            **kwargs
-        ):
-
-        # initialize hidden units:
-        if n_maf is None:
-            n_maf = num_params
-        event_shape = (num_params,)
-
-        if hidden_units is None:
-            hidden_units = [num_params * 2, num_params]
-
-        # initialize permutations:
-        _permutations = False
-        if isinstance(permutations, Iterable):
-            assert len(permutations) == n_maf
-            _permutations = permutations
-        elif isinstance(permutations, bool):
-            if permutations:
-                _permutations = [np.random.permutation(num_params) for _ in range(n_maf)]
-            else:
-                _permutations = False
-        self.permutations = _permutations
-
-        # Build transformed distribution
-        bijectors = []
-        for i in range(n_maf):
-            # add permutations:
-            if _permutations:
-                bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
-            # add MAF layer:
-            if kernel_initializer is None:
-                kernel_initializer = tf.keras.initializers.VarianceScaling(
-                    scale=1. / n_maf, mode='fan_avg', distribution='truncated_normal'
-                    )
-            if flex_mode:
-                nout = 2
-                shift_and_log_scale_fn = build_AR_model(
-                    num_params,
-                    nout,
-                    hidden_units=hidden_units,
-                    activation=activation,
-                    kernel_initializer=kernel_initializer,
-                    **utils.filter_kwargs(kwargs, Dense)
-                    )
-            else:
-                shift_and_log_scale_fn = tfb.AutoregressiveNetwork(
-                    params=2,
-                    event_shape=event_shape,
-                    hidden_units=hidden_units,
-                    activation=activation,
-                    kernel_initializer=kernel_initializer,
-                    **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork)
-                    )
-            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=shift_and_log_scale_fn)
-
-            bijectors.append(maf)
-            # add affine layer:
-            if affine:
-                # bijectors.append(ScaleRotoShift(num_params, name='affine_'+str(i), **utils.filter_kwargs(kwargs, ScaleRotoShift)))
-                bijectors.append(ScaleRotoShift(num_params, **utils.filter_kwargs(kwargs, ScaleRotoShift)))
-
-        self.bijector = tfb.Chain(bijectors)
-
-        if feedback > 0:
-            print("Building Masked Autoregressive Flow")
-            print("    - affine         :", affine)
-            print("    - permutations   :", permutations is not None)
-            print("    - number of MAFs :", n_maf)
-            print("    - activation     :", activation)
-            print("    - hidden_units   :", hidden_units)
-
-    def save(self, path):
-        """
-        Save a `SimpleMAF` object.
-
-        :param path: path of the directory where to save.
-        :type path: str
-        """
-        checkpoint = tf.train.Checkpoint(bijector=self.bijector)
-        checkpoint.write(path)
-        pickle.dump(self.permutations, open(path + '_permutations.pickle', 'wb'))
-
-    @classmethod
-    def load(cls, path, **kwargs):
-        """
-        Load a saved `SimpleMAF` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
-
-        :type num_params: int
-        :param path: path of the directory from which to load.
-        :type path: str
-        :return: a :class:`~.SimpleMAF`.
-        """
-        permutations = pickle.load(open(path + '_permutations.pickle', 'rb'))
-        maf = MaskedAutoregressiveFLow(
-            num_params=len(permutations[0]),
-            permutations=permutations,
-            **utils.filter_kwargs(kwargs, MaskedAutoregressiveFLow)
-            )
-        checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
-        checkpoint.read(path)
-        #
-        return maf
-
-
-###############################################################################
 # helper class to build a spline-autoregressive flow, base spline class:
 
 
@@ -365,9 +196,9 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         bin_heights = tf.math.scalar_mul(factor, bin_heights)
 
                         knot_slopes = params[..., spline_knots * 2:]
-                        # knot_slopes=tf.math.softplus(knot_slopes)
+                        knot_slopes = tf.math.softplus(knot_slopes)
                         # knot_slopes=slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
-                        knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                        # knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
 
                         return bin_widths, bin_heights, knot_slopes
 
@@ -400,96 +231,157 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
 
 
 ###############################################################################
+# Make separate NNs for each dimension:
+from tensorflow.keras.layers import Input, Lambda, Dense
+from tensorflow.keras.models import Model, Sequential
+
+
+def build_nn(dim_in, dim_out, hidden_units, activation, **kwargs):
+    if len(hidden_units) == 0 or dim_in == 0:
+        model = Sequential(Dense(dim_out, activation=None, input_shape=(dim_in,)))
+    else:
+        model = Sequential()
+        model.add(Dense(hidden_units[0], activation=activation, input_shape=(dim_in,), **kwargs))
+        for n in hidden_units[1:]:
+            model.add(Dense(n, activation=activation, **kwargs))
+        model.add(Dense(dim_out, activation=None, **kwargs))
+    return model
+
+
+def build_AR_model(num_params, transf_params, hidden_units=[], scale_with_dim=True, **kwargs):
+    x = Input(num_params)
+    params = []
+    for dim in range(num_params):
+        if scale_with_dim:
+            _h = [np.ceil(h * dim / num_params) for h in hidden_units]
+        else:
+            _h = hidden_units
+        nn = build_nn(dim, transf_params, hidden_units=_h, **kwargs)
+        params.append(nn(x[..., :dim]))
+    params = Lambda(lambda x: tf.stack(x, axis=-2))(params)
+    return Model(x, params)
+
+
+###############################################################################
 # helper class to build a spline-autoregressive flow:
 
 
-class SplineMaskedAutoregressiveFlow(TrainableTransformation):
+class AutoregressiveFlow(TrainableTransformation):
     """
     """
 
     def __init__(
             self,
             num_params,
-            spline_knots,
-            flex_mode=True,
-            range_max=5.,
-            n_maf=None,
+            transformation_type='affine',  # 'affine' or 'spline'
+            autoregressive_type='masked',  # 'masked' or 'flex'
+            n_transformations=None,
             hidden_units=None,
-            permutations=True,
-            affine=True,
             activation=tf.math.asinh,
             kernel_initializer='glorot_uniform',
+            permutations=True,
+            scale_roto_shift=True,
+            map_to_unitcube=False,
+            spline_knots=8,
+            range_max=5.,
+            autoregressive_scale_with_dim=True,
             int_np_prec=np.int32,
             feedback=0,
-            map_to_unitsq=False,
             **kwargs
         ):
 
-        if n_maf is None:
-            n_maf = 2 * num_params
+        if n_transformations is None:
+            n_transformations = 2 * num_params
         event_shape = (num_params,)
 
         if hidden_units is None:
             hidden_units = [num_params * 2] * 2
 
+        if isinstance(transformation_type, str):
+            _transformation_types = [transformation_type] * n_transformations
+            _autoregressive_types = [autoregressive_type] * n_transformations
+        else:
+            _transformation_types = transformation_type
+            _autoregressive_types = autoregressive_type
+            assert len(transformation_type) == n_transformations
+            assert len(autoregressive_type) == n_transformations
+            
         if permutations is None:
             _permutations = False
         elif isinstance(permutations, Iterable):
-            assert len(permutations) == n_maf
+            assert len(permutations) == n_transformations
             _permutations = permutations
         elif isinstance(permutations, bool):
             if permutations:
-                _permutations = [np.random.permutation(num_params) for _ in range(n_maf)]
+                _permutations = [np.random.permutation(num_params) for _ in range(n_transformations)]
             else:
                 _permutations = False
-
         self.permutations = _permutations
+
+        if map_to_unitcube:
+            assert transformation_type == 'spline'
 
         # Build transformed distribution
         bijectors = []
-        for i in range(n_maf):
+        for i in range(n_transformations):
+            # add permutations:
             if _permutations:
                 bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
-            if map_to_unitsq:
+            # add map to unit cube
+            if map_to_unitcube:
                 bijectors.append(tfb.Invert(tfb.NormalCDF()))
 
-            if flex_mode:
-                nout = 3 * spline_knots - 1
-                shift_and_log_scale_fn = build_AR_model(
+            # add main transformation
+            _transformation_type = _transformation_types[i]
+            _autoregressive_type = _autoregressive_types[i]
+
+            if _transformation_type == 'affine':
+                transf_params = 2
+            elif _transformation_type == 'spline':
+                transf_params = 3 * spline_knots - 1
+            else:
+                raise ValueError
+
+            ## first, get networks that parametrize transformation
+            if _autoregressive_type == 'flex':
+                nn = build_AR_model(
                     num_params,
-                    nout,
+                    transf_params,
                     hidden_units=hidden_units,
                     activation=activation,
                     kernel_initializer=kernel_initializer,
+                    scale_with_dim=autoregressive_scale_with_dim,
                     **utils.filter_kwargs(kwargs, Dense)
                     )
-            else:
-                made = tfb.AutoregressiveNetwork(
-                    params=3 * spline_knots - 1,
+            elif _autoregressive_type == 'masked':
+                nn = tfb.AutoregressiveNetwork(
+                    params=transf_params,
                     event_shape=event_shape,
                     hidden_units=hidden_units,
                     activation=activation,
                     kernel_initializer=kernel_initializer,
                     **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork)
                     )
-                shift_and_log_scale_fn = made
-
-            if map_to_unitsq:
-                maf = SplineHelper(
-                    shift_and_log_scale_fn=shift_and_log_scale_fn,
-                    spline_knots=spline_knots,
-                    range_min=0.,
-                    range_max=1.
-                    )
             else:
-                maf = SplineHelper(
-                    shift_and_log_scale_fn=shift_and_log_scale_fn, spline_knots=spline_knots, range_max=range_max
-                    )
-            bijectors.append(maf)
-            if map_to_unitsq:
+                raise ValueError
+
+            if _transformation_type == 'affine':
+                transformation = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=nn)
+            elif _transformation_type == 'spline':
+                if map_to_unitcube:
+                    transformation = SplineHelper(
+                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_min=0., range_max=1.
+                        )
+                else:
+                    transformation = SplineHelper(
+                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max
+                        )
+            bijectors.append(transformation)
+            if map_to_unitcube:
                 bijectors.append(tfb.NormalCDF())
+
             # add affine layer:
-            if affine:
+            if scale_roto_shift:
                 bijectors.append(
                     ScaleRotoShift(
                         num_params,
@@ -497,24 +389,25 @@ class SplineMaskedAutoregressiveFlow(TrainableTransformation):
                         **utils.filter_kwargs(kwargs, ScaleRotoShift)
                         )
                     )
-            if _permutations:  # add the inverse permutation
-                inv_perm = np.zeros_like(_permutations[i])
-                inv_perm[_permutations[i]] = np.arange(len(inv_perm))
-                bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
+
+            # if _permutations:  # add the inverse permutation
+            #     inv_perm = np.zeros_like(_permutations[i])
+            #     inv_perm[_permutations[i]] = np.arange(len(inv_perm))
+            #     bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
 
         self.bijector = tfb.Chain(bijectors)
 
         if feedback > 0:
             print("Building Spline MAF")
-            print("    - affine                :", affine)
+            print("    - scale_roto_shift      :", scale_roto_shift)
             print("    - permutations          :", permutations)
-            print("    - number of Spline MAFs :", n_maf)
+            print("    - # transformations     :", n_transformations)
             print("    - activation            :", activation)
             print("    - hidden_units          :", hidden_units)
 
     def save(self, path):
         """
-        Save a `SplineMaskedAutoregressiveFlow` object.
+        Save a `AutoregressiveFlow` object.
 
         :param path: path of the directory where to save.
         :type path: str
@@ -526,15 +419,19 @@ class SplineMaskedAutoregressiveFlow(TrainableTransformation):
     @classmethod
     def load(cls, path, **kwargs):
         """
-        Load a saved `SplineMaskedAutoregressiveFlow` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
+        Load a saved `AutoregressiveFlow` object. The number of parameters and all other keyword arguments (except for `permutations`) must be included as the MAF is first created with random weights and then these weights are restored.
 
         :type num_params: int
         :param path: path of the directory from which to load.
         :type path: str
         :return: a :class:`~.SimpleMAF`.
         """
-        permutations = pickle.load(open(path+'_permutations.pickle', 'rb'))
-        maf = SplineMaskedAutoregressiveFlow(num_params=len(permutations[0]), permutations=permutations, **utils.filter_kwargs(kwargs, SplineMaskedAutoregressiveFlow))
+        permutations = pickle.load(open(path + '_permutations.pickle', 'rb'))
+        maf = AutoregressiveFlow(
+            num_params=len(permutations[0]),
+            permutations=permutations,
+            **utils.filter_kwargs(kwargs, AutoregressiveFlow)
+            )
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
