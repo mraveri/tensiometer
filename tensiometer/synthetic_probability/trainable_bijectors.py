@@ -278,7 +278,7 @@ class AutoregressiveFlow(TrainableTransformation):
             n_transformations=None,
             hidden_units=None,
             activation=tf.math.asinh,
-            kernel_initializer='glorot_uniform',
+            kernel_initializer=None,
             permutations=True,
             scale_roto_shift=True,
             map_to_unitcube=False,
@@ -305,7 +305,7 @@ class AutoregressiveFlow(TrainableTransformation):
             _autoregressive_types = autoregressive_type
             assert len(transformation_type) == n_transformations
             assert len(autoregressive_type) == n_transformations
-            
+
         if permutations is None:
             _permutations = False
         elif isinstance(permutations, Iterable):
@@ -320,6 +320,11 @@ class AutoregressiveFlow(TrainableTransformation):
 
         if map_to_unitcube:
             assert transformation_type == 'spline'
+
+        if kernel_initializer is None:
+            kernel_initializer = tf.keras.initializers.VarianceScaling(
+                scale=1. / n_transformations, mode='fan_avg', distribution='truncated_normal'
+                )
 
         # Build transformed distribution
         bijectors = []
