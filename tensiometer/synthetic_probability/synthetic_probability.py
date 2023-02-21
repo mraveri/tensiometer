@@ -1540,16 +1540,21 @@ class FlowCallback(Callback):
         if abs_value:
             ax.set_yscale('log')
         else:
+            # plot horizontal line at zero:
             ax.axhline(0., lw=1.0, ls='--', color='k')
             # calculate variance of loss rate for last 30 epochs:
-            if len(self.log["val_loss_rate"]) > epoch_range:
-                loss_rate_sig = np.sqrt(np.var(self.log["val_loss_rate"][-epoch_range:]))
-                ax.set_ylim([-3 * loss_rate_sig, 3 * loss_rate_sig])
+            if 'val_loss_rate' in self.log.keys():
+                if len(self.log["val_loss_rate"]) > epoch_range:
+                    loss_rate_sig = np.sqrt(np.var(self.log["val_loss_rate"][-epoch_range:]))
+                    ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
+            elif 'loss_rate' in self.log.keys():
+                if len(self.log["loss_rate"]) > epoch_range:
+                    loss_rate_sig = np.sqrt(np.var(self.log["loss_rate"][-epoch_range:]))
+                    ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
             else:
                 ax.set_ylim([-1, 1])
         ax.set_title(r"$\Delta$ Loss / epoch")
         ax.set_xlabel(r"Epoch $\#$")
-        #ax.set_ylabel(r"$\Delta$ Loss / epoch")
         # legend:
         ax.legend()
         #
