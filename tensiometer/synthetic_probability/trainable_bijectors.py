@@ -280,10 +280,10 @@ class AutoregressiveFlow(TrainableTransformation):
             activation=tf.math.asinh,
             kernel_initializer=None,
             permutations=True,
-            scale_roto_shift=True,
+            scale_roto_shift=False,
             map_to_unitcube=False,
             spline_knots=8,
-            range_max=5.,
+            range_max=3.,
             autoregressive_scale_with_dim=True,
             int_np_prec=np.int32,
             feedback=0,
@@ -306,6 +306,7 @@ class AutoregressiveFlow(TrainableTransformation):
             assert len(transformation_type) == n_transformations
             assert len(autoregressive_type) == n_transformations
 
+        # initialize permutations:
         if permutations is None:
             _permutations = False
         elif isinstance(permutations, Iterable):
@@ -329,6 +330,7 @@ class AutoregressiveFlow(TrainableTransformation):
         # Build transformed distribution
         bijectors = []
         for i in range(n_transformations):
+
             # add permutations:
             if _permutations:
                 bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
@@ -403,12 +405,14 @@ class AutoregressiveFlow(TrainableTransformation):
         self.bijector = tfb.Chain(bijectors)
 
         if feedback > 0:
-            print("Building Spline MAF")
-            print("    - scale_roto_shift      :", scale_roto_shift)
-            print("    - permutations          :", permutations)
+            print("Building Autoregressive Flow")
             print("    - # transformations     :", n_transformations)
-            print("    - activation            :", activation)
             print("    - hidden_units          :", hidden_units)
+            print("    - transformation_type   :", transformation_type)
+            print("    - autoregressive_type   :", autoregressive_type)
+            print("    - permutations          :", permutations)
+            print("    - scale_roto_shift      :", scale_roto_shift)
+            print("    - activation            :", activation)
 
     def save(self, path):
         """

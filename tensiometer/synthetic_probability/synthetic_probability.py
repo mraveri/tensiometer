@@ -139,7 +139,7 @@ class FlowCallback(Callback):
             plot_every=10,
             prior_bijector='ranges',
             apply_pregauss=True,
-            trainable_bijector='MAF',
+            trainable_bijector='AutoregressiveFlow',
             validation_split=0.1,
             **kwargs
         ):
@@ -345,10 +345,8 @@ class FlowCallback(Callback):
             print('* Initializing trainable bijector')
 
         # select model for trainable transformation:
-        if trainable_bijector == 'MAF':
-            self.trainable_transformation = tb.MaskedAutoregressiveFLow(self.num_params, feedback=self.feedback, **kwargs)
-        elif trainable_bijector == 'MAFSpline':
-            self.trainable_transformation = tb.SplineMaskedAutoregressiveFlow(self.num_params, feedback=self.feedback, **kwargs)
+        if trainable_bijector == 'AutoregressiveFlow':
+            self.trainable_transformation = tb.AutoregressiveFlow(self.num_params, feedback=self.feedback, **kwargs)
         elif isinstance(trainable_bijector, tb.TrainableTransformation):
             self.trainable_transformation = trainable_bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
@@ -522,7 +520,7 @@ class FlowCallback(Callback):
         return None
 
     def _init_model(
-            self, learning_rate=1.e-3, clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
+            self, learning_rate=1.e-2, clipnorm=None, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
         ):
         """
         Initialize the loss function.
@@ -536,13 +534,13 @@ class FlowCallback(Callback):
         # set loss functions relative weights:
         if not self.has_loglikes and not loss_mode == 'standard':
             raise ValueError(
-                'Cannot use likelihood based loss functions if the input chain does not have likelihood values'
+                'Cannot use posterior based loss functions if the input chain does not have posterior values'
                 )
         # save in:
         self.alpha_lossv = alpha_lossv
         self.beta_lossv = beta_lossv
         self.initial_learning_rate = learning_rate
-        self.final_learning_rate = learning_rate / 100.
+        self.final_learning_rate = learning_rate / 1000.
         self.clipnorm = clipnorm
         self.loss_mode = loss_mode
         # allocate and initialize loss model:
@@ -632,11 +630,13 @@ class FlowCallback(Callback):
         if callbacks is None:
             callbacks = []
             # learning rate scheduler:
-            total_steps = steps_per_epoch * epochs
+            total_steps = epochs
             initial_lr = self.model.optimizer.lr.numpy()
             # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
             boundaries = [int(0.3 * total_steps), int(0.6 * total_steps), int(0.8 * total_steps)]
-            values = [initial_lr, 0.1 * initial_lr, 0.01 * initial_lr, 0.001 * initial_lr]
+            values = np.logspace(np.log10(self.initial_learning_rate), 
+                                 np.log10(self.final_learning_rate),
+                                 len(boundaries)+1)    
             lr_schedule = lr.StepDecayScheduler(
                 initial_lr,
                 int(0.3 * total_steps),
@@ -647,11 +647,6 @@ class FlowCallback(Callback):
                 **utils.filter_kwargs(kwargs, lr.StepDecayScheduler)
                 )
             callbacks.append(lr_schedule)
-            # callback that reduces learning rate when it stops improving:
-            # callbacks.append(keras_callbacks.ReduceLROnPlateau(verbose=1,factor=0.5,cooldown=20,mode="min",min_delta=0.001,**utils.filter_kwargs(kwargs, keras_callbacks.ReduceLROnPlateau)))
-            # callback to stop if weights start getting worse:
-            # callbacks.append(keras_callbacks.EarlyStopping(patience=20, restore_best_weights=True,
-            #                                                **utils.filter_kwargs(kwargs, keras_callbacks.EarlyStopping)))
 
         # Run training:
         hist = self.model.fit(
@@ -1175,13 +1170,13 @@ class FlowCallback(Callback):
                 "lr",
                 # loss breakdown:
                 "rho_loss",
-                "like_loss",
+                "ee_loss",
                 "val_rho_loss",
-                "val_like_loss",
+                "val_ee_loss",
                 # loss improvement rate:
                 "loss_rate",
                 "rho_loss_rate",
-                "like_loss_rate",
+                "ee_loss_rate",
                 # KS test:
                 "chi2Z_ks",
                 "chi2Z_ks_p",
@@ -1200,13 +1195,13 @@ class FlowCallback(Callback):
                 "lr",
                 # loss breakdown:
                 "rho_loss",
-                "like_loss",
+                "ee_loss",
                 "val_rho_loss",
-                "val_like_loss",
+                "val_ee_loss",
                 # loss improvement rate:
                 "loss_rate",
                 "rho_loss_rate",
-                "like_loss_rate",
+                "ee_loss_rate",
                 # KS test:
                 "chi2Z_ks",
                 "chi2Z_ks_p",
@@ -1307,29 +1302,29 @@ class FlowCallback(Callback):
             if issubclass(type(self.loss), loss.constant_weight_loss):
                 # average:
                 temp_train_rho_loss = np.average(_train_loss_components[0], weights=self.training_weights)
-                temp_train_like_loss = np.average(_train_loss_components[1], weights=self.training_weights)
+                temp_train_ee_loss = np.average(_train_loss_components[1], weights=self.training_weights)
                 temp_val_rho_loss = np.average(_test_loss_components[0], weights=self.test_weights)
-                temp_val_like_loss = np.average(_test_loss_components[1], weights=self.test_weights)
+                temp_val_ee_loss = np.average(_test_loss_components[1], weights=self.test_weights)
                 # add to log:
                 self.log["rho_loss"].append(temp_train_rho_loss)
-                self.log["like_loss"].append(temp_train_like_loss)
+                self.log["ee_loss"].append(temp_train_ee_loss)
                 self.log["val_rho_loss"].append(temp_val_rho_loss)
-                self.log["val_like_loss"].append(temp_val_like_loss)
+                self.log["val_ee_loss"].append(temp_val_ee_loss)
             if issubclass(type(self.loss), loss.variable_weight_loss):
                 # average:
                 temp_train_rho_loss = np.average(_train_loss_components[0], weights=self.training_weights)
-                temp_train_like_loss = np.average(_train_loss_components[1], weights=self.training_weights)
+                temp_train_ee_loss = np.average(_train_loss_components[1], weights=self.training_weights)
                 temp_val_rho_loss = np.average(_test_loss_components[0], weights=self.test_weights)
-                temp_val_like_loss = np.average(_test_loss_components[1], weights=self.test_weights)
+                temp_val_ee_loss = np.average(_test_loss_components[1], weights=self.test_weights)
                 # add to log:
                 self.log["lambda_1"].append(_test_loss_components[2])
                 self.log["lambda_2"].append(_test_loss_components[3])
                 self.log["rho_loss"].append(temp_train_rho_loss)
-                self.log["like_loss"].append(temp_train_like_loss)
+                self.log["ee_loss"].append(temp_train_ee_loss)
                 # self.log["rho_loss"].append(self.model.loss.loss1_top)
-                # self.log["like_loss"].append(self.model.loss.loss2_top)
+                # self.log["ee_loss"].append(self.model.loss.loss2_top)
                 self.log["val_rho_loss"].append(temp_val_rho_loss)
-                self.log["val_like_loss"].append(temp_val_like_loss)
+                self.log["val_ee_loss"].append(temp_val_ee_loss)
 
         # loss rate:
         if "loss_rate" in self.training_metrics:
@@ -1345,10 +1340,10 @@ class FlowCallback(Callback):
         if "rho_loss_rate" in self.training_metrics:
             if len(self.log["rho_loss"]) < 2:
                 self.log["rho_loss_rate"].append(0.0)
-                self.log["like_loss_rate"].append(0.0)
+                self.log["ee_loss_rate"].append(0.0)
             else:
                 self.log["rho_loss_rate"].append(self.log["rho_loss"][-1] - self.log["rho_loss"][-2])
-                self.log["like_loss_rate"].append(self.log["like_loss"][-1] - self.log["like_loss"][-2])
+                self.log["ee_loss_rate"].append(self.log["ee_loss"][-1] - self.log["ee_loss"][-2])
 
     @matplotlib.rc_context(plot_options)
     def _plot_loss(self, ax, logs={}):
@@ -1444,14 +1439,14 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_density_likelihood_losses(self, ax, logs={}):
+    def _plot_density_evidence_error_losses(self, ax, logs={}):
         """
-        Plot behavior of density and likelihood loss as training progresses.
+        Plot behavior of density and evidence-error loss as training progresses.
         """
         ax.plot(np.abs(self.log["rho_loss"]), lw=1., ls='-', color='tab:blue')
-        ax.plot(np.abs(self.log["like_loss"]), lw=1., ls='-', color='tab:orange')
+        ax.plot(np.abs(self.log["ee_loss"]), lw=1., ls='-', color='tab:orange')
         ax.plot(np.abs(self.log["val_rho_loss"]), lw=1., ls='--', color='tab:blue', label='density')
-        ax.plot(np.abs(self.log["val_like_loss"]), lw=1., ls='--', color='tab:orange', label='likelihood')
+        ax.plot(np.abs(self.log["val_ee_loss"]), lw=1., ls='--', color='tab:orange', label='evidence error')
         ax.set_title(r"Loss breakdown")
         ax.set_xlabel(r"Epoch $\#$")
         ax.set_yscale('log')
@@ -1476,15 +1471,15 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_weighted_density_likelihood_losses(self, ax, logs={}):
+    def _plot_weighted_density_evidence_error_losses(self, ax, logs={}):
         """
-        Plot behavior of density and likelihood loss as training progresses.
+        Plot behavior of density and evidence error loss as training progresses.
         """
         ax.plot(
             np.abs(np.array(self.log["lambda_1"]) * np.array(self.log["rho_loss"])), lw=1., ls='-', color='tab:blue'
             )
         ax.plot(
-            np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["like_loss"])), lw=1., ls='-', color='tab:orange'
+            np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["ee_loss"])), lw=1., ls='-', color='tab:orange'
             )
         ax.plot(
             np.abs(np.array(self.log["lambda_1"]) * np.array(self.log["val_rho_loss"])),
@@ -1494,11 +1489,11 @@ class FlowCallback(Callback):
             label='density'
             )
         ax.plot(
-            np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["val_like_loss"])),
+            np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["val_ee_loss"])),
             lw=1.,
             ls='--',
             color='tab:orange',
-            label='likelihood'
+            label='evidence error'
             )
         ax.set_title(r"Wighted loss breakdown")
         ax.set_xlabel(r"Epoch $\#$")
@@ -1509,7 +1504,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_losses_rate(self, ax, logs={}, abs_value=False, epoch_range=20):
+    def _plot_losses_rate(self, ax, logs={}, abs_value=True, epoch_range=20):
         """
         Plot evolution of loss function.
         """
@@ -1520,11 +1515,11 @@ class FlowCallback(Callback):
             elif issubclass(type(self.loss), loss.constant_weight_loss):
                 ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
                 ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
-                ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
+                ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error')
             elif issubclass(type(self.loss), loss.variable_weight_loss):
                 ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
                 ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
-                ax.plot(np.abs(self.log["like_loss_rate"]), lw=1., ls='-', label='likelihood')
+                ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error')
         else:
             if issubclass(type(self.loss), loss.standard_loss):
                 ax.plot(self.log["loss_rate"], lw=1., ls='-', label='training')
@@ -1532,11 +1527,11 @@ class FlowCallback(Callback):
             elif issubclass(type(self.loss), loss.constant_weight_loss):
                 ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all')
                 ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density')
-                ax.plot(self.log["like_loss_rate"], lw=1., ls='-', label='likelihood')
+                ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error')
             elif issubclass(type(self.loss), loss.variable_weight_loss):
                 ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all')
                 ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density')
-                ax.plot(self.log["like_loss_rate"], lw=1., ls='-', label='likelihood')
+                ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error')
         if abs_value:
             ax.set_yscale('log')
         else:
@@ -1678,7 +1673,7 @@ class FlowCallback(Callback):
                 gs = self.fig.add_gridspec(nrows=2, ncols=4)
                 axes = [self.fig.add_subplot(_g) for _g in gs]
                 self._plot_loss(axes[0], logs=logs)
-                self._plot_density_likelihood_losses(axes[1], logs=logs)
+                self._plot_density_evidence_error_losses(axes[1], logs=logs)
                 self._plot_losses_rate(axes[2], logs=logs)
                 self._plot_lr(axes[3], logs=logs)
                 self._plot_evidence(axes[4], logs=logs)
@@ -1689,9 +1684,9 @@ class FlowCallback(Callback):
                 gs = self.fig.add_gridspec(nrows=2, ncols=5)
                 axes = [self.fig.add_subplot(_g) for _g in gs]
                 self._plot_loss(axes[0], logs=logs)
-                self._plot_density_likelihood_losses(axes[1], logs=logs)
+                self._plot_density_evidence_error_losses(axes[1], logs=logs)
                 self._plot_lambda_values(axes[2], logs=logs)
-                self._plot_weighted_density_likelihood_losses(axes[3], logs=logs)
+                self._plot_weighted_density_evidence_error_losses(axes[3], logs=logs)
                 self._plot_losses_rate(axes[4], logs=logs)
                 self._plot_lr(axes[5], logs=logs)
                 self._plot_evidence(axes[6], logs=logs)
