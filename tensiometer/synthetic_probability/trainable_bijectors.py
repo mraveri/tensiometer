@@ -291,7 +291,8 @@ class AutoregressiveFlow(TrainableTransformation):
         ):
 
         if n_transformations is None:
-            n_transformations = 2 * num_params
+            #n_transformations = 2 * num_params
+            n_transformations = int(np.ceil(2*np.log2(num_params)+2))           
         event_shape = (num_params,)
 
         if hidden_units is None:

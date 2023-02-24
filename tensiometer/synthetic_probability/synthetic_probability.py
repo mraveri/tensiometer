@@ -520,7 +520,7 @@ class FlowCallback(Callback):
         return None
 
     def _init_model(
-            self, learning_rate=1.e-2, clipnorm=None, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
+            self, learning_rate=1.e-2, clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
         ):
         """
         Initialize the loss function.
@@ -547,7 +547,6 @@ class FlowCallback(Callback):
         if self.loss_mode == 'standard':
             self.loss = loss.standard_loss()
         elif self.loss_mode == 'fixed':
-            print('alpha is : ', self.alpha_lossv)
             self.loss = loss.constant_weight_loss(self.alpha_lossv, self.beta_lossv)
         elif self.loss_mode == 'random':
             self.loss = loss.random_weight_loss(**kwargs)
