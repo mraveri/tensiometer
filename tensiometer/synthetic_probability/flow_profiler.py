@@ -17,6 +17,7 @@ from scipy.optimize import minimize
 from scipy.interpolate import interp1d
 from scipy.interpolate import LinearNDInterpolator
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
+from itertools import combinations
 
 from numba import njit
 
@@ -225,7 +226,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return None
 
-    def update_cache(self, **kwargs):
+    def update_cache(self, params=None, **kwargs):
         """
         Initialize the profiler cache. This does all the maximization
         calculations and it's the heavy part of the whole thing.
@@ -240,6 +241,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
            'update_2D' in kwargs.keys():
             self.sample_profile_population(**kwargs)
 
+        # get parameter names:
+        if params is not None:
+            indexes = [self._parAndNumber(name)[0] for name in params]
+        else:
+            indexes = list(range(self.n))
+
         # initialize best fit:
         if kwargs.get('update_MAP', True):
             if self.feedback > 0:
@@ -250,7 +257,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if kwargs.get('update_1D', True):
             if self.feedback > 0:
                 print('  * initializing 1D profiles')
-            for ind in tqdm.tqdm(range(self.n), file=sys.stdout, desc='    1D profiles'):
+            for ind in tqdm.tqdm(indexes, file=sys.stdout, desc='    1D profiles'):
                 self.get1DDensityGridData(ind, **kwargs)
 
         # initialize 2D profiles:
@@ -258,10 +265,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             if self.feedback > 0:
                 print('  * initializing 2D profiles')
             # prepare indexes:
-            idxs = []
-            for ind1 in range(self.n):
-                for ind2 in range(ind1+1, self.n):
-                    idxs.append([ind1, ind2])
+            idxs = list(combinations(indexes, 2))
             # run the loop:
             for idx in tqdm.tqdm(idxs, file=sys.stdout, desc='    2D profiles'):
                 ind1, ind2 = idx
@@ -329,7 +333,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return None
 
-    def find_MAP(self, x0=None, randomize=True, num_best_to_follow=10, abstract=True, use_scipy=True, **kwargs):
+    def find_MAP(self, x0=None, randomize=True, num_best_to_follow=10, abstract=False, use_scipy=True, **kwargs):
         """
         Find the flow MAP. Strategy is sample and then minimize.
         """
