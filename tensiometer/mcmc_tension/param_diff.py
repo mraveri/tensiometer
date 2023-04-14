@@ -222,11 +222,17 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
     if not hasattr(chain_1, 'chain_offsets'):
         _chains_1 = [chain_1]
     else:
-        _chains_1 = chain_1.getSeparateChains()
+        if chain_1.chain_offsets is None:
+            _chains_1 = [chain_1]
+        else:
+            _chains_1 = chain_1.getSeparateChains()
     if not hasattr(chain_2, 'chain_offsets'):
         _chains_2 = [chain_2]
     else:
-        _chains_2 = chain_2.getSeparateChains()
+        if chain_2.chain_offsets is None:
+            _chains_2 = [chain_2]
+        else:
+            _chains_2 = chain_2.getSeparateChains()
     # set the boost:
     if chain_1.sampler == 'nested' \
        or chain_2.sampler == 'nested' or boost is None:
