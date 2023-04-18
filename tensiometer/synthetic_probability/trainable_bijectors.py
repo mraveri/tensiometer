@@ -13,11 +13,34 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability.python.bijectors import bijector as bijector_lib
 from tensorflow_probability.python.internal import parameter_properties
+from tensorflow.keras.layers import Input, Lambda, Dense
+from tensorflow.keras.models import Model, Sequential
 
 from .. import utilities as utils
 
 tfb = tfp.bijectors
 tfd = tfp.distributions
+
+###############################################################################
+# utility function to generate random permutations with minimum stack variance:
+
+
+def min_var_permutations(d, n, min_number=10000):
+    """
+    d = dimension of the problem
+    n = number of stacks
+    min_number = minimum number of random trials
+    """
+    permutation = None
+    perm_var = np.inf
+    for i in range(max(min_number, 2*d*n)):
+        _temp_perm = [np.random.permutation(d) for _ in range(n)]
+        _temp_var = np.var(np.sum(_temp_perm, axis=0))
+        if _temp_var < perm_var:
+            perm_var = _temp_var
+            permutation = _temp_perm
+    #
+    return permutation
 
 ###############################################################################
 # generic class:
@@ -232,9 +255,6 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
 
 ###############################################################################
 # Make separate NNs for each dimension:
-from tensorflow.keras.layers import Input, Lambda, Dense
-from tensorflow.keras.models import Model, Sequential
-
 
 def build_nn(dim_in, dim_out, hidden_units, activation, **kwargs):
     if len(hidden_units) == 0 or dim_in == 0:
@@ -315,7 +335,7 @@ class AutoregressiveFlow(TrainableTransformation):
             _permutations = permutations
         elif isinstance(permutations, bool):
             if permutations:
-                _permutations = [np.random.permutation(num_params) for _ in range(n_transformations)]
+                _permutations = min_var_permutations(d=num_params, n=n_transformations)
             else:
                 _permutations = False
         self.permutations = _permutations
@@ -325,7 +345,7 @@ class AutoregressiveFlow(TrainableTransformation):
 
         if kernel_initializer is None:
             kernel_initializer = tf.keras.initializers.VarianceScaling(
-                scale=1. / n_transformations, mode='fan_avg', distribution='truncated_normal'
+                scale=1. / n_transformations, mode='fan_avg', distribution='truncated_normal', seed=np.random.randint(np.iinfo(np.int32).max)
                 )
 
         # Build transformed distribution
