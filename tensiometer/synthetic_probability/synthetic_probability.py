@@ -254,10 +254,10 @@ class FlowCallback(Callback):
         # initialize the samples:
         ind = [chain.index[name] for name in param_names]
         self.num_params = len(ind)
-        self.chain_samples = chain.samples[:, ind]
-        self.chain_loglikes = chain.loglikes
+        self.chain_samples = chain.samples[:, ind].astype(np_prec)
+        self.chain_loglikes = chain.loglikes.astype(np_prec)
         self.has_loglikes = self.chain_loglikes is not None
-        self.chain_weights = chain.weights
+        self.chain_weights = chain.weights.astype(np_prec)
 
         # initialize nearest neighbours:
         if init_nearest:
@@ -311,7 +311,7 @@ class FlowCallback(Callback):
 
         # feedback:
         if self.feedback > 1:
-            print('    - using prior bijector:', prior_bijector)
+            print('    - using prior bijector:', self.prior_bijector)
 
         # Whitening bijector:
         if apply_pregauss:
@@ -1503,7 +1503,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_losses_rate(self, ax, logs={}, abs_value=True, epoch_range=20):
+    def _plot_losses_rate(self, ax, logs={}, abs_value=False, epoch_range=20):
         """
         Plot evolution of loss function.
         """
@@ -1512,25 +1512,25 @@ class FlowCallback(Callback):
                 ax.plot(np.abs(self.log["loss_rate"]), lw=1., ls='-', label='training')
                 ax.plot(np.abs(self.log["val_loss_rate"]), lw=1., ls='-', label='validation')
             elif issubclass(type(self.loss), loss.constant_weight_loss):
-                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
-                ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
-                ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error')
+                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density', zorder=1)
+                ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error', zorder=0)
             elif issubclass(type(self.loss), loss.variable_weight_loss):
-                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all')
-                ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density')
-                ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error')
+                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density', zorder=1)
+                ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error', zorder=0)
         else:
             if issubclass(type(self.loss), loss.standard_loss):
                 ax.plot(self.log["loss_rate"], lw=1., ls='-', label='training')
                 ax.plot(self.log["val_loss_rate"], lw=1., ls='-', label='validation')
             elif issubclass(type(self.loss), loss.constant_weight_loss):
-                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all')
-                ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density')
-                ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error')
+                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density', zorder=1)
+                ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error', zorder=0)
             elif issubclass(type(self.loss), loss.variable_weight_loss):
-                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all')
-                ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density')
-                ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error')
+                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density', zorder=1)
+                ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error', zorder=0)
         if abs_value:
             ax.set_yscale('log')
         else:
