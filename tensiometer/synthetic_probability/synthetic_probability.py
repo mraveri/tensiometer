@@ -83,7 +83,7 @@ plot_options = {
     }
 
 ###############################################################################
-# main class to compute NF-based tension:
+# main class to compute NF-based probability distributions:
 
 
 class FlowCallback(Callback):
