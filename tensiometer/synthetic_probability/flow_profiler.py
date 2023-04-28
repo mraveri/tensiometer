@@ -33,10 +33,9 @@ from .. import utilities as utils
 ###############################################################################
 # utility functions:
 
-
 @njit
 def _binned_argmax_1D(bins, vals, num_bins):
-    """
+    """ 
     Utility function to find index of maximum in a bin.
     Bins is the bin number that every vals falls in (i.e. the output of digitize).
     """
@@ -498,7 +497,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         return None
 
     def get1DDensityGridData(self, name, num_points_1D=128,
-                             pre_polish=True, polish=False, use_scipy=True, 
+                             pre_polish=True, polish=True, use_scipy=False, 
                              smoothing=True, **kwargs):
         """
         Compute 1D profile posteriors and return it as a grid density data
@@ -616,7 +615,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                             }
 
                 # polish:
-                _polished_x, _polished_logP = [], []
+                _polished_logP = []
                 for _samp in _flow_full_samples:
                     _initial_x = np.delete(_samp, idx)
                     x0 = _samp[idx]
@@ -635,10 +634,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                       options=_options,
                                       **utils.filter_kwargs(kwargs, minimize)
                                       )
-                    _polished_x.append(x0)
                     _polished_logP.append(-result.fun)
 
-                _result_x = np.array(_polished_x)
                 _result_logP = np.array(_polished_logP)
 
             else:
@@ -720,7 +717,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return None
 
-    def get2DDensityGridData(self, j, j2, num_points_2D=64, smoothing=True, polish=True, use_scipy=True, **kwargs):
+    def get2DDensityGridData(self, j, j2, num_points_2D=32, 
+                             smoothing=True, pre_polish=True, polish=True, use_scipy=False, **kwargs):
         """
         Compute 2D profile posteriors and return it as a grid density data
         for plotting and analysis.
@@ -783,27 +781,29 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         # do gradient descent iterations:
 
-        # feedback:
-        if self.feedback > 1:
-            print('    - doing gradient descent pre-polishing')
-        t0 = time.time()
+        if pre_polish:
 
-        # prepare mask:
-        _mask = np.ones(self.flow.num_params)
-        _mask[idx1] = 0
-        _mask[idx2] = 0
-        _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
-        # do the iterations:
-        _learning_rate = kwargs.get('learning_rate_1D', 0.05)
-        _num_interactions = kwargs.get('num_gd_interactions_1D', 100)
-        _flow_full_samples, _flow_samples_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
-                                                                              num_interactions=_num_interactions,
-                                                                              ensemble=_flow_full_samples, mask=_mask)
-        # feedback:
-        t1 = time.time() - t0
-        if self.feedback > 1:
-            print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
-        
+            # feedback:
+            if self.feedback > 1:
+                print('    - doing gradient descent pre-polishing')
+            t0 = time.time()
+
+            # prepare mask:
+            _mask = np.ones(self.flow.num_params)
+            _mask[idx1] = 0
+            _mask[idx2] = 0
+            _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
+            # do the iterations:
+            _learning_rate = kwargs.get('learning_rate_1D', 0.05)
+            _num_interactions = kwargs.get('num_gd_interactions_1D', 100)
+            _flow_full_samples, _flow_samples_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
+                                                                                num_interactions=_num_interactions,
+                                                                                ensemble=_flow_full_samples, mask=_mask)
+            # feedback:
+            t1 = time.time() - t0
+            if self.feedback > 1:
+                print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
+            
         # do polishing:
         if polish:
 
@@ -823,7 +823,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 # compute bounds:
                 if self.flow.parameter_ranges is not None:
                     _temp_ranges = list(self.flow.parameter_ranges.values())
-                    del _temp_ranges[idx]
+                    for index in sorted([idx1, idx2], reverse=True):
+                        del _temp_ranges[index]
                 else:
                     _temp_ranges = None
 
@@ -864,7 +865,62 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 _flow_samples_logP = np.array(_polished_logP)
 
             else:
-                raise NotImplemented()
+
+                # polishing with tensorflow minimizer:
+
+                # sort fixed indexes:
+                idx_min = min(idx1, idx2)
+                idx_max = max(idx1, idx2)
+
+                # get fixed coordinates:
+                _x0_min = _flow_full_samples[:, idx_min]
+                _x0_min = tf.expand_dims(_x0_min, -1)
+                _x0_max = _flow_full_samples[:, idx_max]
+                _x0_max = tf.expand_dims(_x0_max, -1)
+
+                # get indexes of varying coordinates:
+                _idxs = tf.constant([i for i in range(self.flow.num_params) if i != idx_min and i != idx_max])
+                # get initial points:
+                _initial_x = tf.gather(_flow_full_samples, _idxs, axis=1)
+                # get number of samples:
+                _num_samps = len(_flow_full_samples)
+
+                # define interfaces:
+                def func(x): 
+                    # insert fixed coordinate:
+                    left_slice = tf.slice(x, [0, 0], [_num_samps, idx_min])
+                    mid_slice = tf.slice(x, [0, idx_min], [_num_samps, idx_max-idx_min-1])
+                    right_slice = tf.slice(x, [0, idx_max-1], [_num_samps, self.flow.num_params-2-idx_max+1])
+                    _x = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
+                    #
+                    _logP = -self.flow.log_probability(_x)
+                    #
+                    return _logP
+
+                def jac(x): 
+                    # insert fixed coordinate:
+                    left_slice = tf.slice(x, [0, 0], [_num_samps, idx_min])
+                    mid_slice = tf.slice(x, [0, idx_min], [_num_samps, idx_max-idx_min-1])
+                    right_slice = tf.slice(x, [0, idx_max-1], [_num_samps, self.flow.num_params-2-idx_max+1])
+                    _x = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
+                    # compute Jacobian:
+                    _J = -self.flow.log_probability_jacobian(_x)
+                    #
+                    return tf.gather(_J, _idxs, axis=1)
+
+                # minimize:
+                _tf_results = tfp.optimizer.lbfgs_minimize(
+                                                    value_and_gradients_function=lambda x: [func(x), jac(x)],
+                                                    initial_position=_initial_x,
+                                                    )
+                # polish results:
+                _flow_samples_logP = -_tf_results.objective_value.numpy()
+                _flow_full_samples = _tf_results.position
+                left_slice = tf.slice(_flow_full_samples, [0, 0], [_num_samps, idx_min])
+                mid_slice = tf.slice(_flow_full_samples, [0, idx_min], [_num_samps, idx_max-idx_min-1])
+                right_slice = tf.slice(_flow_full_samples, [0, idx_max-1], [_num_samps, self.flow.num_params-2-idx_max+1])
+                _flow_full_samples = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
+                _flow_full_samples = _flow_full_samples.numpy()
 
             # feedback:
             t1 = time.time() - t0
