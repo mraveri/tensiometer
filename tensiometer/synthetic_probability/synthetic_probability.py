@@ -628,24 +628,24 @@ class FlowCallback(Callback):
         # set callbacks:
         if callbacks is None:
             callbacks = []
-            # learning rate scheduler:
-            total_steps = epochs
-            initial_lr = self.model.optimizer.lr.numpy()
-            # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
-            boundaries = [int(0.3 * total_steps), int(0.6 * total_steps), int(0.8 * total_steps)]
-            values = np.logspace(np.log10(self.initial_learning_rate), 
-                                 np.log10(self.final_learning_rate),
-                                 len(boundaries)+1)    
-            lr_schedule = lr.StepDecayScheduler(
-                initial_lr,
-                int(0.3 * total_steps),
-                total_steps,
-                steps_per_epoch,
-                boundaries=boundaries,
-                values=values,
-                **utils.filter_kwargs(kwargs, lr.StepDecayScheduler)
-                )
-            callbacks.append(lr_schedule)
+            # # learning rate scheduler:
+            # total_steps = epochs
+            # initial_lr = self.model.optimizer.lr.numpy()
+            # # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
+            # boundaries = [int(0.3 * total_steps), int(0.6 * total_steps), int(0.8 * total_steps)]
+            # values = np.logspace(np.log10(self.initial_learning_rate), 
+            #                      np.log10(self.final_learning_rate),
+            #                      len(boundaries)+1)    
+            # lr_schedule = lr.StepDecayScheduler(
+            #     initial_lr,
+            #     int(0.3 * total_steps),
+            #     total_steps,
+            #     steps_per_epoch,
+            #     boundaries=boundaries,
+            #     values=values,
+            #     **utils.filter_kwargs(kwargs, lr.StepDecayScheduler)
+            #     )
+            # callbacks.append(lr_schedule)
 
         # Run training:
         hist = self.model.fit(
