@@ -316,7 +316,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    * generating samples for profiler')
         # settings:
-        num_minimization_samples = kwargs.get('num_minimization_samples', 10000*self.flow.num_params)
+        num_minimization_samples = kwargs.get('num_minimization_samples', 20000*self.flow.num_params)
         # feedback:
         if self.feedback > 1:
             print('    - number of random search samples =', num_minimization_samples)
@@ -328,6 +328,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         self.temp_probs = self.flow.log_probability(self.temp_samples)
         self.temp_cov = tfp.stats.covariance(self.temp_samples)
         self.temp_inv_cov = tf.linalg.inv(self.temp_cov)
+        self.temp_sqrt_inv_cov = tf.linalg.sqrtm(self.temp_inv_cov)
+        self.lambda_max = np.amax(tf.linalg.eigh(self.temp_sqrt_inv_cov)[0])
+
         t1 = time.time() - t0
         if self.feedback > 1:
             print('    - time taken to sample the distribution {0:.4g} (s)'.format(t1))
@@ -496,7 +499,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return None
 
-    def get1DDensityGridData(self, name, num_points_1D=128,
+    def get1DDensityGridData(self, name, num_points_1D=64,
                              pre_polish=True, polish=True, use_scipy=False, 
                              smoothing=True, **kwargs):
         """
@@ -523,8 +526,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                                      fine_bins=num_points_1D,
                                                      num_bins=num_points_1D,
                                                      **kwargs)
-        # initialize calculation
-        _x = marge_density.x
+        
+        # check that we have cached samples, otherwise generate:
+        if self.temp_samples is None:
+            self.sample_profile_population(**kwargs)
 
         # randomized maximizer algorithm:
 
@@ -533,22 +538,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             print('    - doing initial randomized search')
         t0 = time.time()
 
-        # check that we have cached samples, otherwise generate:
-        if self.temp_samples is None:
-            self.sample_profile_population(**kwargs)
-
         # protect for samples inside bins:
-        _valid_filter = np.logical_and(self.temp_samples[:, idx] > np.amin(_x),
-                                       self.temp_samples[:, idx] < np.amax(_x))
+        _valid_filter = np.logical_and(self.temp_samples[:, idx] > np.amin(marge_density.x),
+                                       self.temp_samples[:, idx] < np.amax(marge_density.x))
         # first find best samples in the bin:
-        _indexes = np.digitize(self.temp_samples.numpy()[_valid_filter, idx], _x)
-        _max_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_valid_filter], len(_x))
+        _indexes = np.digitize(self.temp_samples.numpy()[_valid_filter, idx], marge_density.x)
+        _max_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_valid_filter], len(marge_density.x))
         _max_idx = _max_idx[_max_idx > 0]
         # get the global (un-filtered indexes):
         _max_idx = np.arange(len(self.temp_samples))[_valid_filter][_max_idx]
         # set data:
-        _flow_samples_x = tf.gather(self.temp_samples[:, idx], _max_idx)
-        _flow_samples_logP = tf.gather(self.temp_probs, _max_idx)
+        _result_logP = tf.gather(self.temp_probs, _max_idx)
         _flow_full_samples = tf.gather(self.temp_samples, _max_idx, axis=0)
 
         # feedback:
@@ -556,11 +556,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    - time taken for random algorithm {0:.4g} (s)'.format(t1))
             print('    - number of 1D bins', num_points_1D)
-            print('    - number of empty 1D bins', num_points_1D - len(_flow_samples_logP))
-
-        # save results:
-        _result_x = _flow_samples_x
-        _result_logP = _flow_samples_logP
+            print('    - number of empty 1D bins', num_points_1D - len(_result_logP))
 
         # gradient descent polishing:
         if pre_polish:
@@ -569,16 +565,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             if self.feedback > 1:
                 print('    - doing gradient descent pre-polishing')
             t0 = time.time()
+            
             # prepare mask:
             _mask = np.ones(self.flow.num_params)
             _mask[idx] = 0
             _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
             # do the iterations:
-            _learning_rate = kwargs.get('learning_rate_1D', 0.05)
-            _num_interactions = kwargs.get('num_gd_interactions_1D', 100)
-            _flow_full_samples, _flow_samples_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
-                                                                                  num_interactions=_num_interactions,
-                                                                                  ensemble=_flow_full_samples, mask=_mask)
+            _learning_rate = kwargs.get('learning_rate_1D', 0.01)
+            _num_interactions = kwargs.get('num_gd_interactions_1D', 200)
+            _flow_full_samples, _result_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
+                                                                            num_interactions=_num_interactions,
+                                                                            ensemble=_flow_full_samples, mask=_mask)
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
@@ -615,8 +612,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                             }
 
                 # polish:
-                _polished_logP = []
-                for _samp in _flow_full_samples:
+                _polished_ensemble, _polished_logP = [], []
+                success = 0
+                for _samp, _val in zip(_flow_full_samples, _result_logP):
                     _initial_x = np.delete(_samp, idx)
                     x0 = _samp[idx]
                     def temp_func(x):
@@ -634,9 +632,23 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                       options=_options,
                                       **utils.filter_kwargs(kwargs, minimize)
                                       )
-                    _polished_logP.append(-result.fun)
+                    if -result.fun > _val:
+                        _polished_logP.append(-result.fun)
+                        _polished_ensemble.append(np.insert(result.x, idx, x0))
+                        success += 1
+                    else:
+                        _polished_logP.append(_val)
+                        _polished_ensemble.append(_samp)
+
+                    if not result.success:
+                        if self.feedback > 2:
+                            print(result.message)
+
+                if success < len(_result_logP) and self.feedback > 1:
+                    print('*** Warning minimization failed for ', len(_result_logP)-success, 'points')
 
                 _result_logP = np.array(_polished_logP)
+                _flow_full_samples = np.array(_polished_ensemble)
 
             else:
 
@@ -673,35 +685,76 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     #
                     return tf.gather(_J, _idxs, axis=1)
 
+                # minimize:
                 _tf_results = tfp.optimizer.lbfgs_minimize(
                                                     value_and_gradients_function=lambda x: [func(x), jac(x)],
                                                     initial_position=_initial_x,
                                                     )
-                _result_logP = -_tf_results.objective_value.numpy()
+
+                if np.sum(_tf_results.converged) < len(_tf_results.converged) and self.feedback > 1:
+                    print('*** Warning minimization failed for ', len(_tf_results.converged)-np.sum(_tf_results.converged), 'points')
+
+                # get samples:
+                _filter = -_tf_results.objective_value > _result_logP
+                _result_logP = tf.where(_filter, -_tf_results.objective_value, _result_logP)
+                # insert fixed coordinate:
+                x = _tf_results.position
+                left_slice = tf.slice(x, [0, 0], [_num_samps, idx])
+                right_slice = tf.slice(x, [0, idx], [_num_samps, self.flow.num_params-1-idx])
+                x = tf.concat([left_slice, _x0, right_slice], axis=1)
+                _filter = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
+                _flow_full_samples = tf.where(_filter, x, _flow_full_samples)
 
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for polishing {0:.4g} (s)'.format(t1))
 
-        # evaluate on a regular grid:
-        _temp_interp = interp1d(_result_x, np.exp(_result_logP), kind='cubic', bounds_error=False, fill_value=0.0)
+        # now 1D interpolate on a fixed grid:
+        if self.feedback > 1:
+            print('    - doing interpolation on regular grid')
+        t0 = time.time()
+
+        # convert to numpy array:
+        if tf.is_tensor(_result_logP):
+            _result_logP = _result_logP.numpy()
+        if tf.is_tensor(_flow_full_samples):
+            _flow_full_samples = _flow_full_samples.numpy()
+
+        # now interpolate:
+        _temp_interp = interp1d(_flow_full_samples[:, idx], np.exp(_result_logP), kind='cubic', bounds_error=False, fill_value=0.0)
         _temp_x = np.linspace(marge_density.view_ranges[0], marge_density.view_ranges[1], num_points_1D)
         _temp_P = _temp_interp(_temp_x)
 
-        # smooth:
+        t1 = time.time() - t0
+        if self.feedback > 1:
+            print('    - time taken for interpolation {0:.4g} (s)'.format(t1))
+
+        # smooth the results:
         if smoothing:
+            if self.feedback > 1:
+                print('    - smoothing results')
+            t0 = time.time()
+
+            # get analysis for the parameter:
             par = self._initParamRanges(idx, None)
-            _smoothing_sigma = len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par.err
+            # get overall smoothing factor:
             _smooth_scale_1D = kwargs.get('smooth_scale_1D', self.smooth_scale_1D)
             if _smooth_scale_1D <= 0.:
                 _smooth_scale_1D = 0.1
-            _smoothing_sigma = _smooth_scale_1D * _smoothing_sigma
+            # get smoothing factor: 
+            _smoothing_sigma = _smooth_scale_1D * len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par.err
+            # do the smoothing:
             _temp_P = gaussian_filter1d(_temp_P, _smoothing_sigma, mode='reflect')
+
+            t1 = time.time() - t0
+            if self.feedback > 1:
+                print('    - time taken for smoothing {0:.4g} (s)'.format(t1))
 
         # initialize the density:
         density1D = Density1D(_temp_x, P=_temp_P, view_ranges=marge_density.view_ranges)
         density1D.normalize('max', in_place=True)
+        density1D.profile_subspace = _flow_full_samples
 
         # cache result:
         self.profile_density_1D[idx] = density1D
@@ -717,18 +770,19 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return None
 
-    def get2DDensityGridData(self, j, j2, num_points_2D=32, 
-                             smoothing=True, pre_polish=True, polish=True, use_scipy=False, **kwargs):
+    def get2DDensityGridData(self, name1, name2, num_points_2D=32, 
+                             pre_polish=True, polish=True, use_scipy=False, 
+                             smoothing=True, **kwargs):
         """
         Compute 2D profile posteriors and return it as a grid density data
         for plotting and analysis.
         """
         # get the number of the parameter:
-        idx1, parx = self._parAndNumber(j)
-        idx2, pary = self._parAndNumber(j2)
+        idx1, parx = self._parAndNumber(name1)
+        idx2, pary = self._parAndNumber(name2)
 
         # check:
-        if j is None or j2 is None:
+        if name1 is None or name2 is None:
             return None
 
         # look for cached results:
@@ -747,6 +801,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # check that we have cached samples, otherwise generate:
         if self.temp_samples is None:
             self.sample_profile_population(**kwargs)
+
+        # randomized maximizer algorithm:
 
         # feedback:
         if self.feedback > 1:
@@ -769,7 +825,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # get the global (un-filtered indexes):
         _max_idx = np.arange(len(self.temp_samples))[_valid_filter][_max_idx]
         # set data:
-        _flow_samples_logP = tf.gather(self.temp_probs, _max_idx)
+        _result_logP = tf.gather(self.temp_probs, _max_idx)
         _flow_full_samples = tf.gather(self.temp_samples, _max_idx, axis=0)
 
         # feedback:
@@ -779,8 +835,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             print('    - number of 2D bins', num_points_2D**2)
             print('    - number of empty 2D bins', num_points_2D**2-len(_max_idx))
 
-        # do gradient descent iterations:
-
+        # gradient descent polishing:
         if pre_polish:
 
             # feedback:
@@ -794,17 +849,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _mask[idx2] = 0
             _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
             # do the iterations:
-            _learning_rate = kwargs.get('learning_rate_1D', 0.05)
-            _num_interactions = kwargs.get('num_gd_interactions_1D', 100)
-            _flow_full_samples, _flow_samples_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
-                                                                                num_interactions=_num_interactions,
-                                                                                ensemble=_flow_full_samples, mask=_mask)
+            _learning_rate = kwargs.get('learning_rate_2D', 0.01)
+            _num_interactions = kwargs.get('num_gd_interactions_2D', 200)
+            _flow_full_samples, _result_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
+                                                                            num_interactions=_num_interactions,
+                                                                            ensemble=_flow_full_samples, mask=_mask)
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
             
-        # do polishing:
+        # branch for minimizer polishing:
         if polish:
 
             # feedback:
@@ -836,8 +891,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                             }
 
                 # polish:
-                _polished_x, _polished_logP = [], []
-                for _samp in _flow_full_samples:
+                _polished_ensemble, _polished_logP = [], []
+                success = 0
+                for _samp, _val in zip(_flow_full_samples, _result_logP):
                     _initial_x = np.delete(_samp, [idx1, idx2])
                     x0_1 = _samp[idx1]
                     x0_2 = _samp[idx2]
@@ -848,7 +904,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         _x = np.insert(x, [idx1, idx2], [x0_1, x0_2])
                         _jac = -self.flow.log_probability_jacobian(self.flow.cast(_x)).numpy().astype(np.float64)
                         return np.delete(_jac, [idx1, idx2])
-                    
                     result = minimize(temp_func,
                                       x0=_initial_x,
                                       jac=temp_jac,
@@ -857,13 +912,24 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                       options=_options,
                                       **utils.filter_kwargs(kwargs, minimize)
                                       )
+                    if -result.fun > _val:
+                        _polished_logP.append(-result.fun)
+                        _polished_ensemble.append(np.insert(result.x, [idx1, idx2], [x0_1, x0_2]))
+                        success += 1
+                    else:
+                        _polished_logP.append(_val)
+                        _polished_ensemble.append(_samp)
+
+                    if not result.success:
+                        if self.feedback > 2:
+                            print(result.message)
+
+                if success < len(_result_logP) and self.feedback > 1:
+                    print('*** Warning minimization failed for ', len(_result_logP)-success, 'points')
                     
-                    _polished_x.append(np.insert(result.x, [idx1, idx2], [x0_1, x0_2]))
-                    _polished_logP.append(-result.fun)
-
-                _flow_full_samples = np.array(_polished_x)
-                _flow_samples_logP = np.array(_polished_logP)
-
+                _result_logP = np.array(_polished_logP)
+                _flow_full_samples = np.array(_polished_ensemble)
+ 
             else:
 
                 # polishing with tensorflow minimizer:
@@ -877,7 +943,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 _x0_min = tf.expand_dims(_x0_min, -1)
                 _x0_max = _flow_full_samples[:, idx_max]
                 _x0_max = tf.expand_dims(_x0_max, -1)
-
                 # get indexes of varying coordinates:
                 _idxs = tf.constant([i for i in range(self.flow.num_params) if i != idx_min and i != idx_max])
                 # get initial points:
@@ -913,14 +978,22 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                                     value_and_gradients_function=lambda x: [func(x), jac(x)],
                                                     initial_position=_initial_x,
                                                     )
+
                 # polish results:
-                _flow_samples_logP = -_tf_results.objective_value.numpy()
-                _flow_full_samples = _tf_results.position
-                left_slice = tf.slice(_flow_full_samples, [0, 0], [_num_samps, idx_min])
-                mid_slice = tf.slice(_flow_full_samples, [0, idx_min], [_num_samps, idx_max-idx_min-1])
-                right_slice = tf.slice(_flow_full_samples, [0, idx_max-1], [_num_samps, self.flow.num_params-2-idx_max+1])
-                _flow_full_samples = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
-                _flow_full_samples = _flow_full_samples.numpy()
+                if np.sum(_tf_results.converged) < len(_tf_results.converged) and self.feedback > 1:
+                    print('*** Warning minimization failed for ', len(_tf_results.converged)-np.sum(_tf_results.converged), 'points')
+
+                # get samples:
+                _filter = -_tf_results.objective_value > _result_logP
+                _result_logP = tf.where(_filter, -_tf_results.objective_value, _result_logP)
+                # insert fixed coordinate:
+                x = _tf_results.position
+                left_slice = tf.slice(x, [0, 0], [_num_samps, idx_min])
+                mid_slice = tf.slice(x, [0, idx_min], [_num_samps, idx_max-idx_min-1])
+                right_slice = tf.slice(x, [0, idx_max-1], [_num_samps, self.flow.num_params-2-idx_max+1])
+                x = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
+                _filter = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
+                _flow_full_samples = tf.where(_filter, x, _flow_full_samples)
 
             # feedback:
             t1 = time.time() - t0
@@ -933,13 +1006,13 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         t0 = time.time()
 
         # cast to numpy:
+        if tf.is_tensor(_result_logP):
+            _result_logP = _result_logP.numpy()
         if tf.is_tensor(_flow_full_samples):
             _flow_full_samples = _flow_full_samples.numpy()
-        if tf.is_tensor(_flow_samples_logP):
-            _flow_samples_logP = _flow_samples_logP.numpy()
 
         # now interpolate:
-        _temp_interp = LinearNDInterpolator(_flow_full_samples[:, [idx1, idx2]], np.exp(_flow_samples_logP), fill_value=0.0, rescale=True)
+        _temp_interp = LinearNDInterpolator(_flow_full_samples[:, [idx1, idx2]], np.exp(_result_logP), fill_value=0.0, rescale=True)
         _temp_x = np.linspace(marge_density.view_ranges[0][0], marge_density.view_ranges[0][1], num_points_2D)
         _temp_y = np.linspace(marge_density.view_ranges[1][0], marge_density.view_ranges[1][1], num_points_2D)
         _temp_P = _temp_interp(*np.meshgrid(_temp_x, _temp_y))
@@ -964,7 +1037,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             # get smoothing factor: 
             _smoothing_sigma_1 = _smooth_scale_2D * len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par_1.err
             _smoothing_sigma_2 = _smooth_scale_2D * len(_temp_x)/(_temp_x[-1]-_temp_x[0])*par_2.err
-
             # do the smoothing:
             _temp_P = gaussian_filter(_temp_P, [_smoothing_sigma_1, _smoothing_sigma_2], mode='reflect')
 
@@ -980,6 +1052,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         density2D_T = Density2D(_temp_y, _temp_x, P=_temp_P.T,
                                 view_ranges=[marge_density.view_ranges[1], marge_density.view_ranges[0]])
         density2D_T.normalize('max', in_place=True)
+        density2D.profile_subspace = _flow_full_samples
+        density2D_T.profile_subspace = _flow_full_samples
 
         # cache results:
         if idx1 not in self.profile_density_2D.keys():
@@ -1007,6 +1081,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         # initialize probability values:
         val = self.flow.log_probability(ensemble)
+        # initialize step:
+        _h = 2. * learning_rate / tf.abs(self.lambda_max)
+        _h = tf.expand_dims(_h, axis=-1)
 
         # loop body for Jacobian only optimization:
         def body_jacobian(i, num_moving, ensemble, val):
@@ -1015,10 +1092,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             # apply mask:
             _jac = mask * _jac
             # normalize Jacobian:
-            _jac = _jac / tf.norm(_jac, axis=1, keepdims=True)
-            # compute adaptive stepsize:
-            _h = learning_rate / tf.einsum('...i, ij, ...j->...', _jac, self.temp_inv_cov, _jac)
-            _h = tf.expand_dims(_h, axis=-1)
+            _norm = tf.norm(_jac, axis=1, keepdims=True)
+            # normalize if needed:
+            _norm_filter = _norm > 1.
+            _jac = tf.where(_norm_filter, _jac / _norm, _jac)
+            _norm = tf.where(_norm_filter, _jac / _norm, _jac)
             # update positions, do not move the mask:
             ensemble_temp = ensemble + _h * _jac
             # check new probability values:
