@@ -11,10 +11,12 @@ import numpy as np
 import scipy.optimize
 
 import numdifftools as numdiff
-
+from getdist import MCSamples
 import tensorflow as tf
 
+# relative imports:
 from . import synthetic_probability as sp
+from .. import utilities as utils
 
 ###############################################################################
 # analytic flow class:
@@ -80,6 +82,30 @@ class analytic_flow():
     
     def sample(self, num_samples):
         return self.cast(self._dist.sim(num_samples))
+
+    def MCSamples(self, size, logLikes=True, **kwargs):
+        """
+        Return MCSamples object from the syntetic probability.
+
+        :param size: number of samples
+        :param logLikes: logical, whether to include log-likelihoods or not.
+        """
+        samples = self.sample(size)
+        if logLikes:
+            loglikes = -self.log_probability(samples)
+        else:
+            loglikes = None
+        mc_samples = MCSamples(
+            samples=samples.numpy(),
+            loglikes=loglikes.numpy(),
+            names=self.param_names,
+            labels=self.param_labels,
+            ranges=self.parameter_ranges,
+            name_tag=self.name_tag,
+            **utils.filter_kwargs(kwargs, MCSamples)
+            )
+        #
+        return mc_samples
     
     def log_probability(self, coord):
         # digest input:

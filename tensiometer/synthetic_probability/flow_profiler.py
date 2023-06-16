@@ -580,7 +580,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
-                print('      at the end of descent ', num_moving.numpy(), 'were still beeing optimized.')
+                print('      at the end of descent', num_moving.numpy(), 'samples were still beeing optimized.')
 
         # branch for minimizer polishing:
         if polish:
@@ -859,7 +859,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
-                print('      at the end of descent ', num_moving.numpy(), 'were still beeing optimized.')
+                print('      at the end of descent', num_moving.numpy(), 'samples were still beeing optimized.')
 
         # branch for minimizer polishing:
         if polish:
