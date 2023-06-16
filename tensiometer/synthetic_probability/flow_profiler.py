@@ -556,7 +556,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    - time taken for random algorithm {0:.4g} (s)'.format(t1))
             print('    - number of 1D bins', num_points_1D)
-            print('    - number of empty 1D bins', num_points_1D - len(_result_logP))
+            print('    - number of empty/filled 1D bins', num_points_1D - len(_result_logP), '/', len(_result_logP))
 
         # gradient descent polishing:
         if pre_polish:
@@ -573,13 +573,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             # do the iterations:
             _learning_rate = kwargs.get('learning_rate_1D', 0.01)
             _num_interactions = kwargs.get('num_gd_interactions_1D', 200)
-            _flow_full_samples, _result_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
+            _flow_full_samples, _result_logP, num_moving = self._masked_gradient_ascent(learning_rate=_learning_rate,
                                                                             num_interactions=_num_interactions,
                                                                             ensemble=_flow_full_samples, mask=_mask)
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
+                print('      at the end of descent ', num_moving.numpy(), 'were still beeing optimized.')
 
         # branch for minimizer polishing:
         if polish:
@@ -833,7 +834,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    - time taken for random algorithm {0:.4g} (s)'.format(t1))
             print('    - number of 2D bins', num_points_2D**2)
-            print('    - number of empty 2D bins', num_points_2D**2-len(_max_idx))
+            print('    - number of empty/filled 2D bins', num_points_2D**2-len(_max_idx), '/', len(_max_idx))
 
         # gradient descent polishing:
         if pre_polish:
@@ -851,14 +852,15 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             # do the iterations:
             _learning_rate = kwargs.get('learning_rate_2D', 0.01)
             _num_interactions = kwargs.get('num_gd_interactions_2D', 200)
-            _flow_full_samples, _result_logP = self._masked_gradient_ascent(learning_rate=_learning_rate,
+            _flow_full_samples, _result_logP, num_moving = self._masked_gradient_ascent(learning_rate=_learning_rate,
                                                                             num_interactions=_num_interactions,
                                                                             ensemble=_flow_full_samples, mask=_mask)
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
-            
+                print('      at the end of descent ', num_moving.numpy(), 'were still beeing optimized.')
+
         # branch for minimizer polishing:
         if polish:
 
@@ -1096,7 +1098,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             # normalize if needed:
             _norm_filter = _norm > 1.
             _jac = tf.where(_norm_filter, _jac / _norm, _jac)
-            _norm = tf.where(_norm_filter, _jac / _norm, _jac)
             # update positions, do not move the mask:
             ensemble_temp = ensemble + _h * _jac
             # check new probability values:
@@ -1114,4 +1115,4 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # do the loop:
         _, num_moving, ensemble, values = tf.while_loop(while_condition, body_jacobian, [i, num_moving, ensemble, val])
         #
-        return ensemble, values
+        return ensemble, values, num_moving

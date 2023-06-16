@@ -505,7 +505,7 @@ class FlowCallback(Callback):
         self.loss.reset()
         # compile model:
         self.model.compile(
-            optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate, clipnorm=self.clipnorm),
+            optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate, global_clipnorm=self.global_clipnorm),
             loss=self.loss,
             weighted_metrics=[]
             )
@@ -520,7 +520,7 @@ class FlowCallback(Callback):
         return None
 
     def _init_model(
-            self, learning_rate=1.e-2, clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
+            self, learning_rate=1.e-3, global_clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
         ):
         """
         Initialize the loss function.
@@ -541,7 +541,7 @@ class FlowCallback(Callback):
         self.beta_lossv = beta_lossv
         self.initial_learning_rate = learning_rate
         self.final_learning_rate = learning_rate / 1000.
-        self.clipnorm = clipnorm
+        self.global_clipnorm = global_clipnorm
         self.loss_mode = loss_mode
         # allocate and initialize loss model:
         if self.loss_mode == 'standard':
