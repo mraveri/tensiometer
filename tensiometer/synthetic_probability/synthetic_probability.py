@@ -1769,6 +1769,155 @@ class TransformedFlowCallback(FlowCallback):
             self.MAP_coord = flow.MAP_coord
             self.MAP_logP = flow.MAP_logP
 
+###############################################################################
+# Average flow:
+
+
+class average_flow(FlowCallback):
+    
+    def __init__(self, flows, **kwargs):
+        """
+        Initialize the average flow class
+        """
+        # check that we have a list of flows:
+        #if not isinstance(flows, list):
+        #    raise ValueError('Input flows is not a list')
+        #for flow in flows:
+        #    if isinstance(flow, FlowCallback):
+        #        raise ValueError('Flow '+flow.name_tag+' is not a flow')
+        # check parameters and copy in info:
+        for flow in flows:
+            if flow.param_names != flows[0].param_names:
+                raise ValueError('Flow', flow.name_tag, 'does not have the same parameters as', flows[0].name_tag, '. Cannot average.')       
+        # copy in infos from the first flow:
+        infos = [
+                 'name_tag',
+                 'feedback',
+                 'plot_every',
+                 'sample_MAP',
+                 'num_params',
+                 'param_names',
+                 'param_labels',
+                 'parameter_ranges',
+                 'chain_samples',
+                 'chain_loglikes',
+                 'has_loglikes',
+                 'chain_weights',
+                 'is_trained',
+                 'MAP_coord',
+                 'MAP_logP',
+                 ]
+        for info in infos:
+            self.__dict__[info] = flows[0].__dict__[info]             
+
+        # copy in flows:
+        self.flows = flows
+        # process:
+        self.num_flows = len(self.flows)
+        # compute weights:
+        self._set_flow_weights()
+        #
+        return None
+
+    def _set_flow_weights(self, key='val_loss'):
+        """
+        Compute the relative weights of flows based on validation loss
+        """
+        # get weights:
+        _temp_weights = []
+        for flow in self.flows:
+            if key not in flow.log.keys():
+                _temp_weights.append(np.inf)
+            else:
+                _temp_weights.append(flow.log[key][-1])
+        # compute weighting factors:
+        _temp_weights = _temp_weights / np.amin(_temp_weights)
+        _temp_weights = np.exp(-_temp_weights)
+        # normalize and save:
+        self.weights = _temp_weights/np.sum(_temp_weights)
+        self.weights = self.cast(self.weights)
+        # initialize multinomial over weights for sampling:
+        self.weights_prob = tfp.distributions.Multinomial(1, probs=self.weights, validate_args=True)
+        #
+        return None
+
+    def train(self, **kwargs):
+        for flow in self.flows:
+            flow.train(**kwargs)
+        return None
+
+    def global_train(self, **kwargs):
+        for flow in self.flows:
+            flow.global_train(**kwargs)
+        return None
+
+    ###############################################################################
+    # Utility functions:
+
+    def cast(self, v):
+        return self.flows[0].cast(v)
+
+    @tf.function()
+    def log_probability(self, coord):
+        return tf.tensordot(self.weights, self.cast([flow.log_probability(coord) for flow in self.flows]), 1)
+
+    @tf.function()
+    def log_probability_jacobian(self, coord):
+        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+            tape.watch(coord)
+            f = self.log_probability(coord)
+        return tape.gradient(f, coord)
+
+    @tf.function()
+    def log_probability_hessian(self, coord):
+        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+            tape.watch(coord)
+            f = self.log_probability_jacobian(coord)
+        return tape.batch_jacobian(f, coord)
+
+    @tf.function()
+    def log_probability_abs(self, abs_coord):
+        raise NotImplementedError('Average flow does not have wel defined abstract coordinates')
+
+    @tf.function()
+    def log_probability_abs_jacobian(self, abs_coord):
+        raise NotImplementedError('Average flow does not have wel defined abstract coordinates')
+
+    @tf.function()
+    def log_probability_abs_hessian(self, abs_coord):
+        raise NotImplementedError('Average flow does not have wel defined abstract coordinates')
+
+    @tf.function()
+    def sample(self, N):
+        # sample from the weights:
+        temp_weights = tf.cast(self.weights_prob.sample(N), dtype=tf.int32)
+        # count samples:
+        counts = tf.reduce_sum(temp_weights, axis=0)
+        # go through the flows:
+        temp_samples = tf.concat([self.flows[i].sample(counts[i]) for i in range(self.num_flows)], axis=0)
+        #
+        return tf.random.shuffle(temp_samples)
+
+    ###############################################################################
+    # Caching functions:
+
+    def save(self, outroot):
+        for i, flow in enumerate(self.flows):
+            _outroot = outroot + '_'+str(i)
+            flow.save(_outroot)
+        return None
+
+    @classmethod
+    def load(cls, chain, outroot, num_flows=1, **kwargs):
+        # load each flow:
+        flows = []
+        for i in range(num_flows):
+            _outroot = outroot + '_'+str(i)
+            flows.append(FlowCallback.load(chain, _outroot, **kwargs))
+        # initialize average flow:
+        flow = average_flow(flows, **kwargs)
+        #
+        return flow
 
 ###############################################################################
 # Flow utilities:
@@ -1794,8 +1943,6 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         flow = FlowCallback(chain, **kwargs)
         # train posterior flow:
         flow.global_train(**kwargs)
-        # flow.global_train(alpha_lossv=1.0,**kwargs)
-        # flow.global_train(alpha_lossv=0.1,**kwargs)
 
         # save trained model:
         if cache_dir is not None:
