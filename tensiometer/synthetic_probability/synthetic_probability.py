@@ -1779,12 +1779,6 @@ class average_flow(FlowCallback):
         """
         Initialize the average flow class
         """
-        # check that we have a list of flows:
-        #if not isinstance(flows, list):
-        #    raise ValueError('Input flows is not a list')
-        #for flow in flows:
-        #    if isinstance(flow, FlowCallback):
-        #        raise ValueError('Flow '+flow.name_tag+' is not a flow')
         # check parameters and copy in info:
         for flow in flows:
             if flow.param_names != flows[0].param_names:
@@ -1838,6 +1832,8 @@ class average_flow(FlowCallback):
         self.weights = self.cast(self.weights)
         # initialize multinomial over weights for sampling:
         self.weights_prob = tfp.distributions.Multinomial(1, probs=self.weights, validate_args=True)
+        self.distribution = tfp.distributions.Mixture(cat=tfp.distributions.Categorical(probs=self.weights),
+                                                      components=[flow.distribution for flow in self.flows])
         #
         return None
 
@@ -1856,24 +1852,6 @@ class average_flow(FlowCallback):
 
     def cast(self, v):
         return self.flows[0].cast(v)
-
-    @tf.function()
-    def log_probability(self, coord):
-        return tf.tensordot(self.weights, self.cast([flow.log_probability(coord) for flow in self.flows]), 1)
-
-    @tf.function()
-    def log_probability_jacobian(self, coord):
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.log_probability(coord)
-        return tape.gradient(f, coord)
-
-    @tf.function()
-    def log_probability_hessian(self, coord):
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.log_probability_jacobian(coord)
-        return tape.batch_jacobian(f, coord)
 
     @tf.function()
     def log_probability_abs(self, abs_coord):
@@ -1943,9 +1921,47 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
         flow = FlowCallback(chain, **kwargs)
         # train posterior flow:
         flow.global_train(**kwargs)
-
         # save trained model:
         if cache_dir is not None:
             flow.save(cache_dir + '/' + root_name)
     #
     return flow
+
+
+def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob', **kwargs):
+    """
+    Helper to initialize and train a synthetic probability starting from a chain.
+    If a cache directory is specified then training results are cached and
+    retreived at later calls.
+    """
+
+    # check if we want to create a cache folder:
+    if cache_dir is not None:
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+
+    # load each flow from cache or compute:
+    flows = []
+    for i in range(num_flows):
+        # get output root:
+        if cache_dir is not None:
+            _outroot = cache_dir + '/' + root_name + '_'+str(i)
+        else:
+            _outroot = ''
+        # do the list of flows:
+        if cache_dir is not None and os.path.isfile(_outroot + '_flow_cache.pickle'):
+            flow = FlowCallback.load(chain, cache_dir + '/' + root_name, **kwargs)
+            flows.append(flow)
+        else:
+            # initialize posterior flow:
+            flow = FlowCallback(chain, **kwargs)
+            # train posterior flow:
+            flow.global_train(**kwargs)
+            # save trained model:
+            if cache_dir is not None:
+                flow.save(_outroot)
+            flows.append(flow)
+    # initialize the average flow:
+    _avg_flow = average_flow(flows, **kwargs)
+    #
+    return _avg_flow
