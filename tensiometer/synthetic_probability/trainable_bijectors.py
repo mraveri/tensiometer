@@ -184,7 +184,7 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         unroll_loop=False,
         event_ndims=1,
         name=None,
-        spline_knots=2,
+        spline_knots=8,
         range_max=5.,
         range_min=None,
         slope_min=0.1,
@@ -219,9 +219,9 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         bin_heights = tf.math.scalar_mul(factor, bin_heights)
 
                         knot_slopes = params[..., spline_knots * 2:]
-                        knot_slopes = tf.math.softplus(knot_slopes)
-                        # knot_slopes=slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
-                        # knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                        # knot_slopes = tf.math.softplus(knot_slopes)
+                        # knot_slopes =slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                        knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
 
                         return bin_widths, bin_heights, knot_slopes
 
@@ -303,7 +303,7 @@ class AutoregressiveFlow(TrainableTransformation):
             scale_roto_shift=False,
             map_to_unitcube=False,
             spline_knots=8,
-            range_max=3.,
+            range_max=5.,
             autoregressive_scale_with_dim=True,
             int_np_prec=np.int32,
             feedback=0,
