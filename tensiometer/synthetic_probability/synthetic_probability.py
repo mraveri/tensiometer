@@ -80,7 +80,7 @@ plot_options = {
     'legend.loc': 'best',
     'legend.frameon': False,  # if True, draw the legend on a background patch
     'legend.fontsize': 8,
-    }
+}
 
 ###############################################################################
 # main class to compute NF-based probability distributions:
@@ -141,8 +141,7 @@ class FlowCallback(Callback):
             apply_pregauss=True,
             trainable_bijector='AutoregressiveFlow',
             validation_split=0.1,
-            **kwargs
-        ):
+            **kwargs):
 
         # check input:
         if feedback < 0 or not isinstance(feedback, int):
@@ -160,7 +159,8 @@ class FlowCallback(Callback):
         # initialize trainable bijector:
         self._init_trainable_bijector(trainable_bijector=trainable_bijector, **kwargs)
         # initialize training dataset:
-        self._init_training_dataset(validation_split=validation_split)
+        self._init_training_dataset(
+            validation_split=validation_split, **utils.filter_kwargs(kwargs, self._init_training_dataset))
         # initialize distribution:
         self._init_distribution()
         # initialize loss function:
@@ -201,8 +201,7 @@ class FlowCallback(Callback):
             if not np.all([name in chain_params for name in param_names]):
                 raise ValueError(
                     'Input parameter is not in the chain.\n', 'Input parameters ', param_names, '\n'
-                    'Possible parameters', chain_params
-                    )
+                    'Possible parameters', chain_params)
         # save param names:
         self.param_names = param_names
         # save param labels:
@@ -216,8 +215,7 @@ class FlowCallback(Callback):
                 if name not in param_ranges.keys():
                     raise ValueError(
                         'Range for parameter ', name, ' is not specified.\n',
-                        'When passing ranges explicitly all parameters have to be included.'
-                        )
+                        'When passing ranges explicitly all parameters have to be included.')
                 else:
                     self.parameter_ranges[name] = copy.deepcopy(param_ranges[name])
             # get ranges from MCSamples:
@@ -295,12 +293,10 @@ class FlowCallback(Callback):
                 center = 0.5 * (temp_range[0] + temp_range[1])
                 length = temp_range[1] - temp_range[0]
                 eps = 0.001
-                temp_ranges.append(
-                    {
-                        'lower': self.cast(center - 0.5 * length * (1. + eps)),
-                        'upper': self.cast(center + 0.5 * length * (1. + eps))
-                        }
-                    )
+                temp_ranges.append({
+                    'lower': self.cast(center - 0.5 * length * (1. + eps)),
+                    'upper': self.cast(center + 0.5 * length * (1. + eps))
+                })
             # define bijector:
             self.prior_bijector = pb.prior_bijector_helper(temp_ranges)
         elif isinstance(prior_bijector, tfp.bijectors.Bijector):
@@ -318,10 +314,14 @@ class FlowCallback(Callback):
             temp_X = self.prior_bijector.inverse(self.chain_samples).numpy()
             temp_chain = MCSamples(samples=temp_X, weights=self.chain_weights, names=self.param_names)
             temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=self.param_names)
-            temp_dist = tfd.MultivariateNormalTriL(
-                loc=self.cast(temp_gaussian_approx.means[0]),
-                scale_tril=tf.linalg.cholesky(self.cast(temp_gaussian_approx.covs[0]))
-                )
+            if apply_pregauss == 'independent':
+                temp_dist = tfd.MultivariateNormalDiag(
+                    loc=self.cast(temp_gaussian_approx.means[0]),
+                    scale_diag=self.cast(np.sqrt(np.diagonal(temp_gaussian_approx.covs[0]))))
+            else:
+                temp_dist = tfd.MultivariateNormalTriL(
+                    loc=self.cast(temp_gaussian_approx.means[0]),
+                    scale_tril=tf.linalg.cholesky(self.cast(temp_gaussian_approx.covs[0])))
             self.bijectors.append(temp_dist.bijector)
 
         # feedback:
@@ -375,7 +375,7 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_training_dataset(self, validation_split=0.1):
+    def _init_training_dataset(self, validation_split=0.1, rng=None):
         """
         Initialize the training dataset, splitting training and validation.
         """
@@ -385,25 +385,26 @@ class FlowCallback(Callback):
 
         # split training/test:
         n = self.chain_samples.shape[0]
-        indices = np.random.permutation(n)
+        if rng is not None:
+            indices = rng.permutation(n)
+        else:
+            indices = np.random.permutation(n)
         n_split = int(validation_split * n)
         self.test_idx, self.training_idx = indices[:n_split], indices[n_split:]
 
         # training samples:
-        self.training_samples = self.fixed_bijector.inverse(self.chain_samples[self.training_idx, :]
-                                                           ).numpy().astype(np_prec)
+        self.training_samples = self.fixed_bijector.inverse(
+            self.chain_samples[self.training_idx, :]).numpy().astype(np_prec)
         self.num_training_samples = len(self.training_samples)
 
         if self.has_loglikes:
             _jac_true_preabs = self.fixed_bijector.inverse_log_det_jacobian(
-                self.chain_samples[self.training_idx, :], event_ndims=1
-                )
+                self.chain_samples[self.training_idx, :], event_ndims=1)
             self.training_logP_preabs = -1. * self.chain_loglikes[self.training_idx] - _jac_true_preabs
 
         self.training_weights = self.chain_weights[self.training_idx]
         self.training_weights *= len(self.training_weights) / np.sum(
-            self.training_weights
-            )  # weights normalized to number of training samples
+            self.training_weights)  # weights normalized to number of training samples
         self.has_weights = np.any(self.training_weights != self.training_weights[0])
 
         # test samples:
@@ -412,39 +413,33 @@ class FlowCallback(Callback):
 
         if self.has_loglikes:
             _jac_true_test_preabs = self.fixed_bijector.inverse_log_det_jacobian(
-                self.chain_samples[self.test_idx, :], event_ndims=1
-                )
+                self.chain_samples[self.test_idx, :], event_ndims=1)
             self.test_logP_preabs = -1. * self.chain_loglikes[self.test_idx] - _jac_true_test_preabs
 
         self.test_weights = self.chain_weights[self.test_idx]
-        self.test_weights *= len(self.test_weights
-                                ) / np.sum(self.test_weights)  # weights normalized to number of validation samples
+        self.test_weights *= len(self.test_weights) / np.sum(
+            self.test_weights)  # weights normalized to number of validation samples
 
         # initialize tensorflow sample generator:
         if self.has_loglikes:
-            self.training_dataset = tf.data.Dataset.from_tensor_slices(
-                (
-                    self.cast(self.training_samples),
-                    self.cast(self.training_logP_preabs),
-                    self.cast(self.training_weights),
-                    )
-                )
+            self.training_dataset = tf.data.Dataset.from_tensor_slices((
+                self.cast(self.training_samples),
+                self.cast(self.training_logP_preabs),
+                self.cast(self.training_weights),
+            ))
         else:
-            self.training_dataset = tf.data.Dataset.from_tensor_slices(
-                (
-                    self.cast(self.training_samples),
-                    self.cast(self.training_weights),
-                    )
-                )
+            self.training_dataset = tf.data.Dataset.from_tensor_slices((
+                self.cast(self.training_samples),
+                self.cast(self.training_weights),
+            ))
         self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
-        self.training_dataset = self.training_dataset.shuffle(self.num_training_samples,
-                                                              reshuffle_each_iteration=True).repeat()
+        self.training_dataset = self.training_dataset.shuffle(
+            self.num_training_samples, reshuffle_each_iteration=True).repeat()
 
         # initialize validation data:
         if self.has_loglikes:
             self.validation_dataset = (
-                self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights)
-                )
+                self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights))
         else:
             self.validation_dataset = (self.cast(self.test_samples), self.cast(self.test_weights))
 
@@ -453,25 +448,17 @@ class FlowCallback(Callback):
             if self.has_weights:
                 print(
                     '    - {}/{} training/test samples and non-uniform weights'.format(
-                        self.num_training_samples, self.num_test_samples
-                        )
-                    )
+                        self.num_training_samples, self.num_test_samples))
                 print(
                     '    - {0:.6g} effective number of training samples'.format(
-                        np.sum(self.training_weights)**2 / np.sum(self.training_weights**2)
-                        )
-                    )
+                        np.sum(self.training_weights)**2 / np.sum(self.training_weights**2)))
                 print(
                     '    - {0:.6g} effective number of test samples'.format(
-                        np.sum(self.test_weights)**2 / np.sum(self.test_weights**2)
-                        )
-                    )
+                        np.sum(self.test_weights)**2 / np.sum(self.test_weights**2)))
             else:
                 print(
                     '    - {}/{} training/test samples and uniform weights'.format(
-                        self.num_training_samples, self.num_test_samples
-                        )
-                    )
+                        self.num_training_samples, self.num_test_samples))
         #
         return None
 
@@ -485,15 +472,13 @@ class FlowCallback(Callback):
 
         # full distribution:
         self.base_distribution = tfd.MultivariateNormalDiag(
-            tf.zeros(self.num_params, dtype=prec), tf.ones(self.num_params, dtype=prec)
-            )
+            tf.zeros(self.num_params, dtype=prec), tf.ones(self.num_params, dtype=prec))
         self.distribution = tfd.TransformedDistribution(
-            distribution=self.base_distribution, bijector=self.bijector
-            )  # samples from std gaussian mapped to original space
+            distribution=self.base_distribution,
+            bijector=self.bijector)  # samples from std gaussian mapped to original space
         # abstract space distribution:
         self.trained_distribution = tfd.TransformedDistribution(
-            distribution=self.base_distribution, bijector=self.trainable_bijector
-            )
+            distribution=self.base_distribution, bijector=self.trainable_bijector)
         #
         return None
 
@@ -505,10 +490,10 @@ class FlowCallback(Callback):
         self.loss.reset()
         # compile model:
         self.model.compile(
-            optimizer=tf.optimizers.Adam(learning_rate=self.initial_learning_rate, global_clipnorm=self.global_clipnorm),
+            optimizer=tf.optimizers.Adam(
+                learning_rate=self.initial_learning_rate, global_clipnorm=self.global_clipnorm),
             loss=self.loss,
-            weighted_metrics=[]
-            )
+            weighted_metrics=[])
         # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
         _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
         # get the methods that are tensorflow functions:
@@ -520,8 +505,13 @@ class FlowCallback(Callback):
         return None
 
     def _init_model(
-            self, learning_rate=1.e-3, global_clipnorm=1.0, alpha_lossv=1.0, beta_lossv=0.0, loss_mode='standard', **kwargs
-        ):
+            self,
+            learning_rate=1.e-3,
+            global_clipnorm=1.0,
+            alpha_lossv=1.0,
+            beta_lossv=0.0,
+            loss_mode='standard',
+            **kwargs):
         """
         Initialize the loss function.
 
@@ -534,8 +524,7 @@ class FlowCallback(Callback):
         # set loss functions relative weights:
         if not self.has_loglikes and not loss_mode == 'standard':
             raise ValueError(
-                'Cannot use posterior based loss functions if the input chain does not have posterior values'
-                )
+                'Cannot use posterior based loss functions if the input chain does not have posterior values')
         # save in:
         self.alpha_lossv = alpha_lossv
         self.beta_lossv = beta_lossv
@@ -633,9 +622,9 @@ class FlowCallback(Callback):
             # initial_lr = self.model.optimizer.lr.numpy()
             # # lr_schedule = lr.ExponentialDecayScheduler(initial_lr, self.final_learning_rate, 0.8*total_steps, total_steps, **utils.filter_kwargs(kwargs, lr.ExponentialDecayScheduler))
             # boundaries = [int(0.3 * total_steps), int(0.6 * total_steps), int(0.8 * total_steps)]
-            # values = np.logspace(np.log10(self.initial_learning_rate), 
+            # values = np.logspace(np.log10(self.initial_learning_rate),
             #                      np.log10(self.final_learning_rate),
-            #                      len(boundaries)+1)    
+            #                      len(boundaries)+1)
             # lr_schedule = lr.StepDecayScheduler(
             #     initial_lr,
             #     int(0.3 * total_steps),
@@ -656,8 +645,7 @@ class FlowCallback(Callback):
             validation_data=self.validation_dataset,
             verbose=verbose,
             callbacks=[tf.keras.callbacks.TerminateOnNaN(), self] + callbacks,
-            **utils.filter_kwargs(kwargs, self.model.fit)
-            )
+            **utils.filter_kwargs(kwargs, self.model.fit))
         # model is now trained:
         self.is_trained = True
         #
@@ -842,8 +830,7 @@ class FlowCallback(Callback):
             labels=self.param_labels,
             ranges=self.parameter_ranges,
             name_tag=self.name_tag,
-            **utils.filter_kwargs(kwargs, MCSamples)
-            )
+            **utils.filter_kwargs(kwargs, MCSamples))
         #
         return mc_samples
 
@@ -886,12 +873,12 @@ class FlowCallback(Callback):
         delta_log_likes = -(self.chain_loglikes - self.chain_loglikes[self.chain_nearest_index[:, 1]])
         # compute the gradient:
         delta_1 = tf.einsum(
-            "...i, ...i -> ...", self.log_probability_jacobian(self.cast(self.chain_samples)), delta_theta
-            ) - delta_log_likes
+            "...i, ...i -> ...", self.log_probability_jacobian(self.cast(self.chain_samples)),
+            delta_theta) - delta_log_likes
         delta_2 = tf.einsum(
             "...i, ...i -> ...",
-            self.log_probability_jacobian(self.cast(self.chain_samples[self.chain_nearest_index[:, 1], :])), delta_theta
-            ) - delta_log_likes
+            self.log_probability_jacobian(self.cast(self.chain_samples[self.chain_nearest_index[:, 1], :])),
+            delta_theta) - delta_log_likes
         # average:
         score = np.average(np.abs(0.5 * (delta_1 + delta_2)), weights=self.chain_weights)
         #
@@ -1085,8 +1072,8 @@ class FlowCallback(Callback):
         _alpha = tf.linspace(0.0, 1.0, num_points)
         # get the trajectory (a straight line) in abstract space:
         _traj = tf.expand_dims(
-            _abs_pos_start, axis=-1
-            ) + _alpha * (tf.expand_dims(_abs_pos_end, axis=-1) - tf.expand_dims(_abs_pos_start, axis=-1))
+            _abs_pos_start,
+            axis=-1) + _alpha * (tf.expand_dims(_abs_pos_end, axis=-1) - tf.expand_dims(_abs_pos_start, axis=-1))
         # take the transpose (we need to calculate the indexes that we want to swap):
         trailing_axes = [-1, -2]
         leading = tf.range(tf.rank(_traj) - len(trailing_axes))
@@ -1116,7 +1103,7 @@ class FlowCallback(Callback):
             'prior_bijector', 'base_distribution', 'loss', 'model', 'bijectors', 'fixed_bijector',
             'trainable_transformation', 'trainable_bijector', 'bijector', 'training_dataset', 'distribution',
             'trained_distribution'
-            ]
+        ]
 
         # get properties that can be pickled and properties that cannot:
         pickle_objects = {}
@@ -1186,7 +1173,7 @@ class FlowCallback(Callback):
                 "test_evidence_error",
                 "evidence",
                 "evidence_error",
-                ]
+            ]
         elif issubclass(type(self.loss), loss.variable_weight_loss):
             self.training_metrics = [
                 "loss",
@@ -1214,7 +1201,7 @@ class FlowCallback(Callback):
                 # moo coefficients:
                 "lambda_1",
                 "lambda_2",
-                ]
+            ]
 
         # initialize logs:
         self.log = {_k: [] for _k in self.training_metrics}
@@ -1226,8 +1213,7 @@ class FlowCallback(Callback):
         self.chi2Y = np.sum((_temp)**2, axis=0)
         if self.has_weights:
             self.chi2Y = np.random.choice(
-                self.chi2Y, size=len(self.chi2Y), replace=True, p=self.test_weights / np.sum(self.test_weights)
-                )
+                self.chi2Y, size=len(self.chi2Y), replace=True, p=self.test_weights / np.sum(self.test_weights))
         self.chi2Y_ks, self.chi2Y_ks_p = scipy.stats.kstest(self.chi2Y, 'chi2', args=(self.num_params,))
         #
         return None
@@ -1259,8 +1245,7 @@ class FlowCallback(Callback):
                         self.chi2Z,
                         size=len(self.chi2Z),
                         replace=True,
-                        p=self.test_weights[_s] / np.sum(self.test_weights[_s])
-                        )
+                        p=self.test_weights[_s] / np.sum(self.test_weights[_s]))
                 chi2Z_ks, chi2Z_ks_p = scipy.stats.kstest(self.chi2Z, 'chi2', args=(self.num_params,))
             except:
                 chi2Z_ks, chi2Z_ks_p = 0., 0.
@@ -1292,12 +1277,10 @@ class FlowCallback(Callback):
             # import pdb; pdb.set_trace()
             _train_loss_components = self.loss.compute_loss_components(
                 self.cast(self.training_logP_preabs), self.model.call(self.cast(self.training_samples)),
-                self.cast(self.training_weights)
-                )
+                self.cast(self.training_weights))
             _test_loss_components = self.loss.compute_loss_components(
                 self.cast(self.test_logP_preabs), self.model.call(self.cast(self.test_samples)),
-                self.cast(self.test_weights)
-                )
+                self.cast(self.test_weights))
             if issubclass(type(self.loss), loss.constant_weight_loss):
                 # average:
                 temp_train_rho_loss = np.average(_train_loss_components[0], weights=self.training_weights)
@@ -1389,8 +1372,7 @@ class FlowCallback(Callback):
             label='$\\chi^2_{{{}}}$ PDF'.format(self.num_params),
             c='k',
             lw=1.,
-            ls='-'
-            )
+            ls='-')
         ax.hist(
             self.chi2Y,
             bins=bins,
@@ -1399,8 +1381,7 @@ class FlowCallback(Callback):
             weights=self.test_weights,
             label='Pre-NF ($D_n$={:.3f})'.format(self.chi2Y_ks),
             lw=1.,
-            ls='-'
-            )
+            ls='-')
         ax.hist(
             self.chi2Z,
             bins=bins,
@@ -1408,8 +1389,7 @@ class FlowCallback(Callback):
             histtype='step',
             label='Post-NF ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]),
             lw=1.,
-            ls='-'
-            )
+            ls='-')
         ax.set_title(r'$\chi^2_{{{}}}$ PDF'.format(self.num_params))
         ax.set_xlabel(r'$\chi^2$')
         ax.legend()
@@ -1475,25 +1455,21 @@ class FlowCallback(Callback):
         Plot behavior of density and evidence error loss as training progresses.
         """
         ax.plot(
-            np.abs(np.array(self.log["lambda_1"]) * np.array(self.log["rho_loss"])), lw=1., ls='-', color='tab:blue'
-            )
+            np.abs(np.array(self.log["lambda_1"]) * np.array(self.log["rho_loss"])), lw=1., ls='-', color='tab:blue')
         ax.plot(
-            np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["ee_loss"])), lw=1., ls='-', color='tab:orange'
-            )
+            np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["ee_loss"])), lw=1., ls='-', color='tab:orange')
         ax.plot(
             np.abs(np.array(self.log["lambda_1"]) * np.array(self.log["val_rho_loss"])),
             lw=1.,
             ls='--',
             color='tab:blue',
-            label='density'
-            )
+            label='density')
         ax.plot(
             np.abs(np.array(self.log["lambda_2"]) * np.array(self.log["val_ee_loss"])),
             lw=1.,
             ls='--',
             color='tab:orange',
-            label='evidence error'
-            )
+            label='evidence error')
         ax.set_title(r"Wighted loss breakdown")
         ax.set_xlabel(r"Epoch $\#$")
         ax.set_yscale('log')
@@ -1540,11 +1516,11 @@ class FlowCallback(Callback):
             if 'val_loss_rate' in self.log.keys():
                 if len(self.log["val_loss_rate"]) > epoch_range:
                     loss_rate_sig = np.sqrt(np.var(self.log["val_loss_rate"][-epoch_range:]))
-                    ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
+                    ax.set_ylim([-3 * loss_rate_sig, 3 * loss_rate_sig])
             elif 'loss_rate' in self.log.keys():
                 if len(self.log["loss_rate"]) > epoch_range:
                     loss_rate_sig = np.sqrt(np.var(self.log["loss_rate"][-epoch_range:]))
-                    ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
+                    ax.set_ylim([-3 * loss_rate_sig, 3 * loss_rate_sig])
             else:
                 ax.set_ylim([-1, 1])
         ax.set_title(r"$\Delta$ Loss / epoch")
@@ -1716,65 +1692,87 @@ class TransformedFlowCallback(FlowCallback):
         """
 
         self.num_params = flow.num_params
+
         if isinstance(transformation, Iterable):
-            tmap = transformation
-        else:
-            tmap = [transformation] * self.num_params
+            assert len(transformation) == self.num_params
+            # new bijector
+            split = tfb.Split(self.num_params, axis=-1)
+            b = tfb.Chain([tfb.Invert(split), tfb.JointMap(transformation), split])
 
-        # New bijector
-        split = tfb.Split(self.num_params, axis=-1)
-        b = tfb.Chain([tfb.Invert(split), tfb.JointMap(tmap), split])
-
-        # parameter names and labels:
-        self.param_names = []
-        self.param_labels = []
-        for t, name, label in zip(tmap, flow.param_names, flow.param_labels):
-            if t.name != '':
-                self.param_names.append(t.name + '_' + name)
-                self.param_labels.append(t.name + ' ' + label)
+            # parameter names and labels:
+            self.param_names = []
+            self.param_labels = []
+            for t, name, label in zip(transformation, flow.param_names, flow.param_labels):
+                if t.name != '':
+                    self.param_names.append(t.name + '_' + name)
+                    self.param_labels.append(t.name + ' ' + label)
+                else:
+                    self.param_names.append(name)
+                    self.param_labels.append(label)
+            # set ranges:
+            if flow.parameter_ranges is not None:
+                parameter_ranges = {}
+                for i, name in enumerate(flow.param_names):
+                    parameter_ranges[self.param_names[i]] = list(transformation[i](flow.parameter_ranges[name]).numpy())
+                self.parameter_ranges = parameter_ranges
             else:
-                self.param_names.append(name)
-                self.param_labels.append(label)
-        # set ranges:
-        if flow.parameter_ranges is not None:
-            parameter_ranges = {}
-            for i, name in enumerate(flow.param_names):
-                parameter_ranges[self.param_names[i]] = list(tmap[i](flow.parameter_ranges[name]).numpy())
-            self.parameter_ranges = parameter_ranges
-        else:
-            self.parameter_ranges = None
+                self.parameter_ranges = None
+
+        elif isinstance(transformation, tb.DerivedParamsBijector):
+            # first find the parameters that the DerivedParamsBijector is modifying
+            mod_params = [i for i, name in enumerate(flow.param_names) if name in transformation.param_names_in]
+            oth_params = [i for i in range(self.num_params) if i not in mod_params]
+
+            # new bijector
+            split = tfb.Split([len(mod_params)] + [1] * len(oth_params))
+            b = tfb.Chain([
+                tfb.Invert(split),
+                tfb.JointMap([transformation] + [tfb.Identity()] * len(oth_params)), split,
+                tfb.Permute(mod_params + oth_params)
+            ])
+
+            # parameter names and labels:
+            self.param_names = transformation.param_names_out + flow.param_names[oth_params]
+            self.param_labels = transformation.flow_out.param_labels + flow.param_labels[oth_params]
+            # set ranges:
+            if flow.parameter_ranges is not None:
+                if transformation.flow_out.parameter_ranges is not None:
+                    self.parameter_ranges = transformation.flow_out.parameter_ranges + flow.parameter_ranges[oth_params]
+
         # set name tag:
         self.name_tag = flow.name_tag + '_transformed'
         # set sample MAP:
         if flow.sample_MAP is not None:
-            self.sample_MAP = np.array([trans(par).numpy() for par, trans in zip(flow.sample_MAP, tmap)])
+            self.sample_MAP = b.forward(flow.sample_MAP).numpy()
         else:
             self.sample_MAP = None
         # set chains MAP:
         if flow.chain_MAP is not None:
-            self.chain_MAP = np.array([trans(par).numpy() for par, trans in zip(flow.chain_MAP, tmap)])
+            self.chain_MAP = b.forward(flow.chain_MAP).numpy()
         else:
             self.chain_MAP = None
+
         # set bijectors and distribution:
         self.bijectors = [b] + flow.bijectors
         self.bijector = tfb.Chain(self.bijectors)
         self.distribution = tfd.TransformedDistribution(
-            distribution=flow.distribution.distribution, bijector=self.bijector
-            )
+            distribution=flow.distribution.distribution, bijector=self.bijector)
+
         # MAP:
         if flow.MAP_coord is not None:
-            self.MAP_coord = np.array([trans(par).numpy() for par, trans in zip(flow.MAP_coord, tmap)])
+            self.MAP_coord = b.forward(flow.MAP_coord).numpy()
             self.MAP_logP = self.log_probability(self.cast(self.MAP_coord))
         else:
-            self.MAP_coord = flow.MAP_coord
-            self.MAP_logP = flow.MAP_logP
+            self.MAP_coord = None
+            self.MAP_logP = None
+
 
 ###############################################################################
 # Average flow:
 
 
 class average_flow(FlowCallback):
-    
+
     def __init__(self, flows, **kwargs):
         """
         Initialize the average flow class
@@ -1782,27 +1780,29 @@ class average_flow(FlowCallback):
         # check parameters and copy in info:
         for flow in flows:
             if flow.param_names != flows[0].param_names:
-                raise ValueError('Flow', flow.name_tag, 'does not have the same parameters as', flows[0].name_tag, '. Cannot average.')       
+                raise ValueError(
+                    'Flow', flow.name_tag, 'does not have the same parameters as', flows[0].name_tag,
+                    '. Cannot average.')
         # copy in infos from the first flow:
         infos = [
-                 'name_tag',
-                 'feedback',
-                 'plot_every',
-                 'sample_MAP',
-                 'num_params',
-                 'param_names',
-                 'param_labels',
-                 'parameter_ranges',
-                 'chain_samples',
-                 'chain_loglikes',
-                 'has_loglikes',
-                 'chain_weights',
-                 'is_trained',
-                 'MAP_coord',
-                 'MAP_logP',
-                 ]
+            'name_tag',
+            'feedback',
+            'plot_every',
+            'sample_MAP',
+            'num_params',
+            'param_names',
+            'param_labels',
+            'parameter_ranges',
+            'chain_samples',
+            'chain_loglikes',
+            'has_loglikes',
+            'chain_weights',
+            'is_trained',
+            'MAP_coord',
+            'MAP_logP',
+        ]
         for info in infos:
-            self.__dict__[info] = flows[0].__dict__[info]             
+            self.__dict__[info] = flows[0].__dict__[info]
 
         # copy in flows:
         self.flows = flows
@@ -1828,12 +1828,13 @@ class average_flow(FlowCallback):
         _temp_weights = _temp_weights / np.amin(_temp_weights)
         _temp_weights = np.exp(-_temp_weights)
         # normalize and save:
-        self.weights = _temp_weights/np.sum(_temp_weights)
+        self.weights = _temp_weights / np.sum(_temp_weights)
         self.weights = self.cast(self.weights)
         # initialize multinomial over weights for sampling:
         self.weights_prob = tfp.distributions.Multinomial(1, probs=self.weights, validate_args=True)
-        self.distribution = tfp.distributions.Mixture(cat=tfp.distributions.Categorical(probs=self.weights),
-                                                      components=[flow.distribution for flow in self.flows])
+        self.distribution = tfp.distributions.Mixture(
+            cat=tfp.distributions.Categorical(probs=self.weights),
+            components=[flow.distribution for flow in self.flows])
         #
         return None
 
@@ -1881,7 +1882,7 @@ class average_flow(FlowCallback):
 
     def save(self, outroot):
         for i, flow in enumerate(self.flows):
-            _outroot = outroot + '_'+str(i)
+            _outroot = outroot + '_' + str(i)
             flow.save(_outroot)
         return None
 
@@ -1890,12 +1891,13 @@ class average_flow(FlowCallback):
         # load each flow:
         flows = []
         for i in range(num_flows):
-            _outroot = outroot + '_'+str(i)
+            _outroot = outroot + '_' + str(i)
             flows.append(FlowCallback.load(chain, _outroot, **kwargs))
         # initialize average flow:
         flow = average_flow(flows, **kwargs)
         #
         return flow
+
 
 ###############################################################################
 # Flow utilities:
@@ -1945,7 +1947,7 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
     for i in range(num_flows):
         # get output root:
         if cache_dir is not None:
-            _outroot = cache_dir + '/' + root_name + '_'+str(i)
+            _outroot = cache_dir + '/' + root_name + '_' + str(i)
         else:
             _outroot = ''
         # do the list of flows:

@@ -16,6 +16,7 @@ from tensorflow_probability.python.internal import parameter_properties
 from tensorflow.keras.layers import Input, Lambda, Dense
 from tensorflow.keras.models import Model, Sequential
 
+from .synthetic_probability import FlowCallback
 from .. import utilities as utils
 
 tfb = tfp.bijectors
@@ -33,7 +34,7 @@ def min_var_permutations(d, n, min_number=10000):
     """
     permutation = None
     perm_var = np.inf
-    for i in range(max(min_number, 2*d*n)):
+    for i in range(max(min_number, 2 * d * n)):
         _temp_perm = [np.random.permutation(d) for _ in range(n)]
         _temp_var = np.var(np.sum(_temp_perm, axis=0))
         if _temp_var < perm_var:
@@ -41,6 +42,7 @@ def min_var_permutations(d, n, min_number=10000):
             permutation = _temp_perm
     #
     return permutation
+
 
 ###############################################################################
 # generic class:
@@ -77,8 +79,7 @@ class ScaleRotoShift(tfb.Bijector):
             validate_args=False,
             initializer='zeros',
             name='Affine',
-            dtype=tf.float32
-        ):
+            dtype=tf.float32):
         """
         Bijector performing a shift, scaling and rotation.
         Note that scale is exponential so that we can do unconstrained optimization.
@@ -96,14 +97,12 @@ class ScaleRotoShift(tfb.Bijector):
             self.dimension = dimension
             if shift:
                 self._shift = tfp.layers.VariableLayer(
-                    dimension, initializer=initializer, dtype=dtype, name=name + '_shift'
-                    )
+                    dimension, initializer=initializer, dtype=dtype, name=name + '_shift')
             else:
                 self._shift = lambda _: tf.zeros(dimension, dtype=dtype, name=name + '_shift')
             if scale:
                 self._scalevec = tfp.layers.VariableLayer(
-                    dimension, initializer=initializer, dtype=dtype, name=name + '_scale'
-                    )
+                    dimension, initializer=initializer, dtype=dtype, name=name + '_scale')
             else:
                 self._scalevec = lambda _: tf.zeros(dimension, dtype=dtype, name=name + '_scale')
             if roto:
@@ -112,8 +111,7 @@ class ScaleRotoShift(tfb.Bijector):
                     initializer=initializer,
                     trainable=True,
                     dtype=dtype,
-                    name=name + '_roto'
-                    )
+                    name=name + '_roto')
             else:
                 self._rotvec = lambda _: tf.zeros(dimension * (dimension - 1) // 2, dtype=dtype, name=name + '_roto')
 
@@ -123,8 +121,7 @@ class ScaleRotoShift(tfb.Bijector):
                 validate_args=validate_args,
                 parameters=parameters,
                 dtype=dtype,
-                name=name
-                )
+                name=name)
 
     @property
     def shift(self):
@@ -188,7 +185,7 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         range_max=5.,
         range_min=None,
         slope_min=0.1,
-        ):
+    ):
         parameters = dict(locals())
         name = name or 'masked_autoregressive_flow'
 
@@ -233,8 +230,7 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         bin_heights=bin_heights,
                         knot_slopes=knot_slopes,
                         range_min=range_min,
-                        validate_args=False
-                        )
+                        validate_args=False)
 
                 bijector_fn = _bijector_fn
 
@@ -249,14 +245,14 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                 is_constant_jacobian=is_constant_jacobian,
                 validate_args=validate_args,
                 parameters=parameters,
-                name=name
-                )
+                name=name)
 
 
 ###############################################################################
 # Make separate NNs for each dimension:
 
-def build_nn(dim_in, dim_out, hidden_units, activation, **kwargs):
+
+def build_nn(dim_in, dim_out, hidden_units, activation=tf.math.asinh, **kwargs):
     if len(hidden_units) == 0 or dim_in == 0:
         model = Sequential(Dense(dim_out, activation=None, input_shape=(dim_in,)))
     else:
@@ -307,12 +303,11 @@ class AutoregressiveFlow(TrainableTransformation):
             autoregressive_scale_with_dim=True,
             int_np_prec=np.int32,
             feedback=0,
-            **kwargs
-        ):
+            **kwargs):
 
         if n_transformations is None:
             #n_transformations = 2 * num_params
-            n_transformations = int(np.ceil(2*np.log2(num_params)+2))           
+            n_transformations = int(np.ceil(2 * np.log2(num_params) + 2))
         event_shape = (num_params,)
 
         if hidden_units is None:
@@ -345,8 +340,10 @@ class AutoregressiveFlow(TrainableTransformation):
 
         if kernel_initializer is None:
             kernel_initializer = tf.keras.initializers.VarianceScaling(
-                scale=1. / n_transformations, mode='fan_avg', distribution='truncated_normal', seed=np.random.randint(np.iinfo(np.int32).max)
-                )
+                scale=1. / n_transformations,
+                mode='fan_avg',
+                distribution='truncated_normal',
+                seed=np.random.randint(np.iinfo(np.int32).max))
 
         # Build transformed distribution
         bijectors = []
@@ -379,8 +376,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     activation=activation,
                     kernel_initializer=kernel_initializer,
                     scale_with_dim=autoregressive_scale_with_dim,
-                    **utils.filter_kwargs(kwargs, Dense)
-                    )
+                    **utils.filter_kwargs(kwargs, Dense))
             elif _autoregressive_type == 'masked':
                 nn = tfb.AutoregressiveNetwork(
                     params=transf_params,
@@ -388,8 +384,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     hidden_units=hidden_units,
                     activation=activation,
                     kernel_initializer=kernel_initializer,
-                    **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork)
-                    )
+                    **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
             else:
                 raise ValueError
 
@@ -398,12 +393,10 @@ class AutoregressiveFlow(TrainableTransformation):
             elif _transformation_type == 'spline':
                 if map_to_unitcube:
                     transformation = SplineHelper(
-                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_min=0., range_max=1.
-                        )
+                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_min=0., range_max=1.)
                 else:
                     transformation = SplineHelper(
-                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max
-                        )
+                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max)
             bijectors.append(transformation)
             if map_to_unitcube:
                 bijectors.append(tfb.NormalCDF())
@@ -414,9 +407,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     ScaleRotoShift(
                         num_params,
                         name='affine_' + str(i) + '_' + str(np.random.randint(0, 100000)),
-                        **utils.filter_kwargs(kwargs, ScaleRotoShift)
-                        )
-                    )
+                        **utils.filter_kwargs(kwargs, ScaleRotoShift)))
 
             # if _permutations:  # add the inverse permutation
             #     inv_perm = np.zeros_like(_permutations[i])
@@ -460,8 +451,101 @@ class AutoregressiveFlow(TrainableTransformation):
         maf = AutoregressiveFlow(
             num_params=len(permutations[0]),
             permutations=permutations,
-            **utils.filter_kwargs(kwargs, AutoregressiveFlow)
-            )
+            **utils.filter_kwargs(kwargs, AutoregressiveFlow))
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf
+
+
+class BijectorLayer(tf.keras.layers.Layer):
+
+    def __init__(self, bijector, **kwargs):
+        super().__init__(**kwargs)
+        self.bijector = bijector
+
+    def call(self, inputs):
+        return self.bijector.forward(inputs)
+
+
+class DerivedParamsBijector(AutoregressiveFlow):
+
+    def __init__(self, chain, param_names_in, param_names_out, permutations=False, **kwargs):
+        self.num_params = len(param_names_in)
+        assert len(param_names_out) == self.num_params
+        self.param_names_in = param_names_in
+        self.param_names_out = param_names_out
+
+        super().__init__(self.num_params, permutations=permutations, **kwargs)
+
+        seed = np.random.randint(0, 9999)
+
+        self.flow_in = FlowCallback(
+            chain,
+            param_names=param_names_in,
+            prior_bijector=None,
+            trainable_bijector=None,
+            rng=np.random.default_rng(seed=seed),
+            apply_pregauss='independent',
+            feedback=0)
+
+        self.flow_out = FlowCallback(
+            chain,
+            param_names=param_names_out,
+            prior_bijector=None,
+            trainable_bijector=None,
+            rng=np.random.default_rng(seed=seed),
+            apply_pregauss='independent',
+            feedback=0)
+
+        self.num_training_samples = len(self.flow_in.training_samples)
+
+        # self.training_dataset = tf.data.Dataset.from_tensor_slices(
+        #     (self.flow_in.cast(self.flow_in.training_samples), self.flow_in.cast(self.flow_out.training_samples)))
+
+        # self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
+        # self.training_dataset = self.training_dataset.shuffle(
+        #     self.num_training_samples, reshuffle_each_iteration=True).repeat()
+
+        # self.validation_dataset = tf.data.Dataset.from_tensor_slices(
+        #     (self.flow_in.cast(self.flow_in.test_samples), self.flow_in.cast(self.flow_out.test_samples)))
+
+        self.trainable_bijector = self.bijector
+        self.bijector = tfb.Chain([self.flow_out.bijector, self.trainable_bijector, tfb.Invert(self.flow_in.bijector)])
+
+        x = Input(shape=(self.num_params,))
+        y = BijectorLayer(self.trainable_bijector)(x)
+
+        self.model = Model(x, y)
+
+        self.model.compile('adam', 'mse')
+
+    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=None, **kwargs):
+        # We're trying to loop through the full sample each epoch
+        if batch_size is None:
+            if steps_per_epoch is None:
+                steps_per_epoch = 20
+            batch_size = int(self.num_training_samples / steps_per_epoch)
+        else:
+            if steps_per_epoch is None:
+                steps_per_epoch = int(self.num_training_samples / batch_size)
+                
+        if verbose is None:
+            if self.feedback == 0:
+                verbose = 0
+            elif self.feedback > 0:
+                verbose = 1
+                
+        hist = self.model.fit(
+            # x=self.training_dataset.batch(batch_size),
+            x=self.flow_in.training_samples,
+            y=self.flow_out.training_samples,
+            validation_data=(self.flow_in.test_samples, self.flow_out.test_samples),
+            batch_size=batch_size,
+            epochs=epochs,
+            steps_per_epoch=steps_per_epoch,
+            # validation_data=self.validation_dataset,
+            verbose=verbose,
+            callbacks=[tf.keras.callbacks.TerminateOnNaN()] + callbacks,
+            **utils.filter_kwargs(kwargs, self.model.fit))
+
+        return hist
