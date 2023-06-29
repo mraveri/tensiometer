@@ -377,7 +377,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
             patience=25,
             cooldown=10,
             verbose=0,
-            min_lr=0,
+            min_lr=1e-5,
             **kwargs,
     ):
         super().__init__()
@@ -436,7 +436,6 @@ class LRAdaptLossSlopeEarlyStop(Callback):
                             self.cooldown_counter = self.cooldown
                             self.wait = 0
                             self.last_losses = []
-                            
                         else:
                             self.model.stop_training = True
                             
