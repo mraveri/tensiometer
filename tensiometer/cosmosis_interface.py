@@ -55,87 +55,103 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     # decide if the user passed a folder or a chain:
     if os.path.isfile(chain_root+'.txt'):
         chain_file = chain_root+'.txt'
+        chain_files = [chain_file]
+    elif os.path.isfile(chain_root+'_1.txt'):
+        import glob
+        chain_files = glob.glob(chain_root+'_?.txt') + glob.glob(chain_root+'_??.txt')
+        chain_file = chain_root+'_1.txt'
     elif os.path.isdir(chain_root):
         # look for the chain file:
         temp = list(filter(lambda x: 'chain.txt' in x, os.listdir(chain_root)))
         if len(temp) == 0:
             raise ValueError('No chain file found in folder', chain_root)
         chain_file = chain_root+'/'+temp[0]
+        chain_files = [chain_file]
     else:
         raise ValueError('Input chain root is not a folder nor a file.')
-    # get all the commented lines in the chain file:
-    info = get_cosmosis_info(chain_file)
-    # get the parameter names:
-    param_names = get_param_names(info)
-    # get the parameter labels from the user provided dictionary:
-    param_labels = get_param_labels(info, param_names, param_label_dict)
-    # get the sampler:
-    sampler = get_sampler_type(info)
-    # get the name tag:
-    if name_tag is None:
-        name_tag = get_name_tag(info)
+    nchains = len(chain_files)
     # get the samples weights and likelihood:
-    chain = loadNumpyTxt(chain_file, skiprows=0)
-    # parse the chain depending on the sampler that produced it:
-    if sampler == 'nested':
-        # get number of samples to use:
-        nsamples = int(list(filter(lambda x: 'nsample=' in x, info))
-                       [0].replace(' ', '').split('=')[1])
-        # get the chain:
-        chain = chain[-nsamples:]
-        # get all quantities:
-        indexes = [i for i in range(len(param_names))
-                   if i != param_names.index('weight')
-                   and i != param_names.index('post')]
-        samples = chain[:, indexes]
-        weights = chain[:, param_names.index('weight')]
-        loglike = chain[:, param_names.index('post')]
-        # delete the weights and likelihood from names:
-        if param_labels is not None:
-            param_labels.pop(param_names.index('weight'))
-            param_labels.pop(param_names.index('post'))
-        param_names.pop(param_names.index('weight'))
-        param_names.pop(param_names.index('post'))
-    elif sampler == 'mcmc':
-        # get all quantities:
-        indexes = [i for i in range(len(param_names))
-                   if i != param_names.index('post')]
-        samples = chain[:, indexes]
-        loglike = chain[:, param_names.index('post')]
-        # Cosmosis does not weight samples:
-        samples, idx, weights = np.unique(samples, return_index=True, return_counts=True, axis=0)
-        loglike = loglike[idx]
-        # delete the weights and likelihood from names:
-        if param_labels is not None:
-            param_labels.pop(param_names.index('post'))
-        param_names.pop(param_names.index('post'))
-    elif sampler == 'uncorrelated':
-        # get all quantities:
-        indexes = [i for i in range(len(param_names))
-                   if i != param_names.index('post')]
-        samples = chain[:, indexes]
-        loglike = chain[:, param_names.index('post')]
-        weights = None
-        # delete the weights and likelihood from names:
-        if param_labels is not None:
-            param_labels.pop(param_names.index('post'))
-        param_names.pop(param_names.index('post'))
-    else:
-        raise ValueError('Unknown sampler')
-    # get the ranges:
-    ranges = get_ranges(info, param_names)
-    # transform param names:
-    if param_name_dict is not None:
-        for i, name in enumerate(param_names):
-            if name in param_name_dict.keys():
-                param_names[i] = param_name_dict[name]
-                if name in ranges.keys():
-                    ranges[param_name_dict[name]] = ranges.pop(name)
-        #for i, name in enumerate(param_names):
-        #    if name in param_name_dict.keys():
+    lloglikes = []
+    lsamples = []
+    lweights = []
+    for c in chain_files:
+        print(c)
+        # get all the commented lines in the chain file:
+        info = get_cosmosis_info(c)
+        # get the parameter names:
+        param_names = get_param_names(info)
+        # get the parameter labels from the user provided dictionary:
+        param_labels = get_param_labels(info, param_names, param_label_dict)
+        # get the sampler:
+        sampler = get_sampler_type(info)
+        # get the name tag:
+        if name_tag is None:
+            name_tag = get_name_tag(info)
+        chain = loadNumpyTxt(c, skiprows=0)
+        # parse the chain depending on the sampler that produced it:
+        if sampler == 'nested':
+            # get number of samples to use:
+            nsamples = int(list(filter(lambda x: 'nsample=' in x, info))
+                           [0].replace(' ', '').split('=')[1])
+            # get the chain:
+            chain = chain[-nsamples:]
+            # get all quantities:
+            indexes = [i for i in range(len(param_names))
+                       if i != param_names.index('weight')
+                       and i != param_names.index('post')]
+            samples = chain[:, indexes]
+            weights = chain[:, param_names.index('weight')]
+            loglike = chain[:, param_names.index('post')]
+            # delete the weights and likelihood from names:
+            if param_labels is not None:
+                param_labels.pop(param_names.index('weight'))
+                param_labels.pop(param_names.index('post'))
+            param_names.pop(param_names.index('weight'))
+            param_names.pop(param_names.index('post'))
+        elif sampler == 'mcmc':
+            # get all quantities:
+            indexes = [i for i in range(len(param_names))
+                       if i != param_names.index('post')]
+            samples = chain[:, indexes]
+            loglike = chain[:, param_names.index('post')]
+            # Cosmosis does not weight samples:
+            samples, idx, weights = np.unique(samples, return_index=True, return_counts=True, axis=0)
+            loglike = loglike[idx]
+            # delete the weights and likelihood from names:
+            if param_labels is not None:
+                param_labels.pop(param_names.index('post'))
+            param_names.pop(param_names.index('post'))
+        elif sampler == 'uncorrelated':
+            # get all quantities:
+            indexes = [i for i in range(len(param_names))
+                       if i != param_names.index('post')]
+            samples = chain[:, indexes]
+            loglike = chain[:, param_names.index('post')]
+            weights = None
+            # delete the weights and likelihood from names:
+            if param_labels is not None:
+                param_labels.pop(param_names.index('post'))
+            param_names.pop(param_names.index('post'))
+        else:
+            raise ValueError('Unknown sampler')
+        # get the ranges:
+        ranges = get_ranges(info, param_names)
+        # transform param names:
+        if param_name_dict is not None:
+            for i, name in enumerate(param_names):
+                if name in param_name_dict.keys():
+                    param_names[i] = param_name_dict[name]
+                    if name in ranges.keys():
+                        ranges[param_name_dict[name]] = ranges.pop(name)
+            #for i, name in enumerate(param_names):
+            #    if name in param_name_dict.keys():
+        lsamples.append(samples)
+        lweights.append(weights)
+        lloglikes.append(-2.*loglike)
+            
     # initialize the samples:
-    mc_samples = MCSamples(samples=samples, weights=weights,
-                           loglikes=-2.*loglike,
+    mc_samples = MCSamples(samples=lsamples, weights=lweights,
+                           loglikes=lloglikes,
                            sampler=sampler, names=param_names,
                            labels=param_labels, ranges=ranges,
                            ignore_rows=0, name_tag=name_tag,
@@ -162,7 +178,7 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     # update statistics:
     mc_samples.updateBaseStatistics()
     #
-    return mc_samples
+    return mc_samples, nchains
 
 
 def get_cosmosis_info(file):
@@ -232,6 +248,7 @@ def get_sampler_type(info):
                     'multinest': 'nested',
                     'apriori': 'uncorrelated',
                     'emcee': 'mcmc',
+                    'metropolis': 'mcmc',
                     'pmaxlike': 'max_like',
                     'maxlike': 'max_like'
                     }
