@@ -16,7 +16,6 @@ from tensorflow_probability.python.internal import parameter_properties
 from tensorflow.keras.layers import Input, Lambda, Dense
 from tensorflow.keras.models import Model, Sequential
 
-from .synthetic_probability import FlowCallback
 from .. import utilities as utils
 
 tfb = tfp.bijectors
@@ -269,7 +268,7 @@ def build_AR_model(num_params, transf_params, hidden_units=[], scale_with_dim=Tr
     params = []
     for dim in range(num_params):
         if scale_with_dim:
-            _h = [np.ceil(h * dim / num_params) for h in hidden_units]
+            _h = [int(np.ceil(h * dim / num_params)) for h in hidden_units]
         else:
             _h = hidden_units
         nn = build_nn(dim, transf_params, hidden_units=_h, **kwargs)
@@ -467,85 +466,3 @@ class BijectorLayer(tf.keras.layers.Layer):
         return self.bijector.forward(inputs)
 
 
-class DerivedParamsBijector(AutoregressiveFlow):
-
-    def __init__(self, chain, param_names_in, param_names_out, permutations=False, **kwargs):
-        self.num_params = len(param_names_in)
-        assert len(param_names_out) == self.num_params
-        self.param_names_in = param_names_in
-        self.param_names_out = param_names_out
-
-        super().__init__(self.num_params, permutations=permutations, **kwargs)
-
-        seed = np.random.randint(0, 9999)
-
-        self.flow_in = FlowCallback(
-            chain,
-            param_names=param_names_in,
-            prior_bijector=None,
-            trainable_bijector=None,
-            rng=np.random.default_rng(seed=seed),
-            apply_pregauss='independent',
-            feedback=0)
-
-        self.flow_out = FlowCallback(
-            chain,
-            param_names=param_names_out,
-            prior_bijector=None,
-            trainable_bijector=None,
-            rng=np.random.default_rng(seed=seed),
-            apply_pregauss='independent',
-            feedback=0)
-
-        self.num_training_samples = len(self.flow_in.training_samples)
-
-        # self.training_dataset = tf.data.Dataset.from_tensor_slices(
-        #     (self.flow_in.cast(self.flow_in.training_samples), self.flow_in.cast(self.flow_out.training_samples)))
-
-        # self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
-        # self.training_dataset = self.training_dataset.shuffle(
-        #     self.num_training_samples, reshuffle_each_iteration=True).repeat()
-
-        # self.validation_dataset = tf.data.Dataset.from_tensor_slices(
-        #     (self.flow_in.cast(self.flow_in.test_samples), self.flow_in.cast(self.flow_out.test_samples)))
-
-        self.trainable_bijector = self.bijector
-        self.bijector = tfb.Chain([self.flow_out.bijector, self.trainable_bijector, tfb.Invert(self.flow_in.bijector)])
-
-        x = Input(shape=(self.num_params,))
-        y = BijectorLayer(self.trainable_bijector)(x)
-
-        self.model = Model(x, y)
-
-        self.model.compile('adam', 'mse')
-
-    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=None, **kwargs):
-        # We're trying to loop through the full sample each epoch
-        if batch_size is None:
-            if steps_per_epoch is None:
-                steps_per_epoch = 20
-            batch_size = int(self.num_training_samples / steps_per_epoch)
-        else:
-            if steps_per_epoch is None:
-                steps_per_epoch = int(self.num_training_samples / batch_size)
-                
-        if verbose is None:
-            if self.feedback == 0:
-                verbose = 0
-            elif self.feedback > 0:
-                verbose = 1
-                
-        hist = self.model.fit(
-            # x=self.training_dataset.batch(batch_size),
-            x=self.flow_in.training_samples,
-            y=self.flow_out.training_samples,
-            validation_data=(self.flow_in.test_samples, self.flow_out.test_samples),
-            batch_size=batch_size,
-            epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
-            # validation_data=self.validation_dataset,
-            verbose=verbose,
-            callbacks=[tf.keras.callbacks.TerminateOnNaN()] + callbacks,
-            **utils.filter_kwargs(kwargs, self.model.fit))
-
-        return hist

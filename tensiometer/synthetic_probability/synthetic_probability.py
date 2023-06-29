@@ -1669,6 +1669,82 @@ class FlowCallback(Callback):
 # Transformed flow:
 
 
+class DerivedParamsBijector(tb.AutoregressiveFlow):
+
+    def __init__(self, chain, param_names_in, param_names_out, permutations=False, feedback=0, **kwargs):
+        self.num_params = len(param_names_in)
+        assert len(param_names_out) == self.num_params
+        self.param_names_in = param_names_in
+        self.param_names_out = param_names_out
+
+        super().__init__(self.num_params, permutations=permutations, feedback=feedback, **kwargs)
+
+        self.feedback = feedback
+
+        seed = np.random.randint(0, 9999)
+
+        self.flow_in = FlowCallback(
+            chain,
+            param_names=param_names_in,
+            prior_bijector=None,
+            trainable_bijector=None,
+            rng=np.random.default_rng(seed=seed),
+            apply_pregauss='independent',
+            feedback=0)
+
+        self.flow_out = FlowCallback(
+            chain,
+            param_names=param_names_out,
+            prior_bijector=None,
+            trainable_bijector=None,
+            rng=np.random.default_rng(seed=seed),
+            apply_pregauss='independent',
+            feedback=0)
+
+        self.num_training_samples = len(self.flow_in.training_samples)
+
+        self.trainable_bijector = self.bijector
+        self.bijector = tfb.Chain([self.flow_out.bijector, self.trainable_bijector, tfb.Invert(self.flow_in.bijector)])
+
+        x = Input(shape=(self.num_params,))
+        y = tb.BijectorLayer(self.trainable_bijector)(x)
+
+        self.model = Model(x, y)
+
+        self.model.compile('adam', 'mse')
+
+    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=[], verbose=None, **kwargs):
+        # We're trying to loop through the full sample each epoch
+        if batch_size is None:
+            if steps_per_epoch is None:
+                steps_per_epoch = 20
+            batch_size = int(self.num_training_samples / steps_per_epoch)
+        else:
+            if steps_per_epoch is None:
+                steps_per_epoch = int(self.num_training_samples / batch_size)
+
+        if verbose is None:
+            if self.feedback == 0:
+                verbose = 0
+            elif self.feedback > 0:
+                verbose = 1
+
+        hist = self.model.fit(
+            # x=self.training_dataset.batch(batch_size),
+            x=self.flow_in.training_samples,
+            y=self.flow_out.training_samples,
+            validation_data=(self.flow_in.test_samples, self.flow_out.test_samples),
+            batch_size=batch_size,
+            epochs=epochs,
+            steps_per_epoch=steps_per_epoch,
+            # validation_data=self.validation_dataset,
+            verbose=verbose,
+            # callbacks=[tf.keras.callbacks.TerminateOnNaN()] + callbacks,
+            **utils.filter_kwargs(kwargs, self.model.fit))
+
+        return hist
+
+
 class TransformedFlowCallback(FlowCallback):
 
     def __init__(self, flow, transformation):
@@ -1703,26 +1779,32 @@ class TransformedFlowCallback(FlowCallback):
             else:
                 self.parameter_ranges = None
 
-        elif isinstance(transformation, tb.DerivedParamsBijector):
+        elif isinstance(transformation, DerivedParamsBijector):
             # first find the parameters that the DerivedParamsBijector is modifying
             mod_params = [i for i, name in enumerate(flow.param_names) if name in transformation.param_names_in]
+            perm_mod_params = [transformation.param_names_in.index(flow.param_names[i]) for i in mod_params]
             oth_params = [i for i in range(self.num_params) if i not in mod_params]
+            
+            print(perm_mod_params + oth_params)
 
             # new bijector
             split = tfb.Split([len(mod_params)] + [1] * len(oth_params))
             b = tfb.Chain([
                 tfb.Invert(split),
-                tfb.JointMap([transformation] + [tfb.Identity()] * len(oth_params)), split,
-                tfb.Permute(mod_params + oth_params)
+                tfb.JointMap([transformation.bijector] + [tfb.Identity()] * len(oth_params)), split,
+                tfb.Invert(tfb.Permute(perm_mod_params + oth_params))
             ])
 
             # parameter names and labels:
-            self.param_names = transformation.param_names_out + flow.param_names[oth_params]
-            self.param_labels = transformation.flow_out.param_labels + flow.param_labels[oth_params]
+            self.param_names = transformation.param_names_out + [flow.param_names[i] for i in oth_params]
+            self.param_labels = transformation.flow_out.param_labels + [flow.param_labels[i] for i in oth_params]
             # set ranges:
             if flow.parameter_ranges is not None:
                 if transformation.flow_out.parameter_ranges is not None:
-                    self.parameter_ranges = transformation.flow_out.parameter_ranges + flow.parameter_ranges[oth_params]
+                    self.parameter_ranges = transformation.flow_out.parameter_ranges
+                    for i in oth_params:
+                        name = flow.param_names[i]
+                        self.parameter_ranges[name] = flow.parameter_ranges[name]
 
         # set name tag:
         self.name_tag = flow.name_tag + '_transformed'
