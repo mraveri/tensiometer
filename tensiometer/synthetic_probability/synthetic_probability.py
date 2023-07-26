@@ -59,8 +59,8 @@ try:
     from IPython.display import clear_output
 except ModuleNotFoundError:
     pass
-ipython_plotting = 'inline' in matplotlib_backend
-cluster_plotting = 'agg' in matplotlib_backend
+ipython_plotting = True  #'inline' in matplotlib_backend
+cluster_plotting = False  #'agg' in matplotlib_backend
 if not ipython_plotting and not cluster_plotting:
     plt.ion()
 
@@ -1702,6 +1702,11 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             feedback=0)
 
         self.num_training_samples = len(self.flow_in.training_samples)
+        ind = [chain.index[name] for name in param_names_out]
+        self.chain_samples = chain.samples[:, ind].astype(np_prec)
+        self.chain_loglikes = None
+        self.has_loglikes = False
+        self.chain_weights = chain.weights.astype(np_prec)
 
         self.trainable_bijector = self.bijector
         self.bijector = tfb.Chain([self.flow_out.bijector, self.trainable_bijector, tfb.Invert(self.flow_in.bijector)])
@@ -1752,7 +1757,27 @@ class TransformedFlowCallback(FlowCallback):
         Applies an analytic bijector to a flow to transform parameters.
         """
 
-        self.num_params = flow.num_params
+        infos = [
+            # 'name_tag',
+            'feedback',
+            'plot_every',
+            # 'sample_MAP',
+            # 'chain_MAP',
+            'num_params',
+            # 'param_names',
+            # 'param_labels',
+            # 'parameter_ranges',
+            # 'chain_samples',
+            # 'chain_loglikes',
+            # 'has_loglikes',
+            # 'chain_weights',
+            'is_trained',
+            # 'MAP_coord',
+            # 'MAP_logP',
+            'log',
+        ]
+        for info in infos:
+            self.__dict__[info] = flow.__dict__[info]
 
         if isinstance(transformation, Iterable):
             assert len(transformation) == self.num_params
@@ -1779,13 +1804,16 @@ class TransformedFlowCallback(FlowCallback):
             else:
                 self.parameter_ranges = None
 
+            self.chain_samples = b.forward(flow.chain.samples).numpy()
+            self.chain_loglikes = None
+            self.has_loglikes = False
+            self.chain_weights = flow.chain.weights.astype(np_prec)
+
         elif isinstance(transformation, DerivedParamsBijector):
             # first find the parameters that the DerivedParamsBijector is modifying
             mod_params = [i for i, name in enumerate(flow.param_names) if name in transformation.param_names_in]
             perm_mod_params = [transformation.param_names_in.index(flow.param_names[i]) for i in mod_params]
             oth_params = [i for i in range(self.num_params) if i not in mod_params]
-            
-            print(perm_mod_params + oth_params)
 
             # new bijector
             split = tfb.Split([len(mod_params)] + [1] * len(oth_params))
@@ -1805,6 +1833,13 @@ class TransformedFlowCallback(FlowCallback):
                     for i in oth_params:
                         name = flow.param_names[i]
                         self.parameter_ranges[name] = flow.parameter_ranges[name]
+
+            self.chain_samples = np.concatenate(
+                [transformation.chain_samples,
+                 np.take(flow.chain_samples, oth_params, axis=1)], axis=1)
+            self.chain_loglikes = flow.chain_loglikes.astype(np_prec)
+            self.has_loglikes = False
+            self.chain_weights = flow.chain_weights.astype(np_prec)
 
         # set name tag:
         self.name_tag = flow.name_tag + '_transformed'
@@ -1856,6 +1891,7 @@ class average_flow(FlowCallback):
             'feedback',
             'plot_every',
             'sample_MAP',
+            'chain_MAP',
             'num_params',
             'param_names',
             'param_labels',
@@ -1869,7 +1905,10 @@ class average_flow(FlowCallback):
             'MAP_logP',
         ]
         for info in infos:
-            self.__dict__[info] = flows[0].__dict__[info]
+            try:
+                self.__dict__[info] = flows[0].__dict__[info]
+            except KeyError:
+                print("Flow does not have attribute :", info)
 
         # copy in flows:
         self.flows = flows
