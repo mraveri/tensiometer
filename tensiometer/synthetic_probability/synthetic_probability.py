@@ -59,8 +59,8 @@ try:
     from IPython.display import clear_output
 except ModuleNotFoundError:
     pass
-ipython_plotting = True  #'inline' in matplotlib_backend
-cluster_plotting = False  #'agg' in matplotlib_backend
+ipython_plotting = 'inline' in matplotlib_backend
+cluster_plotting = 'agg' in matplotlib_backend
 if not ipython_plotting and not cluster_plotting:
     plt.ion()
 
