@@ -301,7 +301,7 @@ class SoftAdapt_weight_loss(variable_weight_loss):
     Implement SoftAdapt as in arXiv:1912.12355, with optional smoothing
     """
 
-    def __init__(self, tau=1.0, beta=0.0, smoothing=True, smoothing_tau=5, **kwargs):
+    def __init__(self, tau=1.0, beta=0.0, smoothing=True, smoothing_tau=20, quantity_1='val_rho_loss', quantity_2='val_ee_loss', **kwargs):
         """
         Initialize loss function
         """
@@ -312,6 +312,13 @@ class SoftAdapt_weight_loss(variable_weight_loss):
         self.beta = beta
         self.smoothing = smoothing
         self.smoothing_alpha = 1. / smoothing_tau
+        # quantrities to be monitored:
+        self.quantity_1 = quantity_1 
+        self.quantity_2 = quantity_2 
+        self.rate_1_buffer = 0.0
+        self.rate_2_buffer = 0.0
+        self.lambda_1_buffer = 1.0
+        self.lambda_2_buffer = 0.0
         #
         return None
 
@@ -322,23 +329,42 @@ class SoftAdapt_weight_loss(variable_weight_loss):
         """
         # get logs:
         logs = kwargs.get('logs')
+        quantity_1 = logs[self.quantity_1]
+        quantity_2 = logs[self.quantity_2]
         # get the two rates:
-        ee_loss_rate = logs['ee_loss_rate']
-        rho_loss_rate = logs['rho_loss_rate']
+        if len(quantity_1) < 2:
+            rate_1 = 0.0
+        else:
+            rate_1 = quantity_1[-1] - quantity_1[-2]
+        if len(quantity_2) < 2:
+            rate_2 = 0.0
+        else:
+            rate_2 = quantity_2[-1] - quantity_2[-2]
+        # smooth the two rates:
+        if self.smoothing:
+            rate_1 = self.smoothing_alpha * rate_1 + (1. - self.smoothing_alpha) * self.rate_1_buffer
+            rate_2 = self.smoothing_alpha * rate_2 + (1. - self.smoothing_alpha) * self.rate_2_buffer
+            self.rate_1_buffer = rate_1
+            self.rate_2_buffer = rate_2
         # protect for initial phase:
-        if len(rho_loss_rate) == 0 or rho_loss_rate[-1] == 0.0:
+        if rate_1 == 0.0:
             _lambda_1 = 1.0
         else:
-            lambda_1 = np.exp(self.tau * rho_loss_rate[-1])
-            lambda_2 = np.exp(self.tau * ee_loss_rate[-1])
+            lambda_1 = np.exp(self.tau * rate_1)
+            lambda_2 = np.exp(self.tau * rate_2)
             _tot = lambda_1 + lambda_2
             if self.smoothing:
-                _lambda_1 = self.smoothing_alpha * lambda_1 / _tot + (1. - self.smoothing_alpha) * tf.keras.backend.get_value(self.lambda_1)
+                _lambda_1 = self.smoothing_alpha * lambda_1 / _tot + (1. - self.smoothing_alpha) * self.lambda_1_buffer
+                _lambda_2 = self.smoothing_alpha * lambda_2 / _tot + (1. - self.smoothing_alpha) * self.lambda_2_buffer
+                _lambda_1 = _lambda_1 / (_lambda_1 + _lambda_2)
+                _lambda_2 = _lambda_2 / (_lambda_1 + _lambda_2)
+                self.lambda_1_buffer = _lambda_1
+                self.lambda_2_buffer = _lambda_2
             else:
                 _lambda_1 = lambda_1 / _tot
         # set second by enforcing sum to one:
         tf.keras.backend.set_value(self.lambda_1, _lambda_1)
-        tf.keras.backend.set_value(self.lambda_2, 1.-tf.keras.backend.get_value(self.lambda_1))
+        tf.keras.backend.set_value(self.lambda_2, 1.-_lambda_1)
         #
         return None
 
@@ -347,6 +373,10 @@ class SoftAdapt_weight_loss(variable_weight_loss):
         Print feedback to screen
         """
         print(padding+'using SoftAdapt loss function')
+        if self.smoothing:
+           print(padding+' with smoothing')
+           print(padding+' with smoothing_tau = ', 1./self.smoothing_alpha)
+        print(padding+' with tau = ', self.tau)
 
 
 class SharpStep(variable_weight_loss):

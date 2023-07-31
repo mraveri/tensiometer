@@ -514,7 +514,7 @@ class FlowCallback(Callback):
             **kwargs):
         """
         Initialize the loss function.
-
+ 
         mode can be standard, fixed or variable
         """
         # feedback:
@@ -1288,8 +1288,6 @@ class FlowCallback(Callback):
                 self.log["lambda_2"].append(_test_loss_components[3])
                 self.log["rho_loss"].append(temp_train_rho_loss)
                 self.log["ee_loss"].append(temp_train_ee_loss)
-                # self.log["rho_loss"].append(self.model.loss.loss1_top)
-                # self.log["ee_loss"].append(self.model.loss.loss2_top)
                 self.log["val_rho_loss"].append(temp_val_rho_loss)
                 self.log["val_ee_loss"].append(temp_val_ee_loss)
 
@@ -1473,7 +1471,7 @@ class FlowCallback(Callback):
                 ax.plot(np.abs(self.log["loss_rate"]), lw=1., ls='-', label='training')
                 ax.plot(np.abs(self.log["val_loss_rate"]), lw=1., ls='-', label='validation')
             elif issubclass(type(self.loss), loss.constant_weight_loss):
-                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(np.abs(self.log["loss_rate"]), lw=1.2, color='k', ls='-', label='all', alpha=0.5, zorder=2)
                 ax.plot(np.abs(self.log["rho_loss_rate"]), lw=1., ls='-', label='density', zorder=1)
                 ax.plot(np.abs(self.log["ee_loss_rate"]), lw=1., ls='-', label='evidence error', zorder=0)
             elif issubclass(type(self.loss), loss.variable_weight_loss):
@@ -1485,11 +1483,11 @@ class FlowCallback(Callback):
                 ax.plot(self.log["loss_rate"], lw=1., ls='-', label='training')
                 ax.plot(self.log["val_loss_rate"], lw=1., ls='-', label='validation')
             elif issubclass(type(self.loss), loss.constant_weight_loss):
-                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all', alpha=0.5, zorder=2)
                 ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density', zorder=1)
                 ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error', zorder=0)
             elif issubclass(type(self.loss), loss.variable_weight_loss):
-                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all', zorder=2)
+                ax.plot(self.log["loss_rate"], lw=1.2, color='k', ls='-', label='all', alpha=0.5, zorder=2)
                 ax.plot(self.log["rho_loss_rate"], lw=1., ls='-', label='density', zorder=1)
                 ax.plot(self.log["ee_loss_rate"], lw=1., ls='-', label='evidence error', zorder=0)
         if abs_value:
@@ -1497,17 +1495,27 @@ class FlowCallback(Callback):
         else:
             # plot horizontal line at zero:
             ax.axhline(0., lw=1.0, ls='--', color='k')
+            ## calculate variance of loss rate for last 30 epochs:
+            #if 'val_loss_rate' in self.log.keys():
+            #    if len(self.log["val_loss_rate"]) > epoch_range:
+            #        loss_rate_sig = np.sqrt(np.var(self.log["val_loss_rate"][-epoch_range:]))
+            #        ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
+            #elif 'loss_rate' in self.log.keys():
+            #    if len(self.log["loss_rate"]) > epoch_range:
+            #        loss_rate_sig = np.sqrt(np.var(self.log["loss_rate"][-epoch_range:]))
+            #        ax.set_ylim([-3*loss_rate_sig, 3*loss_rate_sig])
+            #else:
+            #    ax.set_ylim([-1, 1])
+
             # calculate variance of loss rate for last 30 epochs:
+            loss_rate_sig = 0.1
             if 'val_loss_rate' in self.log.keys():
                 if len(self.log["val_loss_rate"]) > epoch_range:
                     loss_rate_sig = np.sqrt(np.var(self.log["val_loss_rate"][-epoch_range:]))
-                    ax.set_ylim([-3 * loss_rate_sig, 3 * loss_rate_sig])
             elif 'loss_rate' in self.log.keys():
                 if len(self.log["loss_rate"]) > epoch_range:
                     loss_rate_sig = np.sqrt(np.var(self.log["loss_rate"][-epoch_range:]))
-                    ax.set_ylim([-3 * loss_rate_sig, 3 * loss_rate_sig])
-            else:
-                ax.set_ylim([-1, 1])
+            ax.set_yscale('symlog', linthresh=0.5*loss_rate_sig, linscale=0.5)
         ax.set_title(r"$\Delta$ Loss / epoch")
         ax.set_xlabel(r"Epoch $\#$")
         # legend:
