@@ -1760,7 +1760,7 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
 
 class TransformedFlowCallback(FlowCallback):
 
-    def __init__(self, flow, transformation):
+    def __init__(self, flow, transformation, transform_posterior=True):
         """
         Applies an analytic bijector to a flow to transform parameters.
         """
@@ -1786,6 +1786,8 @@ class TransformedFlowCallback(FlowCallback):
         ]
         for info in infos:
             self.__dict__[info] = flow.__dict__[info]
+
+        self.transform_posterior = transform_posterior
 
         if isinstance(transformation, Iterable):
             assert len(transformation) == self.num_params
@@ -1849,6 +1851,9 @@ class TransformedFlowCallback(FlowCallback):
             self.has_loglikes = False
             self.chain_weights = flow.chain_weights.astype(np_prec)
 
+        # save bijector:
+        self.transformer_bijector = b
+
         # set name tag:
         self.name_tag = flow.name_tag + '_transformed'
         # set sample MAP:
@@ -1876,7 +1881,27 @@ class TransformedFlowCallback(FlowCallback):
             self.MAP_coord = None
             self.MAP_logP = None
 
+    @tf.function()
+    def log_probability(self, coord):
+        log_prob = self.distribution.log_prob(coord)
+        if not self.transform_posterior:
+            log_prob -= self.transformer_bijector.inverse_log_det_jacobian(coord)
+        return log_prob
 
+    @tf.function()
+    def log_probability_jacobian(self, coord):
+        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+            tape.watch(coord)
+            f = self.log_probability(coord)
+        return tape.gradient(f, coord)
+
+    @tf.function()
+    def log_probability_hessian(self, coord):
+        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+            tape.watch(coord)
+            f = self.log_probability_jacobian(coord)
+        return tape.batch_jacobian(f, coord)
+    
 ###############################################################################
 # Average flow:
 
