@@ -12,10 +12,9 @@ The best place to start is by looking at the worked examples below.
    :caption: Examples
 
    Normalizing flow models for posteriors <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
-   Tension between two posteriors (for the impatient) <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
-   Tension between two posteriors (with all details) <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
-   Find measured parameters (linear) <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
-   Find measured parameters (non-linear) <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
+   Gaussian tension between two posteriors <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
+   Non-Gaussian tension between two posteriors <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
+   Measured parameters <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
    Quantify convergence of chains <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
    Posterior profiles <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
 
