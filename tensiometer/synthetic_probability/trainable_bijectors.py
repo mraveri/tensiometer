@@ -1,5 +1,5 @@
 """
-This file contains the definition of the trainable bijectors.
+This file contains the definition of the trainable bijectors that are needed to define normalizing flows.
 """
 
 ###############################################################################
@@ -27,9 +27,13 @@ tfd = tfp.distributions
 
 def min_var_permutations(d, n, min_number=10000):
     """
-    d = dimension of the problem
-    n = number of stacks
-    min_number = minimum number of random trials
+    Find a random permutation sequence that has the minimum (sample) variance between components.
+    This is useful for MAFs, in which we want to concatenate several triangular transformations.
+
+    :param d: dimension of the problem
+    :param n: number of dimensions
+    :param min_number: number of random trials
+    :return: the permutation that has less variance
     """
     permutation = None
     perm_var = np.inf
@@ -82,10 +86,18 @@ class ScaleRotoShift(tfb.Bijector):
         """
         Bijector performing a shift, scaling and rotation.
         Note that scale is exponential so that we can do unconstrained optimization.
-        Initialized to identity but can be changed with optional argument.
-        This does not use the Cholesky decomposition since we need guarantee of
+        The bijector is initialized to identity but can be changed with optional argument.
+        This bijector does not use the Cholesky decomposition since we need guarantee of
         strictly positive definiteness and invertibility.
 
+        :param dimension: (int) number of dimensions.
+        :param scale: (bool) include (or not) scaling.
+        :param roto: (bool) include (or not) rotations.
+        :param shift: (bool) include (or not) shifts.
+        :param validate_args: validate input arguments or not.
+        :param initializer: initializer for the bijector, defaults to zeros (identity).
+        :param name: name of the bijector.
+        :param dtype: data type for the bijector, defaults to tf.float32.      
         :reference: https://arxiv.org/abs/1906.00587
         """
 

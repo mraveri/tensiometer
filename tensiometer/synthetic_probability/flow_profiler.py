@@ -1,5 +1,5 @@
 """
-This file contains the code to perform profiling of the normalizing flow.
+This file contains the code to perform profiling on the normalizing flow models.
 """
 
 ###############################################################################

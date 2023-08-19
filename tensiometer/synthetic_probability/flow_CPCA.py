@@ -1,5 +1,7 @@
 """
 This file implements information geometry methods working on normalizing flows.
+
+This file needs work and is not complete.
 """
 
 ###############################################################################

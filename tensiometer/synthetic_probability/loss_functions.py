@@ -23,7 +23,7 @@ class standard_loss(tf.keras.losses.Loss):
 
     def __init__(self):
         """
-        Initialize loss function
+        Standard density loss function for the normalizing flow.
         """
         # initialize:
         super(standard_loss, self).__init__()

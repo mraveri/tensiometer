@@ -1,7 +1,7 @@
 """
 File containing methods to define analytic flows, from known distributions from numpy or other non-differentialble functions.
 
-This has still many things to do to be a fully functioning version of the main flow.
+This has still many things to do to be a fully functioning version of the main flow and should be used with care.
 """
 
 ###############################################################################

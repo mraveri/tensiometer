@@ -33,5 +33,6 @@ release:
 	python3 -m twine upload --repository pypi dist/*
 
 clean:
+	@rm -rf tensiometer.egg-info
 	@rm -rf build dist
 	@rm -f .coverage

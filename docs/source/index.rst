@@ -1,25 +1,23 @@
 Tensiometer
 ==================================
 
-tensiometer is a small python package that extends GetDist capabilities
-to test the level of agreement/disagreement between different posterior distributions.
+tensiometer is a python package to test the level of agreement/disagreement between different posterior distributions.
+
+In order to do so the package contains a set of methods implementing machine learning methods to boost classic statistical inference.
 
 The best place to start is by looking at the worked examples below.
 
 .. toctree::
-   :maxdepth: 1
-   :caption: Full example
-
-   Full example notebook <https://tensiometer.readthedocs.org/en/latest/tension_example.html>
-   Interactive full example online <https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb>
-
-.. toctree::
    :maxdepth: 2
-   :caption: Specific examples
+   :caption: Examples
 
-   Quantify measured parameters <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
+   Normalizing flow models for posteriors <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
+   Tension between two posteriors (for the impatient) <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
+   Tension between two posteriors (with all details) <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
+   Find measured parameters (linear) <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
+   Find measured parameters (non-linear) <https://tensiometer.readthedocs.org/en/latest/measured_parameters.html>
    Quantify convergence of chains <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
-   Compute non-Gaussian tension estimates <https://tensiometer.readthedocs.org/en/latest/non_gaussian_tension.html>
+   Posterior profiles <https://tensiometer.readthedocs.org/en/latest/chains_convergence_test.html>
 
 Other examples are provided for specific tasks.
 
@@ -27,6 +25,7 @@ Other examples are provided for specific tasks.
    :maxdepth: 1
    :caption: Modules documentation
 
+   synthetic_probability
    mcmc_tension
    gaussian_tension
    chains_convergence
