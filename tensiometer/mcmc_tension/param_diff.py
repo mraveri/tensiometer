@@ -2,26 +2,6 @@
 
 """
 
-"""
-For test purposes:
-
-from getdist import loadMCSamples, MCSamples, WeightedSamples
-chain_1 = loadMCSamples('./test_chains/DES')
-chain_2 = loadMCSamples('./test_chains/Planck18TTTEEE')
-chain_12 = loadMCSamples('./test_chains/Planck18TTTEEE_DES')
-chain_prior = loadMCSamples('./test_chains/prior')
-
-import matplotlib.pyplot as plt
-
-diff_chain = parameter_diff_chain(chain_1, chain_2, boost=2)
-num_params, num_samples = diff_chain.samples.T.shape
-
-param_names = None
-scale = None
-method = 'brute_force'
-feedback=2
-"""
-
 ###############################################################################
 # initial imports and set-up:
 
