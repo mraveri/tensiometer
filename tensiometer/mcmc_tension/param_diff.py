@@ -2,26 +2,6 @@
 
 """
 
-"""
-For test purposes:
-
-from getdist import loadMCSamples, MCSamples, WeightedSamples
-chain_1 = loadMCSamples('./test_chains/DES')
-chain_2 = loadMCSamples('./test_chains/Planck18TTTEEE')
-chain_12 = loadMCSamples('./test_chains/Planck18TTTEEE_DES')
-chain_prior = loadMCSamples('./test_chains/prior')
-
-import matplotlib.pyplot as plt
-
-diff_chain = parameter_diff_chain(chain_1, chain_2, boost=2)
-num_params, num_samples = diff_chain.samples.T.shape
-
-param_names = None
-scale = None
-method = 'brute_force'
-feedback=2
-"""
-
 ###############################################################################
 # initial imports and set-up:
 
@@ -29,13 +9,15 @@ import numpy as np
 import getdist.chains as gchains
 gchains.print_load_details = False
 from getdist import MCSamples, WeightedSamples
+from .. import utilities as utils
 
 ###############################################################################
 # Parameter difference chain:
 
 
 def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
-                                    indexes_1=None, indexes_2=None):
+                                    indexes_1=None, indexes_2=None,
+                                    periodic_indexes=None):
     """
     Compute the parameter differences of two input weighted samples.
     The parameters of the difference samples are related to the
@@ -70,6 +52,9 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
     :param indexes_2: (optional) array with the indexes of the parameters to
         use for the second samples. By default this tries to use all
         parameters.
+    :param periodic_indexes: (optional) dictionary with the indexes of the
+        parameters that are periodic. The keys are the indexes and the values
+        are the ranges of the parameters.
     :return: :class:`~getdist.chains.WeightedSamples` the instance with the
         parameter difference samples.
     """
@@ -126,6 +111,21 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
         difference_samples[ind*num_samps_1:(ind+1)*num_samps_1, :] = \
             ch1.samples[:, ind1] \
             - np.take(ch2.samples[:, ind2], _indexes, axis=0, mode='wrap')
+    # reapply sign:
+    difference_samples = sign*difference_samples
+    # apply periodicity:
+    if periodic_indexes is not None:
+        for _ind, _range in periodic_indexes.items():
+            # compute period from range:
+            _period = _range[1] - _range[0]
+            # compute positive side:
+            _filter = np.logical_and(difference_samples[:, _ind] > 0,
+                                     difference_samples[:, _ind] > _period / 2.0)
+            difference_samples[_filter, _ind] = difference_samples[_filter, _ind] - _period
+            # compute negative side:
+            _filter = np.logical_and(difference_samples[:, _ind] < 0,
+                                     difference_samples[:, _ind] < -_period / 2.0)
+            difference_samples[_filter, _ind] = difference_samples[_filter, _ind] + _period
     # get additional informations:
     if samples_1.name_tag is not None and samples_2.name_tag is not None:
         name_tag = samples_1.name_tag+'_diff_'+samples_2.name_tag
@@ -141,7 +141,7 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
                                samples_2.min_weight_ratio)
     # initialize the weighted samples:
     diff_samples = WeightedSamples(ignore_rows=0,
-                                   samples=sign*difference_samples,
+                                   samples=difference_samples,
                                    weights=weights, loglikes=loglikes,
                                    name_tag=name_tag, label=label,
                                    min_weight_ratio=min_weight_ratio)
@@ -151,7 +151,7 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
 ###############################################################################
 
 
-def parameter_diff_chain(chain_1, chain_2, boost=1):
+def parameter_diff_chain(chain_1, chain_2, boost=1, periodic_params=None, **kwargs):
     """
     Compute the chain of the parameter differences between the two input
     chains. The parameters of the difference chain are related to the
@@ -183,6 +183,9 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
         Default boost parameter is one.
         If boost is None the full difference chain is going to be computed
         (and will likely require a lot of memory and time).
+    :param periodic_params: (optional) dictionary with the names of the
+        parameters that are periodic. The keys are the names and the values
+        are the ranges of the parameters.
     :return: :class:`~getdist.mcsamples.MCSamples` the instance with the
         parameter difference chain.
     """
@@ -210,6 +213,14 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
     # get parameter indexes:
     indexes_1 = [chain_1.index[name] for name in param_names]
     indexes_2 = [chain_2.index[name] for name in param_names]
+    # process periodic parameters:
+    _periodic_params = None
+    if periodic_params is not None:
+        _periodic_params = {}
+        for name, _range in periodic_params.items():
+            if name in param_names:
+                _ind = param_names.index(name)
+                _periodic_params[_ind] = _range
     # get separate chains:
     if not hasattr(chain_1, 'chain_offsets'):
         _chains_1 = [chain_1]
@@ -245,12 +256,17 @@ def parameter_diff_chain(chain_1, chain_2, boost=1):
     chains_combinations = [[_chains_1[i], _chains_2[j]]
                            for i, j in zip(ind1, ind2)]
     # compute the parameter difference samples:
-    diff_chain_samples = [parameter_diff_weighted_samples(samp1,
-                          samp2, boost=sample_boost, indexes_1=indexes_1,
-                          indexes_2=indexes_2) for samp1, samp2
-                          in chains_combinations]
+    diff_chain_samples = [
+        parameter_diff_weighted_samples(samp1,
+                                        samp2,
+                                        boost=sample_boost, 
+                                        indexes_1=indexes_1,
+                                        indexes_2=indexes_2,
+                                        periodic_indexes=_periodic_params) 
+        for samp1, samp2 in chains_combinations]
     # create the samples:
-    diff_samples = MCSamples(names=diff_param_names, labels=diff_param_labels)
+    diff_samples = MCSamples(names=diff_param_names, labels=diff_param_labels,
+                             **utils.filter_kwargs(kwargs, MCSamples))
     diff_samples.chains = diff_chain_samples
     diff_samples.makeSingle()
     # get the ranges:
