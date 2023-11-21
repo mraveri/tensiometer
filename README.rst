@@ -52,15 +52,46 @@ You can test that the code is working properly by using::
 
   make test
 
-
 Dependencies
 =============
 
-Uses mostly standard python packages and GetDist.
+Tensiometer uses mostly standard python packages.
+Notable exceptions are GetDist and Tensorflow.
 
 For the full list of requirements see the `requirements.txt` file.
 
+Testing the code
+================
+
+Tensiometer has a suite of unit tests to make sure everything is properly installed. 
+This is especially useful considering that tensiometer relies on a number of external libraries.
+
+To run all tests give the command::
+
+  make test
+
+To run tests and get coverage statistics first make sure that the package `coverage <https://pypi.org/project/coverage/>`_ is installed. 
+Then you can use the command::
+
+  make test_with_coverage
+
+As you can see coverage is not complete, pull requests improving test coverage are most welcome.
+
+Documentation
+=============
+
+The documentation is automatically built for each release on `readthedocs <https://tensiometer.readthedocs.io/en/latest/>`_.
+
+If you want to build locally the documentation you shoud install `sphinx <https://www.sphinx-doc.org/en/master/usage/installation.html>`_.
+Then you can install the readthedocs documentation format with::
+
+  pip install sphinx-rtd-theme
+
+Then you can issue the command::
+
+  make documentation
+
 Acknowledgements
-=================
+================
 
 We thank Samuel Goldstein for help developing the code.

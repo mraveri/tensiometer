@@ -7,7 +7,7 @@ omit =
     */.local/*
     */.virtualenv/*
     /usr/*
-    tensiometer/test*
+    tensiometer/tests/*
 
 [report]
 show_missing = True

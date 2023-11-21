@@ -2,24 +2,8 @@
 File with tools to interface Cosmosis chains with GetDist.
 """
 
-"""
-For testing purposes:
-
-chain = loadMCSamples('./../test_chains/1p2_SN1_zcut0p3_abs')
-chain_root = './test_chains/DES_multinest_cosmosis'
-
-chain_root = './chains_lcdm/chain_1x2pt_lcdm'
-chain_min_root = './chains_lcdm/chain_1x2pt_lcdm_MAP.maxlike'
-param_label_dict=None
-param_name_dict=None
-settings = None
-
-# test that everything is working:
-test = MCSamplesFromCosmosis(chain_root, chain_min_root)
-
-print(test.bestfit)
-
-"""
+###############################################################################
+# initial imports:
 
 import os
 import numpy as np
@@ -31,6 +15,8 @@ from getdist.chains import loadNumpyTxt
 from getdist.mcsamples import MCSamples
 from getdist.types import BestFit
 from getdist.paramnames import ParamInfo
+
+############################################################################### 
 
 
 def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
@@ -165,6 +151,8 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     #
     return mc_samples
 
+###############################################################################
+
 
 def get_cosmosis_info(file):
     """
@@ -183,6 +171,8 @@ def get_cosmosis_info(file):
     #
     return info
 
+###############################################################################
+
 
 def get_param_names(info):
     """
@@ -192,6 +182,8 @@ def get_param_names(info):
     :return: a list of strings with the parameter names.
     """
     return list(filter(None, re.split('\t| ', info[0])))
+
+###############################################################################
 
 
 def get_param_labels(info, param_names, param_label_dict):
@@ -215,6 +207,8 @@ def get_param_labels(info, param_names, param_label_dict):
         param_labels = None
     #
     return param_labels
+
+###############################################################################
 
 
 def get_sampler_type(info):
@@ -249,6 +243,8 @@ def get_sampler_type(info):
     #
     return sampler
 
+###############################################################################
+
 
 def get_name_tag(info):
     """
@@ -266,6 +262,8 @@ def get_name_tag(info):
         name_tag = None
     #
     return name_tag
+
+###############################################################################
 
 
 def get_ranges(info, param_names):
@@ -293,6 +291,8 @@ def get_ranges(info, param_names):
             pass
     #
     return ranges
+
+###############################################################################
 
 
 def polish_samples(chain):
@@ -324,6 +324,8 @@ def polish_samples(chain):
     chain.filter(where=nan_filter)
     #
     return chain
+
+###############################################################################
 
 
 def get_maximum_likelihood(dummy, max_posterior, chain_min_root,

@@ -28,6 +28,7 @@ def from_confidence_to_sigma(P):
 
     :param P: the input probability.
     :return: the effective number of standard deviations.
+    :reference: https://arxiv.org/1806.04649
     """
     if (np.all(P < 0.) or np.all(P > 1.)):
         raise ValueError('Input probability has to be between zero and one.\n',
@@ -44,6 +45,7 @@ def from_sigma_to_confidence(nsigma):
 
     :param nsigma: the input number of standard deviations.
     :return: the probability to exceed the number of standard deviations.
+    :reference: https://arxiv.org/1806.04649
     """
     if (np.all(nsigma < 0.)):
         raise ValueError('Input nsigma has to be positive.\n',
@@ -75,7 +77,8 @@ def from_chi2_to_sigma(val, dofs, exact_threshold=6):
     :param exact_threshold: (default 6) threshold of value/dofs to switch to
         the asyntotic formula.
     :return: the effective number of standard deviations.
-    """
+    :reference: https://arxiv.org/1806.04649
+   """
     # check:
     if (np.all(val < 0.)):
         raise ValueError('Input chi2 value has to be positive.\n',
@@ -159,37 +162,6 @@ def clopper_pearson_binomial_trial(k, n, alpha=0.32):
     lo = scipy.stats.beta.ppf(alpha/2, k, n-k+1)
     hi = scipy.stats.beta.ppf(1 - alpha/2, k+1, n-k)
     return lo, hi
-
-###############################################################################
-
-
-def min_samples_for_tension(nsigma, sigma_err):
-    """
-    Computes the minimum number of uncorrelated samples that are
-    needed to quantify a tension of a given significance with a given error
-    through binomial trials.
-
-    This function works by inverting the Clopper Pearson binomial trial and
-    likely delivers an underestimate of the points needed.
-
-    :param nsigma: number of effective sigmas of the given tension.
-    :param sigma_err: the desired error on the determination of nsigma.
-    :returns: minimum number of samples.
-    """
-    P = from_sigma_to_confidence(nsigma)
-
-    def dummy(n):
-        _dn, _up = clopper_pearson_binomial_trial(max(P, 1.-P)*n, n)
-        _err_up = from_confidence_to_sigma(max(P, 1.-P)) - from_confidence_to_sigma(_dn)
-        _err_dn = from_confidence_to_sigma(_up) - from_confidence_to_sigma(max(P, 1.-P))
-        return 0.5*(_err_up + _err_dn) - sigma_err
-    try:
-        n = scipy.optimize.brentq(lambda x: dummy(np.exp(x)), 0., 30.)
-        n = np.exp(n)
-    except ValueError:
-        n = np.nan
-    return n
-
 
 ###############################################################################
 
@@ -437,7 +409,7 @@ def is_outlier(points, thresh=3.5):
 def filter_kwargs(dict_to_filter, function_with_kwargs):
     """
     Inspects a function signature and returns the correct kwargs. Usefull to
-    isolate kwargs for a third party library.abs($0)
+    isolate kwargs for a third party library.
 
     :param dict_to_filter: dictionary to filter
     :param function_with_kwargs: function to inspect

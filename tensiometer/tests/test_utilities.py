@@ -6,9 +6,30 @@ import unittest
 import tensiometer.utilities as ttu
 
 import numpy as np
+from scipy.stats import multivariate_normal
+
+from getdist import MCSamples
 
 ###############################################################################
 
+def helper_MCsamples(ndim=4, nsamp=10000):
+
+    random_state = np.random.default_rng(0)
+    A = random_state.random((ndim,ndim))
+    cov = np.dot(A, A.T)
+
+    distribution = multivariate_normal([0]*ndim, cov)
+    samps = distribution.rvs(nsamp)
+    loglikes = -distribution.logpdf(samps)
+
+    names = ["x%s"%i for i in range(ndim)]
+    labels =  ["x_%s"%i for i in range(ndim)]
+
+    samples = MCSamples(samples=samps, names=names, labels=labels, loglikes=loglikes)
+    #
+    return samples
+
+###############################################################################
 
 class test_confidence_to_sigma(unittest.TestCase):
 
@@ -154,6 +175,105 @@ class test_PDM_vectorization(unittest.TestCase):
                 # eigenvectors do not matter once they are paired with eigenvalues:
                 mat2 = ttu.vector_to_PDM(vec2)
                 assert np.allclose(mat, mat2)
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_make_list(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    # test values:
+    def test_values(self):
+        _input = ['1', '2']
+        _list = ttu.make_list(_input)
+        _list = ttu.make_list('1')
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_bernoulli_thin(unittest.TestCase):
+
+    def setUp(self):
+        self.chain = helper_MCsamples()
+
+    # test values:
+    def test_values(self):
+        ttu.bernoulli_thin(self.chain)
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_random_samples_reshuffle(unittest.TestCase):
+
+    def setUp(self):
+        self.chain = helper_MCsamples()
+
+    # test values:
+    def test_values(self):
+        ttu.random_samples_reshuffle(self.chain)
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_whiten_samples(unittest.TestCase):
+
+    def setUp(self):
+        self.chain = helper_MCsamples()
+
+    # test values:
+    def test_values(self):
+        ttu.whiten_samples(self.chain.samples, self.chain.weights)
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_filter_kwargs(unittest.TestCase):
+
+    def setUp(self):
+        pass
+
+    # test values:
+    def test_values(self):
+        ttu.filter_kwargs({}, ttu.filter_kwargs)
+
+    # test raises:
+    def test_errors(self):
+        pass
+
+###############################################################################
+
+
+class test_is_outlier(unittest.TestCase):
+
+    def setUp(self):
+        self.chain = helper_MCsamples(ndim=1)
+
+    # test values:
+    def test_values(self):
+        ttu.is_outlier(self.chain.samples)
+        ttu.is_outlier(self.chain.samples[0])
 
     # test raises:
     def test_errors(self):

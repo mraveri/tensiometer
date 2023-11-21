@@ -8,21 +8,6 @@ For more details on the method implemented see
 and `arxiv 1912.04880 <https://arxiv.org/pdf/1912.04880.pdf>`_.
 """
 
-"""
-For testing purposes:
-
-from getdist import loadMCSamples, MCSamples, WeightedSamples
-chain_1 = loadMCSamples('./tensiometer/test_chains/DES')
-chain_2 = loadMCSamples('./tensiometer/test_chains/Planck18TTTEEE')
-chain_12 = loadMCSamples('./tensiometer/test_chains/Planck18TTTEEE_DES')
-chain_prior = loadMCSamples('./tensiometer/test_chains/prior')
-prior_chain = chain_prior
-chain = chain_1
-param_names = None
-import tensiometer.utilities as utils
-import matplotlib.pyplot as plt
-"""
-
 ###############################################################################
 # initial imports:
 

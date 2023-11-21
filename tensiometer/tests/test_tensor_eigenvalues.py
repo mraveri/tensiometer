@@ -5,7 +5,6 @@ import unittest
 
 import tensiometer.tensor_eigenvalues as te
 
-import os
 import numpy as np
 
 ###############################################################################
@@ -38,7 +37,6 @@ class test_utilities(unittest.TestCase):
 
     def test_identity_tensor(self):
         assert te.identity_tensor(d=2, m=2).shape == (2, 2)
-
 
 ###############################################################################
 

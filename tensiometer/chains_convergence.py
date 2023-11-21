@@ -3,19 +3,6 @@ This file contains some functions to study convergence of the chains and
 to compare the two posteriors.
 """
 
-"""
-For test purposes:
-
-from getdist import loadMCSamples, MCSamples, WeightedSamples
-chain = loadMCSamples('./test_chains/DES')
-chains = chain
-param_names = None
-import tensiometer.utilities as utils
-import matplotlib.pyplot as plt
-import tensiometer.gaussian_tension as gtens
-import tensiometer.tensor_eigenvalues as teig
-"""
-
 ###############################################################################
 # initial imports:
 
