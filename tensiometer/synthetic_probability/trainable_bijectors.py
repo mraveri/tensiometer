@@ -317,7 +317,6 @@ class AutoregressiveFlow(TrainableTransformation):
             **kwargs):
 
         if n_transformations is None:
-            #n_transformations = 2 * num_params
             n_transformations = int(np.ceil(2 * np.log2(num_params) + 2))
         event_shape = (num_params,)
 
@@ -446,7 +445,8 @@ class AutoregressiveFlow(TrainableTransformation):
         """
         checkpoint = tf.train.Checkpoint(bijector=self.bijector)
         checkpoint.write(path)
-        pickle.dump(self.permutations, open(path + '_permutations.pickle', 'wb'))
+        with open(path + '_permutations.pickle', 'wb') as f:
+            pickle.dump(self.permutations, f)
 
     @classmethod
     def load(cls, path, **kwargs):

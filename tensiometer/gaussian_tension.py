@@ -186,6 +186,7 @@ def get_Neff(chain, prior_chain=None, param_names=None,
         artificially tighten the prior to have less noise in telling apart
         parameter space directions that are constrained by data and prior.
         Default is no scaling, prior_factor=1.
+    :param localize: (optional) whether to localize the covariance.
     :return: the number of effective parameters.
     """
     # initialize param names:
@@ -221,7 +222,7 @@ def get_Neff(chain, prior_chain=None, param_names=None,
 ###############################################################################
 
 
-def gaussian_approximation(chain, param_names=None):
+def gaussian_approximation(chain, param_names=None, **kwargs):
     """
     Function that computes the Gaussian approximation of a given chain.
 
@@ -257,7 +258,8 @@ def gaussian_approximation(chain, param_names=None):
     gaussian_approx = GaussianND(mean, cov,
                                  names=param_names,
                                  labels=param_labels,
-                                 label=label)
+                                 label=label,
+                                 **kwargs)
     #
     return gaussian_approx
 

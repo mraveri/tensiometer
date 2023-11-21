@@ -253,9 +253,14 @@ class FlowCallback(Callback):
         ind = [chain.index[name] for name in param_names]
         self.num_params = len(ind)
         self.chain_samples = chain.samples[:, ind].astype(np_prec)
-        self.chain_loglikes = chain.loglikes.astype(np_prec)
-        self.has_loglikes = self.chain_loglikes is not None
         self.chain_weights = chain.weights.astype(np_prec)
+
+        # initialize loglikes:
+        self.has_loglikes = chain.loglikes is not None
+        if not self.has_loglikes:
+            self.chain_loglikes = None
+        else:
+            self.chain_loglikes = chain.loglikes.astype(np_prec)
 
         # initialize nearest neighbours:
         if init_nearest:
@@ -307,7 +312,7 @@ class FlowCallback(Callback):
 
         # feedback:
         if self.feedback > 1:
-            print('    - using prior bijector:', self.prior_bijector)
+            print('    - using prior bijector:', prior_bijector)
 
         # Whitening bijector:
         if apply_pregauss:
@@ -618,7 +623,8 @@ class FlowCallback(Callback):
         if callbacks is None:
             callbacks = []
             # learning rate scheduler:
-            lr_schedule = lr.LRAdaptLossSlopeEarlyStop(**utils.filter_kwargs(kwargs, lr.LRAdaptLossSlopeEarlyStop))
+            lr_schedule = lr.LRAdaptLossSlopeEarlyStop(min_lr=self.final_learning_rate,
+                                                       **utils.filter_kwargs(kwargs, lr.LRAdaptLossSlopeEarlyStop))
             callbacks.append(lr_schedule)
 
         # Run training:
@@ -815,7 +821,7 @@ class FlowCallback(Callback):
             labels=self.param_labels,
             ranges=self.parameter_ranges,
             name_tag=self.name_tag,
-            **utils.filter_kwargs(kwargs, MCSamples))
+            **kwargs)
         #
         return mc_samples
 
@@ -1769,19 +1775,8 @@ class TransformedFlowCallback(FlowCallback):
             # 'name_tag',
             'feedback',
             'plot_every',
-            # 'sample_MAP',
-            # 'chain_MAP',
             'num_params',
-            # 'param_names',
-            # 'param_labels',
-            # 'parameter_ranges',
-            # 'chain_samples',
-            # 'chain_loglikes',
-            # 'has_loglikes',
-            # 'chain_weights',
             'is_trained',
-            # 'MAP_coord',
-            # 'MAP_logP',
             'log',
         ]
         for info in infos:
