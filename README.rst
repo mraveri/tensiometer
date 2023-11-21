@@ -90,3 +90,8 @@ Then you can install the readthedocs documentation format with::
 Then you can issue the command::
 
   make documentation
+
+Acknowledgements
+================
+
+We thank Samuel Goldstein for help developing the code.

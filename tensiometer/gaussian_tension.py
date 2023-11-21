@@ -13,6 +13,7 @@ and `arxiv 1912.04880 <https://arxiv.org/pdf/1912.04880.pdf>`_.
 
 import scipy
 import numpy as np
+import copy
 from getdist import MCSamples
 from getdist.gaussian_mixtures import GaussianND
 import matplotlib.pyplot as plt
@@ -377,13 +378,15 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
 ###############################################################################
 
 
-def KL_PCA(chain_1, chain_12, param_names=None,
-           conditional_params=[], param_map=None, normparam=None,
-           num_modes=None, localize=True, dimensional_reduce=True,
-           dimensional_threshold=0.1, verbose=True, **kwargs):
+def linear_CPCA(fisher_1, fisher_12, param_names,
+                conditional_params=[], marginalized_parameters=[],
+                normparam=None, dimensional_reduce=True,
+                dimensional_threshold=0.1):
     """
-    Perform the KL analysis of two chains.
-    Directions that chain_2 improves over chain_1.
+    Documentation
+
+    conventions for 2d output: indexes are [parameter, mode]
+    conventions for projector [mode, parameters]
 
     :param chain_1: :class:`~getdist.mcsamples.MCSamples` the first input chain.
     :param chain_12: :class:`~getdist.mcsamples.MCSamples` the second input chain.
@@ -402,9 +405,6 @@ def KL_PCA(chain_1, chain_12, param_names=None,
     :param normparam: (optional) name of parameter to normalize result
         (i.e. this parameter will have unit power)
         By default scales to the parameter that has the largest impactr on the KL mode variance.
-    :param num_modes: (optional) only return the num_modes best modes.
-    :param localize: (optional) localize the first covariance with the second,
-        useful when chain_1 spans a much larger region with respect to chain_12.
     :param dimensional_reduce: (optional) perform dimensional reduction of the KL modes considered
         keeping only parameters with a large impact on KL mode variances.
         Default is True.
@@ -414,266 +414,267 @@ def KL_PCA(chain_1, chain_12, param_names=None,
     :param verbose: (optional) chatty output. Default True.
     """
     # initialize param names:
-    param_names_1 = _check_param_names(chain_1, param_names)
-    param_names_12 = _check_param_names(chain_12, param_names)
-    param_names = _check_common_names(param_names_1, param_names_12)
     num_params = len(param_names)
-    # initialize conditional parameters:
+    if num_params != fisher_1.shape[0]:
+        raise ValueError('Input fisher matrix 1 has size', fisher_1.shape[0], '\n',
+                         ' while param_names has length', num_params)
+    if num_params != fisher_12.shape[0]:
+        raise ValueError('Input fisher matrix 12 has size', fisher_12.shape[0], '\n',
+                         ' while param_names has length', num_params)
+    # test validity of conditional parameters:
     if len(conditional_params) > 0:
-        conditional_params_1 = _check_param_names(chain_1, conditional_params)
-        conditional_params_12 = _check_param_names(chain_12, conditional_params)
-        conditional_params = _check_common_names(conditional_params_1, conditional_params_12)
-    # other initialization:
-    labels = [chain_1.parLabel(chain_1.index[name]) for name in param_names]
-    if num_modes is not None:
-        num_modes = min(num_modes, num_params)
-    else:
-        num_modes = num_params
+        if not np.all([name in param_names for name in conditional_params]):
+            raise ValueError('Input conditional_params:', conditional_params, '\n',
+                             'are not all in param_names:', param_names)
+    # test validity of marginalized parameters:
+    if len(marginalized_parameters) > 0:
+        if not np.all([name in param_names for name in marginalized_parameters]):
+            raise ValueError('Input marginalized_parameters:', marginalized_parameters, '\n',
+                             'are not all in param_names:', param_names)
+    # fix parameters in Fisher matrices:
+    keep_indexes = [param_names.index(name) for name in param_names if name not in conditional_params]
+    param_names_to_use = [param_names[ind] for ind in keep_indexes]
+    F_p1 = fisher_1[:, keep_indexes][keep_indexes, :]
+    F_p12 = fisher_12[:, keep_indexes][keep_indexes, :]
+    # marginalize Fisher over parameters:
+    if len(marginalized_parameters) > 0:
+        keep_indexes = [param_names_to_use.index(name) for name in param_names_to_use if name not in marginalized_parameters]
+        param_names_to_use = [param_names_to_use[ind] for ind in keep_indexes]
+        F_p1 = np.linalg.inv(np.linalg.inv(F_p1)[:, keep_indexes][keep_indexes, :])
+        F_p12 = np.linalg.inv(np.linalg.inv(F_p12)[:, keep_indexes][keep_indexes, :])
+    sqrt_F_p12 = scipy.linalg.sqrtm(F_p12)
+    # recompute number of parameters:
+    num_params = len(param_names_to_use)
+    # initialize internal variables:
     if normparam is not None:
         normparam = param_names.index(normparam)
-    # initialize parameter map:
-    if param_map is None:
-        param_map = ''
-        for name in param_names:
-            idx_1, idx_12 = chain_1.index[name], chain_12.index[name]
-            # decide the mapping:
-            positive_1 = np.all(chain_1.samples[:, idx_1] > 0)
-            positive_12 = np.all(chain_12.samples[:, idx_12] > 0)
-            if not positive_1:
-                negative_1 = np.all(chain_1.samples[:, idx_1] < 0)
-            else:
-                negative_1 = False
-            if not positive_12:
-                negative_12 = np.all(chain_12.samples[:, idx_12] < 0)
-            else:
-                negative_12 = False
-            if positive_1 and positive_12:
-                param_map += 'L'
-            elif negative_1 and negative_12:
-                param_map += 'M'
-            else:
-                param_map += 'N'
-    else:
-        if len(param_map) == 1:
-            param_map = ''.join([param_map for name in param_names])
-        if len(param_map) != len(param_names):
-            raise ValueError('param_map can be either one element for all'
-                             + 'parameters or', num_params,
-                             'got', param_map, 'instead')
-        for map in param_map:
-            if map not in ['L', 'M', 'N']:
-                raise ValueError('param_map can contain only L, M, N values',
-                                 'got', param_map, 'instead')
-    doexp = 'L' in param_map or 'M' in param_map
-    # add the relevant derived parameters to the chains:
-    param_names_to_use = []
-    for i in range(num_params):
-        name, map = param_names[i], param_map[i]
-        idx_1, idx_12 = chain_1.index[name], chain_12.index[name]
-        if map == 'L':
-            # log parameter to chain 1:
-            try:
-                chain_1.addDerived(np.log(chain_1.samples[:, idx_1]),
-                                   name='log_'+name,
-                                   label='\\log '+labels[i])
-            except ValueError:
-                pass
-            # log parameter for chain 12:
-            try:
-                chain_12.addDerived(np.log(chain_12.samples[:, idx_12]),
-                                    name='log_'+name,
-                                    label='\\log '+labels[i])
-            except ValueError:
-                pass
-            # add names:
-            param_names_to_use.append('log_'+name)
-        elif map == 'M':
-            # - log parameter to chain 1:
-            try:
-                chain_1.addDerived(np.log(chain_1.samples[:, idx_1]),
-                                   name='log_m_'+name,
-                                   label='\\log -'+labels[i])
-            except ValueError:
-                pass
-            # - log parameter for chain 12:
-            try:
-                chain_12.addDerived(np.log(chain_12.samples[:, idx_12]),
-                                    name='log_m_'+name,
-                                    label='\\log -'+labels[i])
-            except ValueError:
-                pass
-            # add names:
-            param_names_to_use.append('log_m_'+name)
-        elif map == 'N':
-            # add names:
-            param_names_to_use.append(name)
-    # make sure chains are initialized:
-    if chain_1.needs_update:
-        chain_1.updateBaseStatistics()
-    if chain_12.needs_update:
-        chain_12.updateBaseStatistics()
-    # indexes to use:
-    idx_to_use = [chain_12.index[name] for name in param_names_to_use]
-    # get the posterior covariances:
-    if localize:
-        localize_params = kwargs.pop('localize_params', None)
-        if localize_params is not None:
-            idx = [param_names.index(name) for name in localize_params]
-            localize_params = [param_names_to_use[i] for i in idx]
-        C_p1 = get_localized_covariance(chain_1, chain_12,
-                                        param_names_to_use+conditional_params,
-                                        localize_params=localize_params,
-                                        **kwargs)
-    else:
-        C_p1 = chain_1.cov(pars=param_names_to_use+conditional_params)
-    C_p12 = chain_12.cov(pars=param_names_to_use+conditional_params)
-    # get the Fisher matrix: IW
-    if len(conditional_params) > 0:
-        F_p1 = utils.QR_inverse(C_p1)[:, :num_params][:num_params, :]
-        F_p12 = utils.QR_inverse(C_p12)[:, :num_params][:num_params, :]
-        C_p1 = utils.QR_inverse(F_p1)
-        C_p12 = utils.QR_inverse(F_p12)
-    # perform the KL decomposition:
-    KL_eig, KL_eigv = utils.KL_decomposition(C_p1, C_p12)
-    # sort:
-    idx = np.argsort(KL_eig)[::-1]
-    KL_eig, KL_eigv = KL_eig[idx], KL_eigv[:, idx]
-    # do initial calculations:
-    inv_KL_eigv = utils.QR_inverse(KL_eigv.T)
-    inv_cov_12 = utils.QR_inverse(C_p12)
-    # compute joint covariance contributions:
-    temp = inv_KL_eigv*np.dot(inv_cov_12, inv_KL_eigv.T).T
-    contributions = (np.abs(temp.T)/np.sum(np.abs(temp), axis=1)).T
+    # perform the CPCA decomposition:
+    CPC_eig, CPC_eigv = utils.KL_decomposition(F_p12, F_p1)
+    # sort in decreasing order (best mode first):
+    idx = np.argsort(CPC_eig)[::-1]
+    CPC_eig, CPC_eigv = CPC_eig[idx], CPC_eigv[:, idx]
+    # compute Neff from KL decomposition:
+    _temp = CPC_eig.copy()
+    _temp[_temp < 1.] = 1.
+    Neff_spectrum = 1.-1./_temp
+    Neff = np.sum(Neff_spectrum)
+    # compute KL divergence:
+    KL_spectrum = 0.5 / np.log(2.) * (np.log(_temp) + 2./_temp - 1.)
+    KL_divergence = np.sum(KL_spectrum)
+    # compute contributions:
+    temp = np.dot(sqrt_F_p12, CPC_eigv)
+    contributions = temp * temp / CPC_eig
     # compute the dimensional reduction matrix:
     if dimensional_reduce:
         reduction_filter = contributions > dimensional_threshold
     else:
         reduction_filter = np.ones((num_params, num_params), dtype=bool)
     if normparam is not None:
-        reduction_filter[:, normparam] = True
-    reduced_projector = KL_eigv.copy().T
-    reduced_projector[np.logical_not(reduction_filter)] = 0
-    # compute correlation matrix of parameters with KL components:
-    proj_samples = np.dot(reduced_projector, (chain_12.samples[:, idx_to_use]-chain_12.getMeans(idx_to_use)).T)
+        reduction_filter[normparam, :] = True
+    # compute projector:
+    projector = np.linalg.inv(CPC_eigv).copy()
+    projector[np.logical_not(reduction_filter.T)] = 0
+    # prepare return of the function:
+    results_dict = {}
+    # mode results:
+    results_dict['CPCA_eig'] = CPC_eig.copy()
+    results_dict['CPCA_eigv'] = CPC_eigv.copy()
+    results_dict['CPCA_var_contributions'] = contributions.copy()
+    results_dict['CPCA_var_filter'] = reduction_filter.copy()
+    results_dict['CPCA_projector'] = projector
+    # Neff results:
+    results_dict['Neff'] = Neff
+    results_dict['Neff_spectrum'] = Neff_spectrum
+    # KL divergence:
+    results_dict['KL_divergence'] = KL_divergence
+    results_dict['KL_spectrum'] = KL_spectrum
+    # parameter names:
+    results_dict['param_names'] = param_names_to_use
+    results_dict['conditional_params'] = conditional_params
+    results_dict['marginalized_parameters'] = marginalized_parameters
+    results_dict['normparam'] = normparam
+    #
+    return results_dict
+
+
+def linear_CPCA_chains(chain_1, chain_12, param_names, **kwargs):
+    """
+    Performs the CPCA analysis of two chains.
+    As discussed in (`Dacunha et al. 22 <https://arxiv.org/pdf/1806.04649.pdf>`_)
+    this quantifies the modes that the joint chain improves over the single one.
+
+    :param chain_1: :class:`~getdist.mcsamples.MCSamples` the reference input chain.
+    :param chain_12: :class:`~getdist.mcsamples.MCSamples` the joint input chain.
+    :param param_names: parameter names to use in the calculation. Defaults to all
+        running parameters.
+    """
+    # test if chains:
+    _check_chain_type(chain_1)
+    _check_chain_type(chain_12)
+    # initialize param names:
+    param_names_1 = _check_param_names(chain_1, param_names)
+    param_names_12 = _check_param_names(chain_12, param_names)
+    param_names = _check_common_names(param_names_1, param_names_12)
+    # get Fisher from the chains:
+    fisher_1 = np.linalg.inv(chain_1.cov(param_names))
+    fisher_12 = np.linalg.inv(chain_12.cov(param_names))
+    # do CPCA with Fishers:
+    CPCA_results = linear_CPCA(fisher_1, fisher_12, param_names,
+                               **utils.filter_kwargs(kwargs, linear_CPCA)
+                               )
+    param_names = CPCA_results['param_names']
+    # add mean and parameter labels to results:
+    mean = chain_12.getMeans(pars=[chain_12.index[name] for name in param_names])
+    CPCA_results['reference_point'] = mean.copy()
+    labels = [chain_12.parLabel(chain_12.index[name]) for name in param_names]
+    CPCA_results['param_labels'] = copy.deepcopy(labels)
+    # compute correlation of CPCA modes with parameters:
+    idx_to_use = [chain_12.index[name] for name in param_names]
+    proj_samples = np.dot(CPCA_results['CPCA_projector'], (chain_12.samples[:, idx_to_use]-mean).T)
     proj_cov = np.cov(np.vstack((proj_samples, chain_12.samples.T)),
                       aweights=chain_12.weights)
     temp = np.diag(1./np.sqrt(np.diag(proj_cov)))
-    proj_corr = np.dot(np.dot(temp, proj_cov), temp)[:num_params, :]
-    # prepare return of the function:
-    results_dict = {}
-    results_dict['kl_eig'] = KL_eig
-    results_dict['kl_eigv'] = KL_eigv
-    results_dict['kl_var_contributions'] = contributions
-    results_dict['kl_var_filter'] = reduction_filter
-    results_dict['reduced_kl_projector'] = reduced_projector
-    results_dict['param_names'] = param_names_to_use
-    results_dict['param_map'] = param_map
-    # all calculations are done, write out text:
-    PCAtext = 'KLCA for '+str(num_params)+' parameters:\n\n'
-    # parameter names:
+    proj_corr = np.dot(np.dot(temp, proj_cov), temp)[:len(param_names), :][:, len(param_names):]
+    # save correlation in results:
+    CPCA_results['correlation_mode_parameter'] = proj_corr.copy()
+    CPCA_results['correlation_parameter_names'] = chain_12.getParamNames().list().copy()
+    #
+    return CPCA_results
+
+
+def print_CPCA_results(CPCA_results, verbose=True, num_modes=None):
+    """
+    Documentation
+    """
+    PCAtext = ''
+    # initialize parameters:
+    param_names = CPCA_results['param_names']
+    num_params = len(param_names)
+    if num_modes is None:
+        num_modes = num_params
+    PCAtext += 'CPCA for '+str(num_params)+' parameters:\n'
+    if verbose:
+        PCAtext += '\n'
+    # parameter names and labels:
+    if 'param_labels' in CPCA_results.keys():
+        labels = CPCA_results['param_labels']
+    else:
+        labels = CPCA_results['param_names']
     if verbose:
         for i in range(num_params):
-            if param_map[i] == 'L':
-                temp_lab = 'ln(' + labels[i] + ')'
-            elif param_map[i] == 'M':
-                temp_lab = 'ln(-' + labels[i] + ')'
-            else:
-                temp_lab = labels[i]
-            PCAtext += "%10s : %s\n" % (str(i + 1), temp_lab)
+            PCAtext += "%4s : %s\n" % (str(i + 1), labels[param_names.index(param_names[i])])
         PCAtext += '\n'
-    # fixed parameter names:
-    if verbose:
-        if len(conditional_params) > 0:
-            PCAtext += 'With '+str(len(conditional_params))+' parameters fixed:\n'
-            for i, name in enumerate(conditional_params):
-                temp_lab = chain_12.parLabel(chain_12.index[name])
-                PCAtext += "%10s : %s\n" % (str(i + 1), temp_lab)
+    # conditional parameters:
+    if len(CPCA_results['conditional_params']) > 0:
+        PCAtext += '  with '+str(len(CPCA_results['conditional_params']))+' fixed parameters:\n'
+        if verbose:
             PCAtext += '\n'
-    # write out KL eigenvalues:
-    PCAtext += 'KL amplitudes - 1 (covariance/variance improvement per mode)\n'
-    for i in range(num_modes):
-        PCAtext += 'KLC%2i: %8.4f' % (i + 1, KL_eig[i]-1.)
-        if KL_eig[i]-1. > 0.:
-            PCAtext += ' (%8.1f %%)' % (np.sqrt(KL_eig[i]-1.)*100.)
-        PCAtext += '\n'
-    # write out KL eigenvectors:
-    if verbose:
-        PCAtext += '\n'
-        PCAtext += 'KL-modes\n'
-        for j in range(num_modes):
-            PCAtext += '%3i:' % (j + 1)
-            for i in range(num_modes):
-                PCAtext += '%8.3f' % (KL_eigv.T[j, i])
+            for i in range(len(CPCA_results['conditional_params'])):
+                PCAtext += "%4s : %s\n" % (str(i + 1), CPCA_results['conditional_params'][i])
             PCAtext += '\n'
-    # write out parameter contributions to KL mode variance:
-    PCAtext += '\n'
-    PCAtext += 'Parameter contribution to KL-mode variance\n'
-    PCAtext += '%12s :' % 'mode number'
-    for j in range(num_modes):
-        PCAtext += '%8i' % (j+1)
-    PCAtext += '\n'
-    for i in range(num_params):
-        PCAtext += '%12s :' % param_names_to_use[i]
-        for j in range(num_modes):
-            PCAtext += '%8.3f' % (contributions[j, i])
-        PCAtext += '\n'
-    # write out KL components:
-    PCAtext += '\n'
-    PCAtext += 'KL Principal Components\n'
+    # marginalized parameters:
+    if len(CPCA_results['marginalized_parameters']) > 0:
+        PCAtext += '  with '+str(len(CPCA_results['marginalized_parameters']))+' marginalized parameters:\n\n'
+        if verbose:
+            for i in range(len(CPCA_results['marginalized_parameters'])):
+                PCAtext += "%4s : %s\n" % (str(i + 1), CPCA_results['marginalized_parameters'][i])
+            PCAtext += '\n'
+    # write Neff analysis:
+    PCAtext += 'Neff = %5.2f\n' % (CPCA_results['Neff'])
+    PCAtext += 'Neff mode = ['
+    for temp in CPCA_results['Neff_spectrum']:
+        PCAtext += '%5.2f' % (temp)
+    PCAtext += ']\n\n'
+    # write KL divergence:
+    PCAtext += '<KL> divergence = %5.2f\n' % (CPCA_results['KL_divergence'])
+    PCAtext += '<KL> mode = ['
+    for temp in CPCA_results['KL_spectrum']:
+        PCAtext += '%5.2f' % (temp)
+    PCAtext += ']\n\n'
+    # write out eigenvalues:
+    PCAtext += 'CPC amplitudes - 1 (variance improvement per mode):\n'
     for i in range(num_modes):
-        summary = 'KLC%2i: %8.4f' % (i + 1, KL_eig[i]-1.)
-        if KL_eig[i]-1. > 0.:
-            summary += ' (%8.1f %%)' % (np.sqrt(KL_eig[i]-1.)*100.)
-        summary += '\n'
-        if normparam is not None:
-            norm = KL_eigv.T[i, normparam]
+        PCAtext += '%4s : %8.4f' % (str(i + 1), CPCA_results['CPCA_eig'][i]-1.)
+        if CPCA_results['CPCA_eig'][i]-1. > 0.:
+            PCAtext += ' (%8.1f %%)' % (np.sqrt(CPCA_results['CPCA_eig'][i]-1.)*100.)
         else:
-            norm = KL_eigv.T[i, np.argmax(contributions[i, :])]
-        for j in range(num_params):
-            if reduction_filter[i, j]:
-                label = labels[j]
-                mean = chain_12.getMeans([idx_to_use[j]])
-                expo = "%f" % (KL_eigv.T[i, j]/norm)
-                if param_map[j] in ['L', 'M']:
-                    if param_map[j] == "M":
-                        div = "%f" % (-np.exp(mean))
-                    else:
-                        div = "%f" % (np.exp(mean))
-                    summary += '(%s/%s)^{%s}\n' % (label, div, expo)
-                else:
-                    if doexp:
-                        summary += 'exp((%s-%f)/%s)\n' % (label, mean, expo)
-                    else:
-                        summary += '(%s-%f)/%s)\n' % (label, mean, expo)
-        temp_mean = np.average((proj_samples[i, :]/norm), weights=chain_12.weights)
-        temp_var = np.sqrt(np.cov((proj_samples[i, :]/norm), aweights=chain_12.weights))
-        if doexp:
-            temp_mean = np.exp(temp_mean)
-            temp_var = np.exp(temp_mean)*temp_var
-        summary += '          = %f +- %f\n' % (temp_mean, temp_var)
-        summary += '\n'
-        PCAtext += summary
-    # Correlation with other parameters:
-    if verbose:
-        PCAtext += 'Correlations of KLPC\n'
-        PCAtext += '%5s :' % 'mode'
-        for i in range(num_modes):
-            PCAtext += '%8i' % (i+1)
+            PCAtext += ' (     noisy)'
         PCAtext += '\n'
-        auto_block = proj_corr[:, :num_params]
+    # write out CPC eigenvectors:
+    if verbose:
+        PCAtext += '\n'
+        PCAtext += 'CPC modes:\n'
         for i in range(num_modes):
-            PCAtext += ' PC%2i :' % (i + 1)
-            for j in range(num_modes):
-                PCAtext += '%8.3f' % auto_block[i, j]
+            if CPCA_results['CPCA_eig'][i]-1. > 0.:
+                PCAtext += '%4s :' % str(i + 1)
+                for j in range(num_params):
+                    PCAtext += '%8.3f' % (CPCA_results['CPCA_eigv'][j, i])
+                PCAtext += '\n'
+    # write out parameter contributions to KL mode variance:
+    PCAtext += '\nParameter contribution to CPC-mode variance:\n'
+    max_length = np.amax([len(name) for name in param_names + ['mode number']])
+    PCAtext += f" {'mode number':<{max_length}} :"
+    for i in range(num_modes):
+        if CPCA_results['CPCA_eig'][i]-1. > 0.:
+            PCAtext += '%8i' % (i+1)
+    PCAtext += '\n'
+    for i in range(num_params):  # loop over parameters
+        PCAtext += f" {param_names[i]:<{max_length}} :"
+        for j in range(num_modes):  # loop over modes
+            if CPCA_results['CPCA_eig'][j]-1. > 0.:
+                PCAtext += '%8.3f' % (CPCA_results['CPCA_var_contributions'][i, j])
+        PCAtext += '\n'
+    # write out CPC components constraints:
+    PCAtext += '\nCPC parameter combinations:\n'
+    for i in range(num_modes):  # loop over modes
+        if CPCA_results['CPCA_eig'][i]-1. > 0.:
+            # summary of mode improvement:
+            summary = '%4s : %8.3f' % (str(i + 1), CPCA_results['CPCA_eig'][i]-1.)
+            if CPCA_results['CPCA_eig'][i]-1. > 0.:
+                summary += ' (%8.1f %%)' % (np.sqrt(CPCA_results['CPCA_eig'][i]-1.)*100.)
+            summary += '\n'
+            # compute normalization of mode:
+            if CPCA_results['normparam'] is not None:
+                norm = CPCA_results['CPCA_projector'][i, CPCA_results['normparam']]
+            else:
+                norm = CPCA_results['CPCA_projector'][i, np.argmax(CPCA_results['CPCA_var_contributions'][:, i])]
+            # write the mode:
+            string = ''
+            for j in range(num_params):  # loop over parameters
+                if CPCA_results['CPCA_var_filter'][j, i]:
+                    # get normalized coefficient:
+                    _norm_eigv = CPCA_results['CPCA_projector'][i, j] / norm
+                    # format it to string and save it:
+                    _temp = '{0:+.2f}'.format(np.round(_norm_eigv, 2))
+                    if 'reference_point' in CPCA_results.keys():
+                        _mean = CPCA_results['reference_point'][j]
+                        _mean = '{0:+}'.format(np.round(-_mean, 2))
+                        string += _temp+'*('+labels[j]+' '+_mean+') '
+                    else:
+                        string += _temp+'*('+labels[j]+') '
+            summary += '      '+string+'= 0 +- '+'%.2g (post) / %.2g (prior)' % (np.sqrt(1./CPCA_results['CPCA_eig'][i]) / np.abs(norm), 1. / np.abs(norm))
+            summary += '\n'
+            PCAtext += summary
+    # write out CPC correlation with parameters (if present):
+    if 'correlation_mode_parameter' in CPCA_results.keys():
+        # compute maximum name length:
+        max_length = np.amax([len(name) for name in CPCA_results['correlation_parameter_names']])
+        # write first line:
+        PCAtext += '\nCPC modes parameters correlations:\n'
+        PCAtext += f" {'mode number':<{max_length}} :"
+        for i in range(num_modes):
+            if CPCA_results['CPCA_eig'][i]-1. > 0.:
+                PCAtext += '%8i' % (i+1)
+        PCAtext += '\n'
+        # then write out parameter per parameter:
+        for i, name in enumerate(CPCA_results['correlation_parameter_names']):
+            PCAtext += f" {name:<{max_length}} :"
+            for j in range(num_modes):  # loop over modes
+                if CPCA_results['CPCA_eig'][j]-1. > 0.:
+                    PCAtext += '%8.3f' % (CPCA_results['correlation_mode_parameter'][j, i])
             PCAtext += '\n'
-        auto_block = proj_corr[:, num_params:].T
-        for i in range(auto_block.shape[0]):
-            PCAtext += ' p %2i :' % (i + 1)
-            for j in range(num_modes):
-                PCAtext += '%8.3f' % auto_block[i, j]
-            PCAtext += '   (%s)\n' % (chain_12.parLabel(i))
     #
-    return PCAtext, results_dict
+    return PCAtext
 
 ###############################################################################
 
