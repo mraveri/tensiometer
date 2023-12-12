@@ -1764,6 +1764,18 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
         return hist
 
 
+class AnalyticalDerivedParamsBijector:
+    def __init__(self, param_names_in, param_names_out, param_labels_out, **kwargs):
+        self.num_params = len(param_names_in)
+        assert len(param_names_out) == self.num_params
+        self.param_names_in = param_names_in
+        self.param_names_out = param_names_out        
+        self.param_labels_out = param_labels_out
+        
+        self.bijector = tfp.bijectors.Inline(forward_min_event_ndims=1, **kwargs)
+        
+        
+        
 class TransformedFlowCallback(FlowCallback):
 
     def __init__(self, flow, transformation, transform_posterior=True):
@@ -1813,38 +1825,72 @@ class TransformedFlowCallback(FlowCallback):
             self.chain_loglikes = None
             self.has_loglikes = False
             self.chain_weights = flow.chain.weights.astype(np_prec)
-
-        elif isinstance(transformation, DerivedParamsBijector):
+            
+        elif isinstance(transformation, DerivedParamsBijector) or isinstance(transformation, AnalyticalDerivedParamsBijector):
             # first find the parameters that the DerivedParamsBijector is modifying
-            mod_params = [i for i, name in enumerate(flow.param_names) if name in transformation.param_names_in]
-            perm_mod_params = [transformation.param_names_in.index(flow.param_names[i]) for i in mod_params]
-            oth_params = [i for i in range(self.num_params) if i not in mod_params]
-
+            mod_params = [flow.param_names.index(name) for name in transformation.param_names_in]
+            fix_params = [i for i in range(flow.num_params) if i not in mod_params]
+            perm = mod_params + [i for i in range(flow.num_params) if i not in mod_params]
+            # print(perm)
+            
             # new bijector
-            split = tfb.Split([len(mod_params)] + [1] * len(oth_params))
-            b = tfb.Chain([
-                tfb.Invert(split),
-                tfb.JointMap([transformation.bijector] + [tfb.Identity()] * len(oth_params)), split,
-                tfb.Invert(tfb.Permute(perm_mod_params + oth_params))
-            ])
+            s = len(transformation.param_names_in)
+            split = tfb.Split([s] + [1] * (flow.num_params-s))
+            permute = tfb.Permute(perm)
+            b = tfb.Chain(
+                [
+                    tfb.Invert(split),
+                    tfb.JointMap(
+                        [transformation.bijector] + [tfb.Identity()] * (flow.num_params-s)
+                    ),
+                    split,
+                    permute,
+                ]
+            )
 
             # parameter names and labels:
-            self.param_names = transformation.param_names_out + [flow.param_names[i] for i in oth_params]
-            self.param_labels = transformation.flow_out.param_labels + [flow.param_labels[i] for i in oth_params]
+            self.param_names = transformation.param_names_out + [flow.param_names[i] for i in fix_params]
+            
+            self.chain_loglikes = flow.chain_loglikes.astype(np_prec)
+            self.has_loglikes = False
+            self.chain_weights = flow.chain_weights.astype(np_prec)
+            
+        else:
+            raise ValueError
+
+        if isinstance(transformation, DerivedParamsBijector):
+            self.param_labels = transformation.flow_out.param_labels + [flow.param_labels[i] for i in fix_params]
+            
+            self.chain_samples = np.concatenate(
+                [transformation.chain_samples,
+                 np.take(flow.chain_samples, fix_params, axis=1)], axis=1)
+            
             # set ranges:
             if flow.parameter_ranges is not None:
                 if transformation.flow_out.parameter_ranges is not None:
                     self.parameter_ranges = transformation.flow_out.parameter_ranges
-                    for i in oth_params:
+                    for i in fix_params:
                         name = flow.param_names[i]
                         self.parameter_ranges[name] = flow.parameter_ranges[name]
-
+                        
+        elif isinstance(transformation, AnalyticalDerivedParamsBijector):
+            self.param_labels = transformation.param_labels_out + [flow.param_labels[i] for i in fix_params]
+            
+            temp_samples = transformation.bijector.forward(np.take(flow.chain_samples, mod_params, axis=1)).numpy().astype(np_prec)
             self.chain_samples = np.concatenate(
-                [transformation.chain_samples,
-                 np.take(flow.chain_samples, oth_params, axis=1)], axis=1)
-            self.chain_loglikes = flow.chain_loglikes.astype(np_prec)
-            self.has_loglikes = False
-            self.chain_weights = flow.chain_weights.astype(np_prec)
+                [temp_samples,
+                np.take(flow.chain_samples, fix_params, axis=1)], axis=1)
+            
+            # set ranges:
+            if flow.parameter_ranges is not None:                
+                self.parameter_ranges = {p:(temp_samples[:,i].min(), temp_samples[:,i].max()) for i,p in enumerate(transformation.param_names_out)}
+                for i in fix_params:
+                    name = flow.param_names[i]
+                    # print(name)
+                    self.parameter_ranges[name] = flow.parameter_ranges[name]
+
+        else:
+            raise ValueError
 
         # save bijector:
         self.transformer_bijector = b
@@ -1853,12 +1899,12 @@ class TransformedFlowCallback(FlowCallback):
         self.name_tag = flow.name_tag + '_transformed'
         # set sample MAP:
         if flow.sample_MAP is not None:
-            self.sample_MAP = b.forward(flow.sample_MAP).numpy()
+            self.sample_MAP = b.forward(np.atleast_2d(flow.sample_MAP)).numpy()
         else:
             self.sample_MAP = None
         # set chains MAP:
         if flow.chain_MAP is not None:
-            self.chain_MAP = b.forward(flow.chain_MAP).numpy()
+            self.chain_MAP = b.forward(np.atleast_2d(flow.chain_MAP)).numpy()
         else:
             self.chain_MAP = None
 
@@ -2086,7 +2132,7 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
             _outroot = ''
         # do the list of flows:
         if cache_dir is not None and os.path.isfile(_outroot + '_flow_cache.pickle'):
-            flow = FlowCallback.load(chain, cache_dir + '/' + root_name, **kwargs)
+            flow = FlowCallback.load(chain, _outroot, **kwargs)
             flows.append(flow)
         else:
             # initialize posterior flow:

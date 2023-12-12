@@ -274,17 +274,30 @@ def build_nn(dim_in, dim_out, hidden_units, activation=tf.math.asinh, **kwargs):
         model.add(Dense(dim_out, activation=None, **kwargs))
     return model
 
+@tf.function
+def const_zeros(tensor, dim):
+    batch_size = tf.shape(tensor)[0]
+    constant = tf.zeros(dim)
+    constant = tf.expand_dims(constant, axis=0)
+    return tf.broadcast_to(constant, shape=(batch_size, dim))
 
-def build_AR_model(num_params, transf_params, hidden_units=[], scale_with_dim=True, **kwargs):
+def build_AR_model(num_params, transf_params, hidden_units=[], scale_with_dim=True, identity_dims=None, **kwargs):
     x = Input(num_params)
     params = []
     for dim in range(num_params):
-        if scale_with_dim:
-            _h = [int(np.ceil(h * dim / num_params)) for h in hidden_units]
+        if identity_dims is not None and dim in identity_dims:
+            # params.append(Lambda(lambda _x: tf.broadcast_to(tf.zeros(dim), (tf.shape(_x)[0], dim)))(x))
+            params.append(Lambda(lambda _x: const_zeros(_x, transf_params))(x))
         else:
-            _h = hidden_units
-        nn = build_nn(dim, transf_params, hidden_units=_h, **kwargs)
-        params.append(nn(x[..., :dim]))
+            if dim==0:
+                _h = []
+            else:
+                if scale_with_dim:
+                    _h = [int(np.ceil(h * (dim+1) / num_params)) for h in hidden_units]
+                else:
+                    _h = hidden_units
+            nn = build_nn(dim, transf_params, hidden_units=_h, **kwargs)
+            params.append(nn(x[..., :dim]))
     params = Lambda(lambda x: tf.stack(x, axis=-2))(params)
     return Model(x, params)
 
@@ -312,6 +325,7 @@ class AutoregressiveFlow(TrainableTransformation):
             spline_knots=8,
             range_max=5.,
             autoregressive_scale_with_dim=True,
+            autoregressive_identity_dims=None,
             int_np_prec=np.int32,
             feedback=0,
             **kwargs):
@@ -386,6 +400,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     activation=activation,
                     kernel_initializer=kernel_initializer,
                     scale_with_dim=autoregressive_scale_with_dim,
+                    identity_dims=autoregressive_identity_dims,
                     **utils.filter_kwargs(kwargs, Dense))
             elif _autoregressive_type == 'masked':
                 nn = tfb.AutoregressiveNetwork(
