@@ -683,8 +683,16 @@ class AutoregressiveFlow(TrainableTransformation):
         # check type of architecture:
         if map_to_unitcube:
             assert transformation_type == 'spline'
-        #if periodic_params is not None: 
-        #    assert transformation_type == 'spline'
+            
+        # check periodic parameters:
+        if periodic_params is not None: 
+            # if all parameters are not periodic then set to None:
+            if np.all(np.logical_not(periodic_params)):
+                periodic_params = None
+        if periodic_params is not None: 
+            assert transformation_type == 'spline'
+            
+        print('*** periodic_params', periodic_params)
         
         # initialize kernel initializer:    
         if kernel_initializer is None:
@@ -798,7 +806,7 @@ class AutoregressiveFlow(TrainableTransformation):
         self.bijector = tfb.Chain(bijectors)
 
         if feedback > 0:
-            print("Building Autoregressive Flow")
+            print("    Building Autoregressive Flow")
             print("    - # transformations     :", n_transformations)
             print("    - hidden_units          :", hidden_units)
             print("    - transformation_type   :", transformation_type)
@@ -818,7 +826,7 @@ class AutoregressiveFlow(TrainableTransformation):
         checkpoint.write(path)
         with open(path + '_permutations.pickle', 'wb') as f:
             pickle.dump(self.permutations, f)
-
+            
     @classmethod
     def load(cls, path, **kwargs):
         """

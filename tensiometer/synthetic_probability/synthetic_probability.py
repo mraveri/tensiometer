@@ -1183,7 +1183,7 @@ class FlowCallback(Callback):
         temp = kwargs.pop('trainable_bijector_path', None)
         if temp is not None:
             print('WARNING: trainable_bijector_path is set and will be ignored by load function')
-        # re-create the object (we have to do this because we cannot pickle all TF things)
+        # re-create the object (we have to do this because we cannot pickle all TF things)        
         flow = FlowCallback(chain, trainable_bijector_path=outroot, **kwargs)
         # load the pickle file:
         pickle_objects = pickle.load(open(outroot + '_flow_cache.pickle', 'rb'))
@@ -1894,8 +1894,6 @@ class TransformedFlowCallback(FlowCallback):
             mod_params = [flow.param_names.index(name) for name in transformation.param_names_in]
             fix_params = [i for i in range(flow.num_params) if i not in mod_params]
             perm = mod_params + [i for i in range(flow.num_params) if i not in mod_params]
-            # print(perm)
-            
             # new bijector
             s = len(transformation.param_names_in)
             split = tfb.Split([s] + [1] * (flow.num_params-s))
