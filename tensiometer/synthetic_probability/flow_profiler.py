@@ -30,7 +30,7 @@ from getdist.densities import Density1D, Density2D
 
 # tensiometer imports:
 from .. import utilities as utils
-from . import prior_bijectors as pb
+from . import fixed_bijectors as pb
 
 ###############################################################################
 # utility functions:

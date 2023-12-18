@@ -8,18 +8,29 @@ This file contains the definition of the trainable bijectors that are needed to 
 import numpy as np
 import pickle
 from collections.abc import Iterable
+import functools
+import collections
 
+# tensorflow imports:
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability.python.bijectors import bijector as bijector_lib
-from tensorflow_probability.python.internal import parameter_properties
 from tensorflow.keras.layers import Input, Lambda, Dense
 from tensorflow.keras.models import Model, Sequential
 
-from .. import utilities as utils
+# tensorflow internal imports:
+from tensorflow_probability.python.internal import parameter_properties
+from tensorflow_probability.python.internal import dtype_util
+from tensorflow_probability.python.internal import tensor_util
+from tensorflow_probability.python.internal import tensorshape_util
 
+# tensorflow aliases:
 tfb = tfp.bijectors
 tfd = tfp.distributions
+
+# local imports:
+from .. import utilities as utils
+from . import fixed_bijectors as fixed_bijectors
 
 ###############################################################################
 # utility function to generate random permutations with minimum stack variance:
@@ -36,10 +47,20 @@ def min_var_permutations(d, n, min_number=10000):
     :return: the permutation that has less variance
     """
     permutation = None
+    identity = np.arange(d)
     perm_var = np.inf
-    for i in range(max(min_number, 2 * d * n)):
-        _temp_perm = [np.random.permutation(d) for _ in range(n)]
+    for _ in range(max(min_number, 2 * d * n)):
+        # draw the permutation ensemble:
+        _n_perm = 0
+        _temp_perm = []
+        while _n_perm < n:
+            _temp = np.random.permutation(d)
+            if not np.all(_temp == identity):
+                _temp_perm.append(_temp)
+                _n_perm += 1
+        # calculate variance:
         _temp_var = np.var(np.sum(_temp_perm, axis=0))
+        # save minimum:
         if _temp_var < perm_var:
             perm_var = _temp_var
             permutation = _temp_perm
@@ -70,7 +91,6 @@ class TrainableTransformation(object):
 ###############################################################################
 # class to build a scaling, rotation and shift bijector:
 
-
 class ScaleRotoShift(tfb.Bijector):
 
     def __init__(
@@ -80,7 +100,7 @@ class ScaleRotoShift(tfb.Bijector):
             roto=True,
             shift=True,
             validate_args=False,
-            initializer='zeros',
+            initializer='glorot_uniform',
             name='Affine',
             dtype=tf.float32):
         """
@@ -176,6 +196,185 @@ class ScaleRotoShift(tfb.Bijector):
     def _parameter_properties(cls, dtype):
         return {'shift': parameter_properties.ParameterProperties()}
 
+###############################################################################
+# class to build a circular spline:
+
+_SplineShared = collections.namedtuple(
+    'SplineShared', 'range_min,range_max,out_of_bounds,out_of_bounds_up,out_of_bounds_dn,x_k,y_k,d_k,d_kp1,h_k,w_k,s_k')
+
+class CircularRationalQuadraticSpline(tfb.RationalQuadraticSpline):
+    """
+    Rational quadratic spline that has non-zero slope at the boundaries.
+    """
+    
+    def __init__(self,
+                 bin_widths,
+                 bin_heights,
+                 knot_slopes,
+                 boundary_knot_slope,
+                 range_min=-1,
+                 range_max=1,
+                 validate_args=False,
+                 name=None):
+
+        with tf.name_scope(name or 'RationalQuadraticSpline') as name:
+
+            dtype = dtype_util.common_dtype(
+                    [bin_widths, bin_heights, knot_slopes, range_min, boundary_knot_slope],
+                    dtype_hint=tf.float32)
+            
+            self._boundary_knot_slope = tensor_util.convert_nonref_to_tensor(
+                boundary_knot_slope, dtype=dtype, name='boundary_knot_slope')
+            
+            self._range_max = tensor_util.convert_nonref_to_tensor(
+                range_max, dtype=dtype, name='range_max')
+
+            super(CircularRationalQuadraticSpline, self).__init__(
+                bin_widths=bin_widths,
+                bin_heights=bin_heights,
+                knot_slopes=knot_slopes,
+                range_min=range_min,
+                validate_args=validate_args,
+                name=name)
+
+    @property
+    def range_max(self):
+        return self._range_max
+
+    def _compute_shared(self, x=None, y=None):
+        """
+        See documentation of tfb.RationalQuadraticSpline._compute_shared.
+        """
+
+        assert (x is None) != (y is None)
+        is_x = x is not None
+
+
+        range_min = tf.convert_to_tensor(self.range_min, name='range_min')
+        range_max = tf.convert_to_tensor(self.range_max, name='range_max')  
+
+        kx = tfb.rational_quadratic_spline._knot_positions(self.bin_widths, range_min)
+        ky = tfb.rational_quadratic_spline._knot_positions(self.bin_heights, range_min)
+        kd = tf.concat([tf.expand_dims(self._boundary_knot_slope, -1), 
+                        self.knot_slopes, 
+                        tf.expand_dims(self._boundary_knot_slope, -1)], axis=-1)
+
+        kx_or_ky = kx if is_x else ky
+                
+        kx_or_ky_min = kx_or_ky[..., 0]
+        kx_or_ky_max = kx_or_ky[..., -1]
+        
+        x_or_y = x if is_x else y
+        
+        out_of_bounds_up = x_or_y >= kx_or_ky_max
+        out_of_bounds_dn = x_or_y <= kx_or_ky_min
+        out_of_bounds = out_of_bounds_dn | out_of_bounds_up
+
+        x_or_y = tf.where(out_of_bounds, kx_or_ky_min, x_or_y)
+
+        shape = functools.reduce(
+            tf.broadcast_dynamic_shape,
+            (
+                tf.shape(x_or_y[..., tf.newaxis]),  # Add a n_knots dim.
+                tf.shape(kx),
+                tf.shape(ky),
+                tf.shape(kd)))
+
+        bc_x_or_y = tf.broadcast_to(x_or_y, shape[:-1])
+        bc_kx = tf.broadcast_to(kx, shape)
+        bc_ky = tf.broadcast_to(ky, shape)
+        bc_kd = tf.broadcast_to(kd, shape)
+        bc_kx_or_ky = bc_kx if is_x else bc_ky
+        indices = tf.maximum(
+            tf.zeros([], dtype=tf.int64),
+            tf.searchsorted(
+                bc_kx_or_ky[..., :-1],
+                bc_x_or_y[..., tf.newaxis],
+                side='right',
+                out_type=tf.int64) - 1)
+
+        def gather_squeeze(params, indices):
+            rank = tensorshape_util.rank(indices.shape)
+            if rank is None:
+                raise ValueError('`indices` must have statically known rank.')
+            return tf.gather(params, indices, axis=-1, batch_dims=rank - 1)[..., 0]
+
+        x_k = gather_squeeze(bc_kx, indices)
+        x_kp1 = gather_squeeze(bc_kx, indices + 1)
+        y_k = gather_squeeze(bc_ky, indices)
+        y_kp1 = gather_squeeze(bc_ky, indices + 1)
+        d_k = gather_squeeze(bc_kd, indices)
+        d_kp1 = gather_squeeze(bc_kd, indices + 1)
+        h_k = y_kp1 - y_k
+        w_k = x_kp1 - x_k
+        s_k = h_k / w_k
+                        
+        return _SplineShared(
+            range_min=range_min,
+            range_max=range_max,
+            out_of_bounds=out_of_bounds,
+            out_of_bounds_up=out_of_bounds_up,
+            out_of_bounds_dn=out_of_bounds_dn,
+            x_k=x_k,
+            y_k=y_k,
+            d_k=d_k,
+            d_kp1=d_kp1,
+            h_k=h_k,
+            w_k=w_k,
+            s_k=s_k)
+        
+    def _forward(self, x):
+        """Compute the forward transformation (Appendix A.1)."""
+        d = self._compute_shared(x=x)
+        relx = (x - d.x_k) / d.w_k
+        spline_val = (
+            d.y_k + ((d.h_k * (d.s_k * relx**2 + d.d_k * relx * (1 - relx))) /
+                    (d.s_k + (d.d_kp1 + d.d_k - 2 * d.s_k) * relx * (1 - relx))))
+        # apply bounds:
+        y_val = tf.where(d.out_of_bounds_up, 
+                         self._boundary_knot_slope * (x-d.range_max) +d.range_max, 
+                         spline_val)
+        y_val = tf.where(d.out_of_bounds_dn, 
+                         self._boundary_knot_slope * (x-d.range_min) +d.range_min, 
+                         y_val)
+        return y_val
+
+    def _inverse(self, y):
+        """Compute the inverse transformation (Appendix A.3)."""
+        d = self._compute_shared(y=y)
+        rely = tf.where(d.out_of_bounds, tf.zeros([], dtype=y.dtype), y - d.y_k)
+        term2 = rely * (d.d_kp1 + d.d_k - 2 * d.s_k)
+        # These terms are the a, b, c terms of the quadratic formula.
+        a = d.h_k * (d.s_k - d.d_k) + term2
+        b = d.h_k * d.d_k - term2
+        c = -d.s_k * rely
+        # The expression used here has better numerical behavior for small 4*a*c.
+        relx = tf.where(
+            tf.equal(rely, 0), tf.zeros([], dtype=a.dtype),
+            (2 * c) / (-b - tf.sqrt(b**2 - 4 * a * c)))
+
+        # apply bounds:
+        x_val = tf.where(d.out_of_bounds_up, 
+                         self._boundary_knot_slope * (y-d.range_max) +d.range_max, 
+                         relx * d.w_k + d.x_k)
+        x_val = tf.where(d.out_of_bounds_dn, 
+                         self._boundary_knot_slope * (y-d.range_min) +d.range_min, 
+                         x_val) 
+        return x_val
+
+    def _forward_log_det_jacobian(self, x):
+        """Compute the forward derivative (Appendix A.2)."""
+        d = self._compute_shared(x=x)
+        relx = (x - d.x_k) / d.w_k
+        relx = tf.where(d.out_of_bounds, tf.constant(.5, x.dtype), relx)
+       
+        grad = (
+            2 * tf.math.log(d.s_k) +
+            tf.math.log(d.d_kp1 * relx**2 + 2 * d.s_k * relx * (1 - relx) +  # newln
+                        d.d_k * (1 - relx)**2) -
+            2 * tf.math.log((d.d_kp1 + d.d_k - 2 * d.s_k) * relx *
+                            (1 - relx) + d.s_k))
+        return tf.where(d.out_of_bounds, tf.math.log(self._boundary_knot_slope), grad)
 
 ###############################################################################
 # helper class to build a spline-autoregressive flow, base spline class:
@@ -196,9 +395,10 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         range_max=5.,
         range_min=None,
         slope_min=0.1,
+        dtype=tf.float32,
     ):
         parameters = dict(locals())
-        name = name or 'masked_autoregressive_flow'
+        name = name or 'spline_flow'
 
         if range_min is None:
             assert range_max > 0.
@@ -216,7 +416,8 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                 def _bijector_fn(x, **condition_kwargs):
 
                     def reshape(params):
-                        factor = tf.cast(interval_width, dtype=tf.float32)
+                        
+                        factor = tf.cast(interval_width, dtype=dtype)
 
                         bin_widths = params[..., :spline_knots]
                         bin_widths = tf.math.softmax(bin_widths)
@@ -259,9 +460,116 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                 name=name)
 
 
+class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
+
+    def __init__(
+        self,
+        shift_and_log_scale_fn=None,
+        bijector_fn=None,
+        is_constant_jacobian=False,
+        validate_args=False,
+        unroll_loop=False,
+        event_ndims=1,
+        name=None,
+        spline_knots=8,
+        range_max=5.,
+        range_min=None,
+        equispaced_x_knots=False,
+        equispaced_y_knots=False,
+        smooth_derivative=False,
+        dtype=tf.float32,
+    ):
+        parameters = dict(locals())
+        name = name or 'circular_spline_flow'
+
+        # set ranges:
+        if range_min is None:
+            assert range_max > 0.
+            range_min = -range_max
+        interval_width = range_max - range_min
+        
+        # equispaced knots handling:
+        if equispaced_x_knots or equispaced_y_knots:
+            delta = (range_max-range_min)/(spline_knots)
+        if equispaced_x_knots and equispaced_y_knots:
+            raise ValueError('Cannot have both x and y knots equispaced.')
+
+        with tf.name_scope(name) as name:
+            self._unroll_loop = unroll_loop
+            self._event_ndims = event_ndims
+            if bool(shift_and_log_scale_fn) == bool(bijector_fn):
+                raise ValueError('Exactly one of `shift_and_log_scale_fn` and '
+                                 '`bijector_fn` should be specified.')
+            if shift_and_log_scale_fn:
+
+                def _bijector_fn(x, **condition_kwargs):
+
+                    def reshape(params):
+                        
+                        factor = tf.cast(interval_width, dtype=dtype)
+
+                        # get x grid:
+                        if not equispaced_x_knots:
+                            bin_widths = params[..., :spline_knots]
+                            bin_widths = tf.math.softmax(bin_widths)
+                            bin_widths = tf.math.scalar_mul(factor, bin_widths)
+                        else:
+                            bin_widths = delta * tf.ones_like(params[..., :spline_knots])
+
+                        # get y grid:
+                        if not equispaced_y_knots:                                                    
+                            bin_heights = params[..., spline_knots:spline_knots * 2]
+                            bin_heights = tf.math.softmax(bin_heights)
+                            bin_heights = tf.math.scalar_mul(factor, bin_heights)
+                        else:
+                            bin_heights = delta * tf.ones_like(params[..., :spline_knots])
+
+                        # get knot slopes:
+                        _start_idx = 2*spline_knots
+                        if equispaced_x_knots:
+                            _start_idx -= spline_knots
+                        if equispaced_y_knots:
+                            _start_idx -= spline_knots
+
+                        knot_slopes = params[..., _start_idx:]
+                        knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                        boundary_knot_slope = knot_slopes[..., -1]                        
+                        knot_slopes = knot_slopes[..., :-1]
+
+                        return bin_widths, bin_heights, knot_slopes, boundary_knot_slope
+
+                    params = shift_and_log_scale_fn(x, **condition_kwargs)
+                    bin_widths, bin_heights, knot_slopes, boundary_knot_slope = reshape(params)
+                                                                                
+                    temp_bijector = CircularRationalQuadraticSpline(
+                                        bin_widths=bin_widths,
+                                        bin_heights=bin_heights,
+                                        knot_slopes=knot_slopes,
+                                        boundary_knot_slope=boundary_knot_slope,
+                                        range_min=range_min,
+                                        range_max=range_max,
+                                        validate_args=False)
+
+                    return temp_bijector
+
+                bijector_fn = _bijector_fn
+
+            # Still do this assignment for variable tracking.
+            self._shift_and_log_scale_fn = shift_and_log_scale_fn
+            self._bijector_fn = bijector_fn
+
+            # Call the init method of the Bijector class and not that of MaskedAutoregressiveFlow which we are overriding
+            bijector_lib.Bijector.__init__(
+                self,
+                forward_min_event_ndims=self._event_ndims,
+                is_constant_jacobian=is_constant_jacobian,
+                validate_args=validate_args,
+                parameters=parameters,
+                name=name)
+            
+
 ###############################################################################
 # Make separate NNs for each dimension:
-
 
 def build_nn(dim_in, dim_out, hidden_units, activation=tf.math.asinh, **kwargs):
     if len(hidden_units) == 0 or dim_in == 0:
@@ -317,18 +625,31 @@ class AutoregressiveFlow(TrainableTransformation):
             autoregressive_type='masked',  # 'masked' or 'flex'
             n_transformations=None,
             hidden_units=None,
+            periodic_params=None,
             activation=tf.math.asinh,
             kernel_initializer=None,
             permutations=True,
             scale_roto_shift=False,
+            # spline parameters:
             map_to_unitcube=False,
             spline_knots=8,
             range_max=5.,
+            equispaced_x_knots=False,
+            equispaced_y_knots=False,
+            # other parameters:
             autoregressive_scale_with_dim=True,
             autoregressive_identity_dims=None,
             int_np_prec=np.int32,
             feedback=0,
             **kwargs):
+        """
+        :param num_params: number of parameters of the distribution.
+        :param transformation_type: type of transformation, either 'affine' or 'spline'.
+        :param autoregressive_type: type of autoregressive network, either 'masked' or 'flex'.
+        :param n_transformations: number of transformations to concatenate.
+        :param hidden_units: list of hidden units for the autoregressive network.
+        :param periodic_params: bool list of parameters that are periodic.
+        """
 
         if n_transformations is None:
             n_transformations = int(np.ceil(2 * np.log2(num_params) + 2))
@@ -359,9 +680,13 @@ class AutoregressiveFlow(TrainableTransformation):
                 _permutations = False
         self.permutations = _permutations
 
+        # check type of architecture:
         if map_to_unitcube:
             assert transformation_type == 'spline'
-
+        #if periodic_params is not None: 
+        #    assert transformation_type == 'spline'
+        
+        # initialize kernel initializer:    
         if kernel_initializer is None:
             kernel_initializer = tf.keras.initializers.VarianceScaling(
                 scale=1. / n_transformations,
@@ -371,11 +696,32 @@ class AutoregressiveFlow(TrainableTransformation):
 
         # Build transformed distribution
         bijectors = []
+
+        # handle first bijectors for periodic parameters:
+        if periodic_params is not None:
+            # apply shift, modulus and scaling bijector to periodic parameters:
+            temp_bijectors = []
+            for i in range(num_params):
+                if periodic_params[i]:
+                    temp_bijector_2 = []
+                    # different strategies for splines and mafs:
+                    if transformation_type == 'spline':
+                        temp_bijector_2.append(tfb.Scale(1./range_max))
+                    elif transformation_type == 'affine':
+                        temp_bijector_2.append(tfb.Tanh())
+                    # add bijector to list:
+                    temp_bijectors.append(tfb.Chain(temp_bijector_2))
+                else:
+                    temp_bijectors.append(tfb.Identity())
+            split = tfb.Split(num_params, axis=-1)
+            bijectors.append(tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name='PeriodicPreprocessing'))
+        
         for i in range(n_transformations):
 
             # add permutations:
             if _permutations:
-                bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
+                if periodic_params is not None and i > 0:
+                    bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
             # add map to unit cube
             if map_to_unitcube:
                 bijectors.append(tfb.Invert(tfb.NormalCDF()))
@@ -387,7 +733,14 @@ class AutoregressiveFlow(TrainableTransformation):
             if _transformation_type == 'affine':
                 transf_params = 2
             elif _transformation_type == 'spline':
-                transf_params = 3 * spline_knots - 1
+                if periodic_params is not None:
+                    transf_params = 3 * spline_knots
+                    if equispaced_x_knots:
+                        transf_params -= spline_knots
+                    if equispaced_y_knots:
+                        transf_params -= spline_knots
+                else:
+                    transf_params = 3 * spline_knots - 1
             else:
                 raise ValueError
 
@@ -418,10 +771,18 @@ class AutoregressiveFlow(TrainableTransformation):
             elif _transformation_type == 'spline':
                 if map_to_unitcube:
                     transformation = SplineHelper(
-                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_min=0., range_max=1.)
+                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_min=0., range_max=1.,
+                        **utils.filter_kwargs(kwargs, SplineHelper))
                 else:
-                    transformation = SplineHelper(
-                        shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max)
+                    if periodic_params is not None:
+                        transformation = CircularSplineHelper(
+                            shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max,
+                            equispaced_x_knots=equispaced_x_knots, equispaced_y_knots=equispaced_y_knots,
+                            **utils.filter_kwargs(kwargs, CircularSplineHelper))
+                    else:
+                        transformation = SplineHelper(
+                            shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max,
+                            **utils.filter_kwargs(kwargs, SplineHelper))
             bijectors.append(transformation)
             if map_to_unitcube:
                 bijectors.append(tfb.NormalCDF())
@@ -433,11 +794,6 @@ class AutoregressiveFlow(TrainableTransformation):
                         num_params,
                         name='affine_' + str(i) + '_' + str(np.random.randint(0, 100000)),
                         **utils.filter_kwargs(kwargs, ScaleRotoShift)))
-
-            # if _permutations:  # add the inverse permutation
-            #     inv_perm = np.zeros_like(_permutations[i])
-            #     inv_perm[_permutations[i]] = np.arange(len(inv_perm))
-            #     bijectors.append(tfb.Permute(inv_perm.astype(int_np_prec)))
 
         self.bijector = tfb.Chain(bijectors)
 
@@ -477,7 +833,7 @@ class AutoregressiveFlow(TrainableTransformation):
         maf = AutoregressiveFlow(
             num_params=len(permutations[0]),
             permutations=permutations,
-            **utils.filter_kwargs(kwargs, AutoregressiveFlow))
+            **kwargs)
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
         checkpoint.read(path)
         return maf

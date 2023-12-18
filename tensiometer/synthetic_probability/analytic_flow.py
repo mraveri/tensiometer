@@ -123,10 +123,6 @@ class analytic_flow():
         else:
             _coord = coord
         # cheaply vectorize:
-        #if len(_coord.shape) > 1:
-        #    return self.cast(np.array([self._jacobian_logP(_c)[0] for _c in _coord]))
-        #else:
-        #    return self.cast(self._jacobian_logP(_coord))
         if len(_coord.shape) > 1:
             return self.cast(np.array([scipy.optimize.approx_fprime(_c, lambda x: np.log(self._dist.pdf(x))) for _c in _coord]))
         else:

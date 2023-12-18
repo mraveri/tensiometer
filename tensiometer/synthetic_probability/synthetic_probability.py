@@ -25,7 +25,7 @@ from matplotlib import pyplot as plt
 from . import lr_schedulers as lr
 from . import loss_functions as loss
 from . import trainable_bijectors as tb
-from . import prior_bijectors as pb
+from . import fixed_bijectors as pb
 
 from .. import utilities as utils
 from .. import gaussian_tension
@@ -135,10 +135,11 @@ class FlowCallback(Callback):
             chain,
             param_names=None,
             param_ranges=None,
+            periodic_params=None,
             feedback=1,
             plot_every=10,
             prior_bijector='ranges',
-            apply_pregauss=True,
+            apply_rescaling=True,
             trainable_bijector='AutoregressiveFlow',
             validation_split=0.1,
             **kwargs):
@@ -153,9 +154,13 @@ class FlowCallback(Callback):
         self.plot_every = plot_every
 
         # initialize internal samples from chain:
-        self._init_chain(chain, param_names=param_names, param_ranges=param_ranges, **kwargs)
+        self._init_chain(chain, 
+                         param_names=param_names, 
+                         param_ranges=param_ranges, 
+                         periodic_params=periodic_params,
+                         **kwargs)
         # initialize fixed bijector:
-        self._init_fixed_bijector(prior_bijector=prior_bijector, apply_pregauss=apply_pregauss)
+        self._init_fixed_bijector(prior_bijector=prior_bijector, apply_rescaling=apply_rescaling)
         # initialize trainable bijector:
         self._init_trainable_bijector(trainable_bijector=trainable_bijector, **kwargs)
         # initialize training dataset:
@@ -172,14 +177,15 @@ class FlowCallback(Callback):
         self.is_trained = False
         self.MAP_coord = None
         self.MAP_logP = None
-
-    def _init_chain(self, chain=None, param_names=None, param_ranges=None, init_nearest=False, **kwargs):
+        
+    def _init_chain(self, chain=None, param_names=None, param_ranges=None, periodic_params=None, init_nearest=False, **kwargs):
         """
         Read in MCMC sample chain and save internal quantities.
         """
         # return if we have no chain:
         if chain is None:
             return None
+        
         # feedback:
         if self.feedback > 0:
             print('* Initializing samples')
@@ -207,6 +213,17 @@ class FlowCallback(Callback):
         # save param labels:
         self.param_labels = [name.label for name in chain.getParamNames().parsWithNames(param_names)]
 
+        # check periodic parameters:
+        if periodic_params is not None:
+            if not isinstance(periodic_params, Iterable):
+                periodic_params = [periodic_params]
+            for name in periodic_params:
+                if name not in param_names:
+                    raise ValueError('Periodic parameter ', name, ' is not in the chain.')
+        else:
+            periodic_params = []
+        self.periodic_params = periodic_params
+        
         # initialize ranges:
         self.parameter_ranges = {}
         for name in param_names:
@@ -281,7 +298,7 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_fixed_bijector(self, prior_bijector='ranges', apply_pregauss=True):
+    def _init_fixed_bijector(self, prior_bijector='ranges', apply_rescaling=True):
         """
         Intitialize prior and whitening bijector.
         """
@@ -294,14 +311,18 @@ class FlowCallback(Callback):
             # extend slightly the ranges to avoid overflows:
             temp_ranges = []
             for name in self.param_names:
-                temp_range = self.parameter_ranges[name]
-                center = 0.5 * (temp_range[0] + temp_range[1])
-                length = temp_range[1] - temp_range[0]
-                eps = 0.001
-                temp_ranges.append({
-                    'lower': self.cast(center - 0.5 * length * (1. + eps)),
-                    'upper': self.cast(center + 0.5 * length * (1. + eps))
-                })
+                if name not in self.periodic_params:
+                    temp_range = self.parameter_ranges[name]
+                    center = 0.5 * (temp_range[0] + temp_range[1])
+                    length = temp_range[1] - temp_range[0]
+                    eps = 0.001
+                    temp_ranges.append({
+                        'lower': self.cast(center - 0.5 * length * (1. + eps)),
+                        'upper': self.cast(center + 0.5 * length * (1. + eps)),
+                        'mode': 'uniform'
+                    })
+                else:
+                    temp_ranges.append(None)
             # define bijector:
             self.prior_bijector = pb.prior_bijector_helper(temp_ranges)
         elif isinstance(prior_bijector, tfp.bijectors.Bijector):
@@ -315,11 +336,24 @@ class FlowCallback(Callback):
             print('    - using prior bijector:', prior_bijector)
 
         # Whitening bijector:
-        if apply_pregauss:
+        if apply_rescaling:
+            # calculate gaussian approximation, leaving out periodic parameters:
             temp_X = self.prior_bijector.inverse(self.chain_samples).numpy()
             temp_chain = MCSamples(samples=temp_X, weights=self.chain_weights, names=self.param_names)
             temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=self.param_names)
-            if apply_pregauss == 'independent':
+            # calculate mean and covariance:
+            _mean = temp_gaussian_approx.means[0]
+            _cov = temp_gaussian_approx.covs[0]
+            # periodic parameters are handled differently, rescaling to unit box:
+            if len(self.periodic_params) > 0:
+                for name in self.periodic_params:
+                    _index = self.param_names.index(name)
+                    a, b = self.parameter_ranges[name]
+                    _mean[_index] = 0.5*(a+b)
+                    _cov[_index, :] = 0.0
+                    _cov[:, _index] = 0.0
+                    _cov[_index, _index] = (0.5*(b-a))**2
+            if apply_rescaling == 'independent':
                 temp_dist = tfd.MultivariateNormalDiag(
                     loc=self.cast(temp_gaussian_approx.means[0]),
                     scale_diag=self.cast(np.sqrt(np.diagonal(temp_gaussian_approx.covs[0]))))
@@ -331,10 +365,36 @@ class FlowCallback(Callback):
 
         # feedback:
         if self.feedback > 1:
-            if apply_pregauss:
-                print('    - whitening samples')
+            if apply_rescaling:
+                print('    - rescaling samples')
             else:
-                print('    - not whitening samples')
+                print('    - not rescaling samples')
+
+        # if we have periodic coordinates we need to add a modulus bijector:
+        if len(self.periodic_params) > 0:
+            # check if we are doing rescalings:
+            if not apply_rescaling:
+                raise ValueError('Cannot use periodic parameters without rescaling')
+            # chain the bijectors and evaluate them:
+            _temp_bijectors = tfb.Chain(self.bijectors) 
+            _temp_samples = _temp_bijectors.inverse(self.chain_samples).numpy()
+            # build modulus bijector:
+            temp_bijectors = []
+            for name in self.param_names:
+                if name in self.periodic_params:
+                    # get index of periodic parameter:
+                    _index = self.param_names.index(name)
+                    # compute circular mean:
+                    _circ_mean = np.arctan2(np.mean(np.sin(np.pi*_temp_samples[:,_index])), np.mean(np.cos(np.pi*_temp_samples[:,_index]))) / np.pi
+                    _circ_mean = self.cast(_circ_mean)
+                    # add shift and modulus bijector:
+                    temp_bijectors.append(tfb.Chain([pb.Mod1D(minval=-1.0, maxval=1.0), tfb.Shift(-_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)], name='ShiftMod1D'))
+                else:
+                    temp_bijectors.append(tfb.Identity())
+            n = len(self.param_names)
+            split = tfb.Split(n, axis=-1)
+            bijector = tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name='ModBijector')
+            self.bijectors.append(bijector)
 
         self.fixed_bijector = tfb.Chain(self.bijectors)
 
@@ -351,7 +411,10 @@ class FlowCallback(Callback):
 
         # select model for trainable transformation:
         if trainable_bijector == 'AutoregressiveFlow':
-            self.trainable_transformation = tb.AutoregressiveFlow(self.num_params, feedback=self.feedback, **kwargs)
+            self.trainable_transformation = tb.AutoregressiveFlow(self.num_params, 
+                                                                  periodic_params=[True if name in self.periodic_params else False for name in self.param_names],
+                                                                  feedback=self.feedback, 
+                                                                  **kwargs)
         elif isinstance(trainable_bijector, tb.TrainableTransformation):
             self.trainable_transformation = trainable_bijector
         elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
@@ -820,7 +883,7 @@ class FlowCallback(Callback):
             names=self.param_names,
             labels=self.param_labels,
             ranges=self.parameter_ranges,
-            name_tag=self.name_tag,
+            name_tag=kwargs.pop('name_tag', self.name_tag),
             **kwargs)
         #
         return mc_samples
@@ -1703,7 +1766,7 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             prior_bijector=None,
             trainable_bijector=None,
             rng=np.random.default_rng(seed=seed),
-            apply_pregauss='independent',
+            apply_rescaling='independent',
             feedback=0)
 
         self.flow_out = FlowCallback(
@@ -1712,7 +1775,7 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             prior_bijector=None,
             trainable_bijector=None,
             rng=np.random.default_rng(seed=seed),
-            apply_pregauss='independent',
+            apply_rescaling='independent',
             feedback=0)
 
         self.num_training_samples = len(self.flow_in.training_samples)
@@ -1743,9 +1806,9 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
                 steps_per_epoch = int(self.num_training_samples / batch_size)
 
         if verbose is None:
-            if self.feedback == 0:
+            if self.feedback < 3:
                 verbose = 0
-            elif self.feedback > 0:
+            else:
                 verbose = 1
 
         hist = self.model.fit(
