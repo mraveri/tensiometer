@@ -18,7 +18,15 @@ import scipy
 @tf.function
 def tf_CPC_decomposition(matrix_a, matrix_b):
     """
-    CPC decomposition in tensorflow
+    Covariant Principal Components decomposition impolemented in tensorflow.
+
+    Args:
+        matrix_a (tf.Tensor): Input matrix A.
+        matrix_b (tf.Tensor): Input matrix B.
+
+    Returns:
+        tf.Tensor: Eigenvalues of A_prime.
+        tf.Tensor: Eigenvectors of A_prime.
     """
     # compute the eigenvalues of b, lambda_b:
     _lambda_b, _phi_b = tf.linalg.eigh(matrix_b)

@@ -22,25 +22,51 @@ tfd = tfp.distributions
 np_prec = np.float32
 
 ###############################################################################
-# auxiliary definitions of analytic bijectors for the prior:
+# Definitions of analytic bijectors for Gaussianizing the prior:
 
 def uniform_prior(a, b, prec=np_prec):
     """
-    Returns bijector for 1D uniform distribution in [a, b].
+    Returns bijector that Gaussianize the 1D uniform distribution in [a, b].
+
+    Parameters:
+    a (float): The lower bound of the uniform distribution.
+    b (float): The upper bound of the uniform distribution.
+    prec (function, optional): The precision function used for numerical stability. Defaults to np_prec.
+
+    Returns:
+    tfb.Chain: The bijector Gaussianizing the uniform distribution.
     """
     return tfb.Chain([tfb.Shift(prec((a+b)/2)), tfb.Scale(prec(b-a)), tfb.Shift(-0.5), tfb.NormalCDF()])
 
 
 def normal(mean, sigma, prec=np_prec):
     """
-    Returns bijector for 1D normal distribution with mean and variance sigma.
+    Returns bijector that Gaussianize the 1D normal distribution with mean and variance sigma.
+    This ammounts to a shift and rescaling since the normal distribution is already Gaussian.
+
+    Parameters:
+    mean (float): The mean of the normal distribution.
+    sigma (float): The standard deviation of the normal distribution.
+    prec (float, optional): The precision parameter. Defaults to np_prec.
+
+    Returns:
+    tfb.Chain: The bijector for the normal distribution.
     """
     return tfb.Chain([tfb.Shift(prec(mean)), tfb.Scale(prec(sigma))])
 
 
 def multivariate_normal(mean, covariance, prec=np_prec):
     """
-    Returns bijector for ND normal distribution with mean mu and covariance.
+    Returns bijector to Gaussianize the ND normal distribution with mean mu and given covariance.
+    This ammounts to a shift and rescaling since the normal distribution is already Gaussian.
+
+    Parameters:
+    mean (array-like): Mean of the normal distribution.
+    covariance (array-like): Covariance matrix of the normal distribution.
+    prec (dtype, optional): Precision type for numerical computations. Defaults to np_prec.
+
+    Returns:
+    tfb.Bijector: Bijector for the multivariate normal distribution.
     """
     return tfd.MultivariateNormalTriL(mean=mean.astype(prec), scale_tril=tf.linalg.cholesky(covariance.astype(prec))).bijector
 
@@ -104,6 +130,21 @@ def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, *
 
 
 class Mod1D(tfb.Bijector):
+    """
+    A bijector that performs modulus operation on a 1D input.
+
+    This bijector maps an input `x` to `x - floor((x - minval) / delta) * delta`,
+    where `minval` is the lower bound of the modulus and `delta` is the difference
+    between the upper and lower bounds.
+
+    Args:
+        minval (float): The lower bound of the modulus. Default is 0.0.
+        maxval (float): The upper bound of the modulus. Default is 1.0.
+        validate_args (bool): Whether to validate input arguments. Default is False.
+        name (str): The name of the bijector. Default is 'mod'.
+        dtype (tf.DType): The data type of the input. Default is np_prec.
+
+    """
 
     def __init__(
             self,
@@ -113,8 +154,14 @@ class Mod1D(tfb.Bijector):
             name='mod',
             dtype=np_prec):
         """
-        :param min: lower bound of the modulus
-        :param max: upper bound of the modulus
+        Initializes the Mod1D bijector.
+
+        Args:
+            minval (float): The lower bound of the modulus.
+            maxval (float): The upper bound of the modulus.
+            validate_args (bool): Whether to validate input arguments.
+            name (str): The name of the bijector.
+            dtype (tf.DType): The data type of the input.
         """
 
         parameters = dict(locals())
