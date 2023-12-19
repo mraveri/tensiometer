@@ -691,8 +691,6 @@ class AutoregressiveFlow(TrainableTransformation):
                 periodic_params = None
         if periodic_params is not None: 
             assert transformation_type == 'spline'
-            
-        print('*** periodic_params', periodic_params)
         
         # initialize kernel initializer:    
         if kernel_initializer is None:
@@ -728,8 +726,12 @@ class AutoregressiveFlow(TrainableTransformation):
 
             # add permutations:
             if _permutations:
-                if periodic_params is not None and i > 0:
+                if periodic_params is not None:
+                    if i > 0:
+                        bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
+                else:
                     bijectors.append(tfb.Permute(_permutations[i].astype(int_np_prec)))
+
             # add map to unit cube
             if map_to_unitcube:
                 bijectors.append(tfb.Invert(tfb.NormalCDF()))
