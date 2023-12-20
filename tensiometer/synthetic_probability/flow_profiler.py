@@ -10,10 +10,7 @@ import time
 import tqdm
 import sys
 import copy
-import tensorflow as tf
-import tensorflow_probability as tfp
 import numpy as np
-
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d
 from scipy.interpolate import LinearNDInterpolator
@@ -21,6 +18,10 @@ from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from itertools import combinations
 
 from numba import njit
+
+# tensorflow imports:
+import tensorflow as tf
+import tensorflow_probability as tfp
 
 # getdist imports:
 import getdist.mcsamples as mcsamples

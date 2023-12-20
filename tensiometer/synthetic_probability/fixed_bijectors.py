@@ -14,7 +14,6 @@ import numpy as np
 # tensorflow imports:
 import tensorflow as tf
 import tensorflow_probability as tfp
-
 tfb = tfp.bijectors
 tfd = tfp.distributions
 

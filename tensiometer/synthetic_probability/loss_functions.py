@@ -11,9 +11,9 @@ import numpy as np
 
 # tensorflow imports:
 import tensorflow as tf
-from keras.utils import tf_utils
-from keras import backend
-from keras.utils import losses_utils
+from tensorflow.python.keras.utils import tf_utils
+from tensorflow.python.keras import backend
+from tensorflow.python.keras.utils import losses_utils
 
 ###############################################################################
 # standard normalizing flow loss function:

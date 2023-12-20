@@ -9,9 +9,10 @@ This has still many things to do to be a fully functioning version of the main f
 
 import numpy as np
 import scipy.optimize
-
 import numdifftools as numdiff
 from getdist import MCSamples
+
+# tensorflow imports:
 import tensorflow as tf
 
 # relative imports:

@@ -5,11 +5,12 @@ This file contains learning rate schedulers for tensorflow optimization.
 ###############################################################################
 # initial imports and set-up:
 
-import tensorflow as tf
-from tensorflow.keras.callbacks import Callback
-from tensorflow.python.platform import tf_logging as logging
-from keras.utils import io_utils
 import numpy as np
+
+# tensorflow imports:
+import tensorflow as tf
+from tensorflow.python.keras.callbacks import Callback
+from tensorflow.python.platform import tf_logging as logging
 
 ###############################################################################
 # Exponential decay:
@@ -302,7 +303,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
                             new_lr = max(new_lr, self.min_lr)
                             tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
                             if self.verbose > 0:
-                                io_utils.print_msg(
+                                tf.print(
                                     f"\nEpoch {epoch +1}: "
                                     "LRAdaptLossSlopeEarlyStop reducing "
                                     f"learning rate to {new_lr}.")

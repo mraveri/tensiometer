@@ -7,9 +7,11 @@ This file needs work and is not complete.
 ###############################################################################
 # initial imports and set-up:
 
-import tensorflow as tf
 import numpy as np
 import scipy
+
+# tensorflow imports:
+import tensorflow as tf
 
 ###############################################################################
 # CPC decomposition in tensorflow:
