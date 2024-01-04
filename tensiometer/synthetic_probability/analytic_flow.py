@@ -34,11 +34,19 @@ class analytic_flow():
         """
 
         # check if the input distribution has the correct methods:
-        keys = ['sim', 'pdf']
+        keys = ['sim']
         for _k in keys:
             if not (hasattr(dist, _k) and callable(getattr(dist, _k))):
                 raise ValueError('Input distribution does not have the '+_k+' method.')
-            
+        
+        # check pdf method:
+        if not (hasattr(dist, 'log_pdf') and callable(getattr(dist, 'log_pdf'))):
+            self.has_log_pdf = False
+            if not (hasattr(dist, 'pdf') and callable(getattr(dist, 'pdf'))):
+                raise ValueError('Input distribution does not have the pdf method nor the log_pdf method.')
+        else:
+            self.has_log_pdf = True
+        
         # copy in distribution:
         self._dist = dist
         
@@ -60,7 +68,7 @@ class analytic_flow():
         if param_labels is not None:
             self.param_labels = param_labels
         else:
-            self.param_labels = [name.label for name in self._dist.paramNames.parsWithNames(self.param_names)]
+            self.param_labels = self._dist.labels
 
         # param ranges:
         if lims is not None:
@@ -114,8 +122,11 @@ class analytic_flow():
             _coord = coord.numpy()
         else:
             _coord = coord
-        #
-        return self.cast(np.log(self._dist.pdf(_coord)))
+        # return:
+        if self.has_log_pdf:
+            return self.cast(self._dist.log_pdf(_coord))
+        else:
+            return self.cast(np.log(self._dist.pdf(_coord)))
     
     def log_probability_jacobian(self, coord):
         # digest input:
