@@ -408,11 +408,14 @@ class FlowCallback(Callback):
         # feedback:
         if self.feedback > 0:
             print('* Initializing trainable bijector')
+            
+        # add periodic parameters to kwargs:
+        if 'periodic_params' not in kwargs.keys():
+            kwargs['periodic_params'] = [True if name in self.periodic_params else False for name in self.param_names]
 
         # select model for trainable transformation:
         if trainable_bijector == 'AutoregressiveFlow':
             self.trainable_transformation = tb.AutoregressiveFlow(self.num_params, 
-                                                                  periodic_params=[True if name in self.periodic_params else False for name in self.param_names],
                                                                   feedback=self.feedback, 
                                                                   **kwargs)
         elif isinstance(trainable_bijector, tb.TrainableTransformation):
@@ -427,7 +430,8 @@ class FlowCallback(Callback):
         # load from file:
         if trainable_bijector_path is not None:
             if self.trainable_transformation is not None:
-                self.trainable_transformation = self.trainable_transformation.load(trainable_bijector_path, **kwargs)
+                self.trainable_transformation = self.trainable_transformation.load(trainable_bijector_path, 
+                                                                                   **kwargs)
 
         # initialize bijector:
         if self.trainable_transformation is not None:
