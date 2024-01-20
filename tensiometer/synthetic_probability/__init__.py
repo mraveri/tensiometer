@@ -8,4 +8,4 @@ The synthetic distribution can then be evaluated at arbitrary points, is differe
 """
 
 #
-from .synthetic_probability import FlowCallback, flow_from_chain
+from .synthetic_probability import FlowCallback, flow_from_chain, average_flow_from_chain

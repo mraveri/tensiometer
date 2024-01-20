@@ -394,7 +394,7 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         spline_knots=8,
         range_max=5.,
         range_min=None,
-        slope_min=0.1,
+        slope_min=0.0001,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
@@ -428,9 +428,12 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         bin_heights = tf.math.scalar_mul(factor, bin_heights)
 
                         knot_slopes = params[..., spline_knots * 2:]
-                        # knot_slopes = tf.math.softplus(knot_slopes)
-                        # knot_slopes =slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                        # soft plus:
+                        #knot_slopes = tf.math.softplus(knot_slopes)
+                        # sigmoid:
                         knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                        # enforce minimum slope:
+                        knot_slopes =slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
 
                         return bin_widths, bin_heights, knot_slopes
 
@@ -476,7 +479,7 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
         range_min=None,
         equispaced_x_knots=False,
         equispaced_y_knots=False,
-        smooth_derivative=False,
+        slope_min=0.0001,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
@@ -532,7 +535,11 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
                             _start_idx -= spline_knots
 
                         knot_slopes = params[..., _start_idx:]
+                        # sigmoid:
                         knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                        # enforce minimum slope:
+                        knot_slopes = slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                        # get boundary slope:
                         boundary_knot_slope = knot_slopes[..., -1]                        
                         knot_slopes = knot_slopes[..., :-1]
 
@@ -807,7 +814,7 @@ class AutoregressiveFlow(TrainableTransformation):
 
         self.bijector = tfb.Chain(bijectors)
 
-        if feedback > 0:
+        if feedback > 1:
             print("    Building Autoregressive Flow")
             print("    - # transformations     :", n_transformations)
             print("    - hidden_units          :", hidden_units)

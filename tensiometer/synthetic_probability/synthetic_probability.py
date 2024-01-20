@@ -1187,6 +1187,10 @@ class FlowCallback(Callback):
         temp = kwargs.pop('trainable_bijector_path', None)
         if temp is not None:
             print('WARNING: trainable_bijector_path is set and will be ignored by load function')
+        # if feedback is not set, then set it to 0:
+        temp = kwargs.pop('feedback', None)
+        if temp is None:
+            kwargs['feedback'] = 0
         # re-create the object (we have to do this because we cannot pickle all TF things)        
         flow = FlowCallback(chain, trainable_bijector_path=outroot, **kwargs)
         # load the pickle file:
@@ -2209,6 +2213,9 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
                 flow.save(_outroot)
             flows.append(flow)
     # initialize the average flow:
-    _avg_flow = average_flow(flows, **kwargs)
+    if len(flows) == 1:
+        _avg_flow = flows[0]
+    else:
+        _avg_flow = average_flow(flows, **kwargs)
     #
     return _avg_flow

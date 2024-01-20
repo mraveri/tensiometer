@@ -239,6 +239,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
             cooldown=10,
             verbose=0,
             min_lr=1e-5,
+            threshold=0.0,
             **kwargs,
     ):
         """
@@ -263,6 +264,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
         self.patience = patience
         self.verbose = verbose
         self.cooldown = cooldown
+        self.threshold = threshold
 
         self._reset()
 
@@ -296,7 +298,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
                 self.wait += 1
                 if self.wait >= self.patience:
                     a = np.polyfit(np.arange(self.patience), self.last_losses[-self.patience:], 1)[0] # fits a line to `val_loss` in the last `patience` epochs
-                    if a > 0.: # tests if val_loss is going up
+                    if a > self.threshold: # tests if val_loss is going up
                         old_lr = tf.keras.backend.get_value(self.model.optimizer.lr)
                         if old_lr > np.float32(self.min_lr):
                             new_lr = old_lr * self.factor
