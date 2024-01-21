@@ -388,7 +388,7 @@ class FlowCallback(Callback):
                     _circ_mean = np.arctan2(np.mean(np.sin(np.pi*_temp_samples[:,_index])), np.mean(np.cos(np.pi*_temp_samples[:,_index]))) / np.pi
                     _circ_mean = self.cast(_circ_mean)
                     # add shift and modulus bijector:
-                    temp_bijectors.append(tfb.Chain([pb.Mod1D(minval=-1.0, maxval=1.0), tfb.Shift(-_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)], name='ShiftMod1D'))
+                    temp_bijectors.append(tfb.Chain([pb.Mod1D(minval=-1.0, maxval=1.0), tfb.Shift(_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)], name='ShiftMod1D'))
                 else:
                     temp_bijectors.append(tfb.Identity())
             n = len(self.param_names)
@@ -601,7 +601,7 @@ class FlowCallback(Callback):
         self.alpha_lossv = alpha_lossv
         self.beta_lossv = beta_lossv
         self.initial_learning_rate = learning_rate
-        self.final_learning_rate = learning_rate / 1000.
+        self.final_learning_rate = kwargs.get('final_learning_rate', learning_rate / 1000.)
         self.global_clipnorm = global_clipnorm
         self.loss_mode = loss_mode
         # allocate and initialize loss model:
@@ -1401,7 +1401,12 @@ class FlowCallback(Callback):
         # finish plot:
         ax.set_title("Loss function")
         ax.set_xlabel(r"Epoch $\#$")
-        ax.set_yscale('log')
+        # log scale if positive:
+        if self.log["loss"][-1] > 0.0:
+            ax.set_yscale('log')
+        else:
+            ax.set_yscale('symlog', linthresh=1.e-3, linscale=0.5)
+            ax.axhline(0.0, ls=':', lw=1., color='k')
         ax.legend()
         #
         return None
@@ -1668,6 +1673,71 @@ class FlowCallback(Callback):
             plt.close('all')
         #
         return None
+    
+    @matplotlib.rc_context(plot_options)
+    def training_plot(self, logs=None, file_path=None, ipython_plotting=False):
+        """
+        Method to produce training plot with training metrics
+        """
+        # check that self.fig exists:
+        if not hasattr(self, 'fig'):
+            self._create_figure()
+        elif not ipython_plotting:
+            plt.clf()
+            self._create_figure()
+            
+        # initialize the log to use:
+        if logs is None:
+            _logs = self.log
+        else:
+            _logs = logs
+        
+        # plot figure:
+        if issubclass(type(self.loss), loss.standard_loss):
+            gs = self.fig.add_gridspec(nrows=1, ncols=5)
+            axes = [self.fig.add_subplot(_g) for _g in gs]
+            self._plot_loss(axes[0], logs=_logs)
+            self._plot_losses_rate(axes[1], logs=_logs)
+            self._plot_lr(axes[2], logs=_logs)
+            self._plot_chi2_dist(axes[3], logs=_logs)
+            self._plot_chi2_ks_p(axes[4], logs=_logs)
+        elif issubclass(type(self.loss), loss.constant_weight_loss):
+            gs = self.fig.add_gridspec(nrows=2, ncols=4)
+            axes = [self.fig.add_subplot(_g) for _g in gs]
+            self._plot_loss(axes[0], logs=_logs)
+            self._plot_density_evidence_error_losses(axes[1], logs=_logs)
+            self._plot_losses_rate(axes[2], logs=_logs)
+            self._plot_lr(axes[3], logs=_logs)
+            self._plot_evidence(axes[4], logs=_logs)
+            self._plot_evidence_error(axes[5], logs=_logs)
+            self._plot_chi2_dist(axes[6], logs=_logs)
+            self._plot_chi2_ks_p(axes[7], logs=_logs)
+        elif issubclass(type(self.loss), loss.variable_weight_loss):
+            gs = self.fig.add_gridspec(nrows=2, ncols=5)
+            axes = [self.fig.add_subplot(_g) for _g in gs]
+            self._plot_loss(axes[0], logs=_logs)
+            self._plot_density_evidence_error_losses(axes[1], logs=_logs)
+            self._plot_lambda_values(axes[2], logs=_logs)
+            self._plot_weighted_density_evidence_error_losses(axes[3], logs=_logs)
+            self._plot_losses_rate(axes[4], logs=_logs)
+            self._plot_lr(axes[5], logs=_logs)
+            self._plot_evidence(axes[6], logs=_logs)
+            self._plot_evidence_error(axes[7], logs=_logs)
+            self._plot_chi2_dist(axes[8], logs=_logs)
+            self._plot_chi2_ks_p(axes[9], logs=_logs)
+
+        # plot title:
+        if 'population' in self.log.keys():
+            plt.suptitle('Training population ' + str(self.log['population']), fontweight='bold')
+            
+        # finalize plot:
+        plt.tight_layout(pad=0.5, w_pad=0.5, h_pad=0.5)
+        
+        # save out:
+        if file_path is not None:
+            plt.savefig(file_path)
+        #
+        return None
 
     @matplotlib.rc_context(plot_options)
     def on_epoch_end(self, epoch, logs={}):
@@ -1704,46 +1774,11 @@ class FlowCallback(Callback):
                 self._create_figure()
             else:
                 plt.clf()
+                
+            # do the plot:
+            self.training_plot(logs=logs, ipython_plotting=ipython_plotting)
 
-            # create figure:
-            if issubclass(type(self.loss), loss.standard_loss):
-                gs = self.fig.add_gridspec(nrows=1, ncols=5)
-                axes = [self.fig.add_subplot(_g) for _g in gs]
-                self._plot_loss(axes[0], logs=logs)
-                self._plot_losses_rate(axes[1], logs=logs)
-                self._plot_lr(axes[2], logs=logs)
-                self._plot_chi2_dist(axes[3], logs=logs)
-                self._plot_chi2_ks_p(axes[4], logs=logs)
-            elif issubclass(type(self.loss), loss.constant_weight_loss):
-                gs = self.fig.add_gridspec(nrows=2, ncols=4)
-                axes = [self.fig.add_subplot(_g) for _g in gs]
-                self._plot_loss(axes[0], logs=logs)
-                self._plot_density_evidence_error_losses(axes[1], logs=logs)
-                self._plot_losses_rate(axes[2], logs=logs)
-                self._plot_lr(axes[3], logs=logs)
-                self._plot_evidence(axes[4], logs=logs)
-                self._plot_evidence_error(axes[5], logs=logs)
-                self._plot_chi2_dist(axes[6], logs=logs)
-                self._plot_chi2_ks_p(axes[7], logs=logs)
-            elif issubclass(type(self.loss), loss.variable_weight_loss):
-                gs = self.fig.add_gridspec(nrows=2, ncols=5)
-                axes = [self.fig.add_subplot(_g) for _g in gs]
-                self._plot_loss(axes[0], logs=logs)
-                self._plot_density_evidence_error_losses(axes[1], logs=logs)
-                self._plot_lambda_values(axes[2], logs=logs)
-                self._plot_weighted_density_evidence_error_losses(axes[3], logs=logs)
-                self._plot_losses_rate(axes[4], logs=logs)
-                self._plot_lr(axes[5], logs=logs)
-                self._plot_evidence(axes[6], logs=logs)
-                self._plot_evidence_error(axes[7], logs=logs)
-                self._plot_chi2_dist(axes[8], logs=logs)
-                self._plot_chi2_ks_p(axes[9], logs=logs)
-
-            # plot title:
-            if 'population' in self.log.keys():
-                plt.suptitle('Training population ' + str(self.log['population']), fontweight='bold')
-            # finalize plot:
-            plt.tight_layout(pad=0.5, w_pad=0.5, h_pad=0.5)
+            # allow time for rendering and show:
             plt.pause(0.00001)
             plt.show()
         #

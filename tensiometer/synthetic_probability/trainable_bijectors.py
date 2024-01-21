@@ -395,6 +395,8 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         range_max=5.,
         range_min=None,
         slope_min=0.0001,
+        min_bin_width=0.0,
+        min_bin_height=0.0,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
@@ -419,11 +421,11 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         
                         factor = tf.cast(interval_width, dtype=dtype)
 
-                        bin_widths = params[..., :spline_knots]
+                        bin_widths = min_bin_width + params[..., :spline_knots]
                         bin_widths = tf.math.softmax(bin_widths)
                         bin_widths = tf.math.scalar_mul(factor, bin_widths)
 
-                        bin_heights = params[..., spline_knots:spline_knots * 2]
+                        bin_heights = min_bin_height + params[..., spline_knots:spline_knots * 2]
                         bin_heights = tf.math.softmax(bin_heights)
                         bin_heights = tf.math.scalar_mul(factor, bin_heights)
 
@@ -480,6 +482,8 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
         equispaced_x_knots=False,
         equispaced_y_knots=False,
         slope_min=0.0001,
+        min_bin_width=0.0,
+        min_bin_height=0.0,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
@@ -513,7 +517,7 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
 
                         # get x grid:
                         if not equispaced_x_knots:
-                            bin_widths = params[..., :spline_knots]
+                            bin_widths = min_bin_width +params[..., :spline_knots]
                             bin_widths = tf.math.softmax(bin_widths)
                             bin_widths = tf.math.scalar_mul(factor, bin_widths)
                         else:
@@ -521,7 +525,7 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
 
                         # get y grid:
                         if not equispaced_y_knots:                                                    
-                            bin_heights = params[..., spline_knots:spline_knots * 2]
+                            bin_heights = min_bin_height +params[..., spline_knots:spline_knots * 2]
                             bin_heights = tf.math.softmax(bin_heights)
                             bin_heights = tf.math.scalar_mul(factor, bin_heights)
                         else:
