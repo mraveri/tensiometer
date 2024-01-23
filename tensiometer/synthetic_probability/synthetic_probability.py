@@ -223,6 +223,7 @@ class FlowCallback(Callback):
         else:
             periodic_params = []
         self.periodic_params = periodic_params
+        self.trainable_periodic_params = []
         
         # initialize ranges:
         self.parameter_ranges = {}
@@ -385,10 +386,21 @@ class FlowCallback(Callback):
                     # get index of periodic parameter:
                     _index = self.param_names.index(name)
                     # compute circular mean:
-                    _circ_mean = np.arctan2(np.mean(np.sin(np.pi*_temp_samples[:,_index])), np.mean(np.cos(np.pi*_temp_samples[:,_index]))) / np.pi
+                    _avg_sin = np.average(np.sin(np.pi*_temp_samples[:,_index]), weights=self.chain_weights)
+                    _avg_cos = np.average(np.cos(np.pi*_temp_samples[:,_index]), weights=self.chain_weights)
+                    _circ_mean = np.arctan2(_avg_sin, _avg_cos) / np.pi
                     _circ_mean = self.cast(_circ_mean)
-                    # add shift and modulus bijector:
-                    temp_bijectors.append(tfb.Chain([pb.Mod1D(minval=-1.0, maxval=1.0), tfb.Shift(_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)], name='ShiftMod1D'))
+                    # shift and mod the samples to calculate variance:
+                    _tmp = pb.Mod1D(minval=-1.0, maxval=1.0).forward(_temp_samples[:,_index]-_circ_mean)
+                    _circ_var = np.average(_tmp**2, weights=self.chain_weights)                    
+                    # define bijectors:
+                    _temp_temp_bijectors = [pb.Mod1D(minval=-1.0, maxval=1.0), tfb.Shift(_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)]
+                    # if the variance is small (the distribution is well localized inside a period) then rescale to variance 1:
+                    if np.sqrt(_circ_var) / 2.0 < 0.05:
+                        _temp_temp_bijectors.append(tfb.Scale(self.cast(np.sqrt(_circ_var))))
+                    else:
+                        self.trainable_periodic_params.append(name)
+                    temp_bijectors.append(tfb.Chain(_temp_temp_bijectors, name='ShiftMod1D'))                       
                 else:
                     temp_bijectors.append(tfb.Identity())
             n = len(self.param_names)
@@ -411,7 +423,7 @@ class FlowCallback(Callback):
             
         # add periodic parameters to kwargs:
         if 'periodic_params' not in kwargs.keys():
-            kwargs['periodic_params'] = [True if name in self.periodic_params else False for name in self.param_names]
+            kwargs['periodic_params'] = [True if name in self.trainable_periodic_params else False for name in self.param_names]
 
         # select model for trainable transformation:
         if trainable_bijector == 'AutoregressiveFlow':
