@@ -5,6 +5,8 @@ This file contains a set of utilities operating on flows.
 ###############################################################################
 # initial imports and set-up:
 
+import numpy as np
+
 from getdist import MCSamples
 
 ###############################################################################
@@ -48,3 +50,28 @@ def get_samples_bijectors(flow, feedback=False):
                                                 ))
     # return the samples:
     return training_samples_spaces, validation_samples_spaces
+
+###############################################################################
+# flow KL divergence:
+
+def KL_divergence(flow_1, flow_2, num_samples=1000, num_batches=100):
+    """
+    Calculates the Kullback-Leibler (KL) divergence between two flows.
+
+    Parameters:
+    flow_1 (Flow): The flow for the sampling distribution.
+    flow_2 (Flow): The second flow distribution.
+    num_samples (int): The number of samples to draw from the flows, per batch. Default is 1000.
+    num_batches (int): The number of batches to run. Default is 100.
+
+    Returns:
+    mean (float): The mean KL divergence.
+    std (float): The standard deviation of the KL divergence.
+    """
+    _log_prob_diff = []
+    for _ in range(num_batches):
+        _temp_samples = flow_1.sample(num_samples)
+        _temp_diff = flow_1.log_probability(_temp_samples) - flow_2.log_probability(_temp_samples)
+        _log_prob_diff.append(np.mean(_temp_diff))
+    #
+    return np.mean(_log_prob_diff), np.std(_log_prob_diff)

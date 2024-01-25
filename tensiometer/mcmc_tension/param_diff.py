@@ -151,7 +151,7 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
 ###############################################################################
 
 
-def parameter_diff_chain(chain_1, chain_2, boost=1, periodic_params=None, **kwargs):
+def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_params=None, **kwargs):
     """
     Compute the chain of the parameter differences between the two input
     chains. The parameters of the difference chain are related to the
@@ -183,6 +183,9 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, periodic_params=None, **kwar
         Default boost parameter is one.
         If boost is None the full difference chain is going to be computed
         (and will likely require a lot of memory and time).
+    :param param_names: (optional) list with the names of the parameters to
+        use for the difference chain. By default this tries to use all
+        parameters.
     :param periodic_params: (optional) dictionary with the names of the
         parameters that are periodic. The keys are the names and the values
         are the ranges of the parameters.
@@ -202,10 +205,18 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, periodic_params=None, **kwar
     param_names_1 = chain_1.getParamNames().list()
     param_names_2 = chain_2.getParamNames().list()
     # get the common names:
-    param_names = [_p for _p in param_names_1 if _p in param_names_2]
-    num_params = len(param_names)
+    _param_names = [_p for _p in param_names_1 if _p in param_names_2]
+    num_params = len(_param_names)
     if num_params == 0:
         raise ValueError('There are no shared parameters to difference')
+    if param_names is None:
+        param_names = _param_names
+    else:
+        # check that the input names are in the common names:
+        if not all([_p in _param_names for _p in param_names]):
+            raise ValueError('Not all input parameters are shared between chains')    
+        # get the parameter names:   
+        param_names = [_p for _p in param_names if _p in _param_names]
     # get the names and labels:
     diff_param_names = ['delta_'+name for name in param_names]
     diff_param_labels = ['\\Delta '+name.label for name in
