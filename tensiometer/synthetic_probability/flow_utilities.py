@@ -73,5 +73,8 @@ def KL_divergence(flow_1, flow_2, num_samples=1000, num_batches=100):
         _temp_samples = flow_1.sample(num_samples)
         _temp_diff = flow_1.log_probability(_temp_samples) - flow_2.log_probability(_temp_samples)
         _log_prob_diff.append(np.mean(_temp_diff))
+    _log_prob_diff = np.array(_log_prob_diff)
+    # filter out not finite values:
+    _log_prob_diff = _log_prob_diff[np.isfinite(_log_prob_diff)]
     #
     return np.mean(_log_prob_diff), np.std(_log_prob_diff)
