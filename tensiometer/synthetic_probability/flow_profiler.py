@@ -366,8 +366,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 else:
                     x_bins = marge_density.x
                 self._1d_bins[name] = x_bins
-                self._1d_samples[name] = np.nan * np.ones((len(x_bins), self.n), dtype=np.float32)
-                self._1d_logP[name] = np.full(len(x_bins), -np.inf, dtype=np.float32)
+                self._1d_samples[name] = np.nan * np.ones((len(x_bins) - 1, self.n), dtype=np.float32)
+                self._1d_logP[name] = np.full(len(x_bins) - 1, -np.inf, dtype=np.float32)
 
         # initialize 2D profiles:
         if kwargs.get('update_2D', True):
@@ -398,8 +398,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     x_bins = marge_density.x
                     y_bins = marge_density.y
                 self._2d_bins[name1, name2] = (x_bins, y_bins)
-                self._2d_samples[name1, name2] = np.nan * np.ones((len(x_bins), len(y_bins), self.n), dtype=np.float32)
-                self._2d_logP[name1, name2] = np.full((len(x_bins), len(y_bins)), -np.inf, dtype=np.float32)
+                self._2d_samples[name1, name2] = np.nan * np.ones((len(x_bins) - 1, len(y_bins) - 1, self.n), dtype=np.float32)
+                self._2d_logP[name1, name2] = np.full((len(x_bins) - 1, len(y_bins) - 1), -np.inf, dtype=np.float32)
 
 
         for _ in tqdm.trange(niter, desc='iterative sampling'):
@@ -414,11 +414,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         self.temp_samples[:, idx] > np.amin(x_bins), self.temp_samples[:, idx] < np.amax(x_bins))
                     
                     # first find best samples in the bin:
-                    _indexes = np.digitize(self.temp_samples.numpy()[_filter_range, idx], x_bins)
-                    _max_bins_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_filter_range], len(x_bins))
+                    _indexes = np.digitize(self.temp_samples.numpy()[_filter_range, idx], x_bins) - 1
+                    _max_bins_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_filter_range], len(x_bins) - 1)
                     
                     # check bins that have points
-                    _filter_valid_bins = _max_bins_idx > 0  
+                    _filter_valid_bins = _max_bins_idx >= 0  
                     
                     # get indices of best points
                     _max_valid_bins_idx = _max_bins_idx[_filter_valid_bins]  
@@ -456,14 +456,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _filter_range = np.logical_and(_filter_range_x, _filter_range_y)
 
                     # first find best samples in the bin:
-                    _indexes_x = np.digitize(self.temp_samples.numpy()[_filter_range, idx1], x_bins)
-                    _indexes_y = np.digitize(self.temp_samples.numpy()[_filter_range, idx2], y_bins)
+                    _indexes_x = np.digitize(self.temp_samples.numpy()[_filter_range, idx1], x_bins) - 1
+                    _indexes_y = np.digitize(self.temp_samples.numpy()[_filter_range, idx2], y_bins) - 1
                     _max_bins_idx = _binned_argmax_2D(
                         _indexes_x, _indexes_y,
-                        self.temp_probs.numpy()[_filter_range], len(x_bins), len(y_bins))
+                        self.temp_probs.numpy()[_filter_range], len(x_bins) - 1, len(y_bins) - 1)
                     
                     # check bins that have points
-                    _filter_valid_bins = _max_bins_idx > 0  
+                    _filter_valid_bins = _max_bins_idx >= 0  
                     
                     # get indices of best points
                     _max_valid_bins_idx = _max_bins_idx[_filter_valid_bins]  
@@ -598,7 +598,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.flow.parameter_ranges is not None:
             temp_ranges = [{
                 'lower': self.flow.cast(self.flow.parameter_ranges[name][0]),
-                'upper': self.flow.cast(self.flow.parameter_ranges[name][1])
+                'upper': self.flow.cast(self.flow.parameter_ranges[name][1]),
+                'mode': 'uniform'
             } for name in _names]
             bound_bijector = pb.prior_bijector_helper(temp_ranges)
         else:

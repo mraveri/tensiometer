@@ -394,9 +394,9 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         spline_knots=8,
         range_max=5.,
         range_min=None,
-        slope_min=0.0001,
-        min_bin_width=0.0,
-        min_bin_height=0.0,
+        slope_std=0.1,
+        min_bin_width=False,
+        min_bin_height=False,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
@@ -406,7 +406,9 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
             assert range_max > 0.
             range_min = -range_max
         interval_width = range_max - range_min
-
+        
+        softplus_alpha=10.
+        
         with tf.name_scope(name) as name:
             self._unroll_loop = unroll_loop
             self._event_ndims = event_ndims
@@ -421,11 +423,17 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         
                         factor = tf.cast(interval_width, dtype=dtype)
 
-                        bin_widths = min_bin_width + params[..., :spline_knots]
+                        if min_bin_width>0.:
+                            bin_widths = min_bin_width * tf.math.sigmoid(params[..., :spline_knots])
+                        else:
+                            bin_widths = params[..., :spline_knots]
                         bin_widths = tf.math.softmax(bin_widths)
                         bin_widths = tf.math.scalar_mul(factor, bin_widths)
 
-                        bin_heights = min_bin_height + params[..., spline_knots:spline_knots * 2]
+                        if min_bin_height>0.:
+                            bin_heights = min_bin_height * tf.math.sigmoid(params[..., spline_knots:spline_knots * 2])
+                        else:
+                            bin_heights = params[..., spline_knots:spline_knots * 2]
                         bin_heights = tf.math.softmax(bin_heights)
                         bin_heights = tf.math.scalar_mul(factor, bin_heights)
 
@@ -433,9 +441,15 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         # soft plus:
                         #knot_slopes = tf.math.softplus(knot_slopes)
                         # sigmoid:
-                        knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                        # knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
                         # enforce minimum slope:
-                        knot_slopes =slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                        # knot_slopes =slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes) ## WROOOOOOOOOOONG!!!!
+                        # knot_slopes = 1. + tf.math.scalar_mul(1 - slope_min, knot_slopes - 1.)
+                        
+                        # deviations around finite differences
+                        avg_slope = (bin_heights[...,1:]+bin_heights[...,:-1])/(bin_widths[...,1:]+bin_widths[...,:-1]) # finite diff
+                        knot_slopes = avg_slope + tf.math.scalar_mul(slope_std, tf.math.tanh(knot_slopes)) # small deviations around finite diff
+                        knot_slopes = tf.math.softplus(knot_slopes*softplus_alpha)/softplus_alpha # ensure slope is positive
 
                         return bin_widths, bin_heights, knot_slopes
 
