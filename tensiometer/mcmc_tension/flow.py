@@ -14,7 +14,7 @@ from .. import utilities as utils
 # function to estimate the flow probability of zero shift:
 
 
-def estimate_shift(flow, tol=0.05, max_iter=1000, step=100000):
+def estimate_shift(flow, prior_flow=None, tol=0.05, max_iter=1000, step=100000):
     """
     Compute the normalizing flow estimate of the probability of a parameter shift given the input parameter difference chain. This is done with a Monte Carlo estimate by comparing the probability density at the zero-shift point to that at samples drawn from the normalizing flow approximation of the distribution.
 
@@ -30,16 +30,24 @@ def estimate_shift(flow, tol=0.05, max_iter=1000, step=100000):
     err = np.inf
     counter = max_iter
 
+    # define threshold for tension calculation:
     _thres = flow.log_probability(flow.cast(np.zeros(flow.num_params)))
+    if prior_flow is not None:
+        _thres = _thres - prior_flow.log_probability(prior_flow.cast(np.zeros(prior_flow.num_params)))
 
     _num_filtered = 0
     _num_samples = 0
     while err > tol and counter >= 0:
         counter -= 1
+        # sample from the flow:
         _s = flow.sample(step)
+        # compute probability values:
         _s_prob = flow.log_probability(_s)
+        if prior_flow is not None:
+            _s_prob = _s_prob - prior_flow.log_probability(prior_flow.cast(_s))
+        # test:
         _t = np.array(_s_prob > _thres)
-
+        # update counters:
         _num_filtered += np.sum(_t)
         _num_samples += step
         _P = float(_num_filtered)/float(_num_samples)
