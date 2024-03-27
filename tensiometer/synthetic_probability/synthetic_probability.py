@@ -257,6 +257,8 @@ class FlowCallback(Callback):
             print('    - flow parameters and ranges:')
             for name in param_names:
                 print('      ' + name + ' : [{0:.6g}, {1:.6g}]'.format(*self.parameter_ranges[name]))
+            if self.periodic_params is not None:
+                print('    - periodic parameters:', self.periodic_params)
 
         # initialize sample MAP:
         temp = chain.samples[np.argmin(chain.loglikes), :]
