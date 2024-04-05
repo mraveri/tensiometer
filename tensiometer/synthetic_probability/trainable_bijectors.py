@@ -394,21 +394,30 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         spline_knots=8,
         range_max=5.,
         range_min=None,
-        slope_std=0.1,
-        min_bin_width=False,
-        min_bin_height=False,
+        equispaced_x_knots=False,
+        equispaced_y_knots=False,
+        slope_min=0.0001,
+        min_bin_width=0.0,
+        min_bin_height=0.0,
+        slope_std=None,
+        softplus_alpha=10.,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
         name = name or 'spline_flow'
 
+        # set ranges:
         if range_min is None:
             assert range_max > 0.
             range_min = -range_max
         interval_width = range_max - range_min
         
-        softplus_alpha=10.
-        
+        # equispaced knots handling:
+        if equispaced_x_knots or equispaced_y_knots:
+            delta = (range_max-range_min)/(spline_knots)
+        if equispaced_x_knots and equispaced_y_knots:
+            raise ValueError('Cannot have both x and y knots equispaced.')
+
         with tf.name_scope(name) as name:
             self._unroll_loop = unroll_loop
             self._event_ndims = event_ndims
@@ -423,33 +432,44 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
                         
                         factor = tf.cast(interval_width, dtype=dtype)
 
-                        if min_bin_width>0.:
-                            bin_widths = min_bin_width * tf.math.sigmoid(params[..., :spline_knots])
+                        # get x grid:
+                        if not equispaced_x_knots:
+                            bin_widths = min_bin_width +params[..., :spline_knots]
+                            bin_widths = tf.math.softmax(bin_widths)
+                            bin_widths = tf.math.scalar_mul(factor, bin_widths)
                         else:
-                            bin_widths = params[..., :spline_knots]
-                        bin_widths = tf.math.softmax(bin_widths)
-                        bin_widths = tf.math.scalar_mul(factor, bin_widths)
+                            bin_widths = delta * tf.ones_like(params[..., :spline_knots])
 
-                        if min_bin_height>0.:
-                            bin_heights = min_bin_height * tf.math.sigmoid(params[..., spline_knots:spline_knots * 2])
+                        # get y grid:
+                        if not equispaced_y_knots:
+                            if equispaced_x_knots:    
+                                bin_heights = min_bin_height +params[..., :spline_knots]
+                            else:                                              
+                                bin_heights = min_bin_height +params[..., spline_knots:spline_knots * 2]
+                            bin_heights = tf.math.softmax(bin_heights)
+                            bin_heights = tf.math.scalar_mul(factor, bin_heights)
                         else:
-                            bin_heights = params[..., spline_knots:spline_knots * 2]
-                        bin_heights = tf.math.softmax(bin_heights)
-                        bin_heights = tf.math.scalar_mul(factor, bin_heights)
-
-                        knot_slopes = params[..., spline_knots * 2:]
-                        # soft plus:
-                        #knot_slopes = tf.math.softplus(knot_slopes)
-                        # sigmoid:
-                        # knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
-                        # enforce minimum slope:
-                        # knot_slopes =slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes) ## WROOOOOOOOOOONG!!!!
-                        # knot_slopes = 1. + tf.math.scalar_mul(1 - slope_min, knot_slopes - 1.)
+                            bin_heights = delta * tf.ones_like(params[..., :spline_knots])
+                                
+                        # get knot slopes:
+                        _start_idx = 2*spline_knots
+                        if equispaced_x_knots:
+                            _start_idx = _start_idx - spline_knots
+                        if equispaced_y_knots:
+                            _start_idx = _start_idx - spline_knots
+                        knot_slopes = params[..., _start_idx:]
                         
-                        # deviations around finite differences
-                        avg_slope = (bin_heights[...,1:]+bin_heights[...,:-1])/(bin_widths[...,1:]+bin_widths[...,:-1]) # finite diff
-                        knot_slopes = avg_slope + tf.math.scalar_mul(slope_std, tf.math.tanh(knot_slopes)) # small deviations around finite diff
-                        knot_slopes = tf.math.softplus(knot_slopes*softplus_alpha)/softplus_alpha # ensure slope is positive
+                        # treat different cases:
+                        if slope_std is None:
+                            # sigmoid:
+                            knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                            # enforce minimum slope:
+                            knot_slopes = slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                        else:                        
+                            # deviations around finite differences
+                            avg_slope = (bin_heights[...,1:]+bin_heights[...,:-1])/(bin_widths[...,1:]+bin_widths[...,:-1]) # finite diff
+                            knot_slopes = avg_slope + tf.math.scalar_mul(slope_std, tf.math.tanh(knot_slopes)) # small deviations around finite diff
+                            knot_slopes = tf.math.softplus(knot_slopes*softplus_alpha)/softplus_alpha # ensure slope is positive
 
                         return bin_widths, bin_heights, knot_slopes
 
@@ -498,6 +518,8 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
         slope_min=0.0001,
         min_bin_width=0.0,
         min_bin_height=0.0,
+        slope_std=None,
+        softplus_alpha=10.,
         dtype=tf.float32,
     ):
         parameters = dict(locals())
@@ -538,8 +560,11 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
                             bin_widths = delta * tf.ones_like(params[..., :spline_knots])
 
                         # get y grid:
-                        if not equispaced_y_knots:                                                    
-                            bin_heights = min_bin_height +params[..., spline_knots:spline_knots * 2]
+                        if not equispaced_y_knots:
+                            if equispaced_x_knots:    
+                                bin_heights = min_bin_height +params[..., :spline_knots]
+                            else:                                              
+                                bin_heights = min_bin_height +params[..., spline_knots:spline_knots * 2]
                             bin_heights = tf.math.softmax(bin_heights)
                             bin_heights = tf.math.scalar_mul(factor, bin_heights)
                         else:
@@ -551,15 +576,19 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
                             _start_idx -= spline_knots
                         if equispaced_y_knots:
                             _start_idx -= spline_knots
-
                         knot_slopes = params[..., _start_idx:]
-                        # sigmoid:
-                        knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
-                        # enforce minimum slope:
-                        knot_slopes = slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
-                        # get boundary slope:
-                        boundary_knot_slope = knot_slopes[..., -1]                        
-                        knot_slopes = knot_slopes[..., :-1]
+
+                        # treat different cases:
+                        if slope_std is None:
+                            # sigmoid:
+                            knot_slopes = 2. * tf.math.sigmoid(knot_slopes)
+                            # enforce minimum slope:
+                            knot_slopes = slope_min + tf.math.scalar_mul(2.-slope_min,knot_slopes)
+                            # get boundary slope:
+                            boundary_knot_slope = knot_slopes[..., -1]                        
+                            knot_slopes = knot_slopes[..., :-1]
+                        else:
+                            raise NotImplementedError
 
                         return bin_widths, bin_heights, knot_slopes, boundary_knot_slope
 
@@ -768,14 +797,16 @@ class AutoregressiveFlow(TrainableTransformation):
             if _transformation_type == 'affine':
                 transf_params = 2
             elif _transformation_type == 'spline':
+                # number of parameters:
                 if periodic_params is not None:
                     transf_params = 3 * spline_knots
-                    if equispaced_x_knots:
-                        transf_params -= spline_knots
-                    if equispaced_y_knots:
-                        transf_params -= spline_knots
                 else:
                     transf_params = 3 * spline_knots - 1
+                # adjust for equispaced knots:
+                if equispaced_x_knots:
+                    transf_params -= spline_knots
+                if equispaced_y_knots:
+                    transf_params -= spline_knots
             else:
                 raise ValueError
 
@@ -817,6 +848,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     else:
                         transformation = SplineHelper(
                             shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max,
+                            equispaced_x_knots=equispaced_x_knots, equispaced_y_knots=equispaced_y_knots,
                             **utils.filter_kwargs(kwargs, SplineHelper))
             bijectors.append(transformation)
             if map_to_unitcube:
@@ -834,6 +866,8 @@ class AutoregressiveFlow(TrainableTransformation):
 
         if feedback > 1:
             print("    Building Autoregressive Flow")
+            print("    - # parameters          :", num_params)
+            print("    - periodic parameters   :", periodic_params)
             print("    - # transformations     :", n_transformations)
             print("    - hidden_units          :", hidden_units)
             print("    - transformation_type   :", transformation_type)
