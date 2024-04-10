@@ -243,9 +243,13 @@ def random_samples_reshuffle(chain):
     _reshuffle_indexes = np.arange(len(chain.weights))
     np.random.shuffle(_reshuffle_indexes)
     # filter the chain:
-    chain.setSamples(samples=chain.samples[_reshuffle_indexes, :],
-                     weights=chain.weights[_reshuffle_indexes],
-                     loglikes=chain.loglikes[_reshuffle_indexes])
+    if hasattr(chain, 'loglikes'):
+        chain.setSamples(samples=chain.samples[_reshuffle_indexes, :],
+                         weights=chain.weights[_reshuffle_indexes],
+                         loglikes=chain.loglikes[_reshuffle_indexes])
+    else:
+        chain.setSamples(samples=chain.samples[_reshuffle_indexes, :],
+                        weights=chain.weights[_reshuffle_indexes],)
     # update:
     chain._weightsChanged()
     chain.updateBaseStatistics()
