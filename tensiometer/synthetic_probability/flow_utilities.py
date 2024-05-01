@@ -56,7 +56,9 @@ def get_samples_bijectors(flow, feedback=False):
 
 def KL_divergence(flow_1, flow_2, num_samples=1000, num_batches=100):
     """
-    Calculates the Kullback-Leibler (KL) divergence between two flows.
+    Calculates the Kullback-Leibler (KL) divergence between two flows:
+    
+    D_KL(flow_1 || flow_2) = E_{x ~ flow_1} [log(flow_1(x)) - log(flow_2(x))]
 
     Parameters:
     flow_1 (Flow): The flow for the sampling distribution.
@@ -70,9 +72,15 @@ def KL_divergence(flow_1, flow_2, num_samples=1000, num_batches=100):
     """
     _log_prob_diff = []
     for _ in range(num_batches):
+        # sample from the first flow:
         _temp_samples = flow_1.sample(num_samples)
+        # calculate the log probability difference:
         _temp_diff = flow_1.log_probability(_temp_samples) - flow_2.log_probability(_temp_samples)
+        # filter out not finite values:
+        _temp_diff = _temp_diff[np.isfinite(_temp_diff)]
+        # average and append:        
         _log_prob_diff.append(np.mean(_temp_diff))
+    # convert to numpy array:
     _log_prob_diff = np.array(_log_prob_diff)
     # filter out not finite values:
     _log_prob_diff = _log_prob_diff[np.isfinite(_log_prob_diff)]
