@@ -145,6 +145,8 @@ class FlowCallback(Callback):
             **kwargs):
 
         # check input:
+        if feedback == None:
+            feedback = 0
         if feedback < 0 or not isinstance(feedback, int):
             raise ValueError('feedback needs to be a positive integer')
         if plot_every < 0 or not isinstance(plot_every, int):
@@ -251,7 +253,14 @@ class FlowCallback(Callback):
                     temp_range.append(np.amax(chain.samples[:, chain.index[name]]))
                 # save:
                 self.parameter_ranges[name] = copy.deepcopy(temp_range)
-
+        # check that all samples are within ranges:
+        for name in param_names:
+            if np.any(chain.samples[:, chain.index[name]] < self.parameter_ranges[name][0]) or \
+                    np.any(chain.samples[:, chain.index[name]] > self.parameter_ranges[name][1]):
+                raise ValueError('Samples for parameter ', name, 
+                                 ' are outside the specified range: ', self.parameter_ranges[name],
+                                 ' min/max values are: ', np.amin(chain.samples[:, chain.index[name]]),
+                                 np.amax(chain.samples[:, chain.index[name]]))
         # feedback:
         if self.feedback > 1:
             print('    - flow parameters and ranges:')
