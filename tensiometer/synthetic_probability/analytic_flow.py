@@ -134,11 +134,17 @@ class analytic_flow():
             _coord = coord.numpy()
         else:
             _coord = coord
-        # cheaply vectorize:
-        if len(_coord.shape) > 1:
-            return self.cast(np.array([scipy.optimize.approx_fprime(_c, lambda x: np.log(self._dist.pdf(x))) for _c in _coord]))
+        # cheaply vectorize and branch:
+        if self.has_log_pdf:
+            if len(_coord.shape) > 1:
+                return self.cast(np.array([scipy.optimize.approx_fprime(_c, lambda x: self._dist.log_pdf(x)) for _c in _coord]))
+            else:
+                return self.cast(scipy.optimize.approx_fprime(_coord, lambda x: self._dist.log_pdf(x)))
         else:
-            return self.cast(scipy.optimize.approx_fprime(_coord, lambda x: np.log(self._dist.pdf(x))))
+            if len(_coord.shape) > 1:
+                return self.cast(np.array([scipy.optimize.approx_fprime(_c, lambda x: np.log(self._dist.pdf(x))) for _c in _coord]))
+            else:
+                return self.cast(scipy.optimize.approx_fprime(_coord, lambda x: np.log(self._dist.pdf(x))))
         
     def log_probability_hessian(self, coord):
         # digest input:

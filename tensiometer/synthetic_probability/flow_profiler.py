@@ -16,6 +16,7 @@ from scipy.interpolate import interp1d
 from scipy.interpolate import LinearNDInterpolator
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from itertools import combinations
+import pickle
 
 from numba import njit
 
@@ -93,11 +94,18 @@ def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
     """
     if use_scipy:
         # read in options:
-        _method = kwargs.get('method', 'L-BFGS-B')
-        _options = kwargs.get('options', {
+        _temp_kwargs = kwargs
+        _method = _temp_kwargs.pop('method', 'L-BFGS-B')
+        _options = _temp_kwargs.pop('options', {
             'ftol': 1.e-6,
-            'gtol': 1e-05,
+            'gtol': 1.e-05,
         })
+        _use_jac = _temp_kwargs.pop('use_jac', True)
+        # feedback:
+        if feedback > 2:
+            print('      method:', _method)
+            print('      options:', _options)
+            print('      use_jac:', _use_jac)
         # prepare:
         success, min_value, min_point = [], [], []
         # do the loop:
@@ -107,7 +115,9 @@ def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
                 print('  * sample', i + 1)
             # main minimizer call:
             result = minimize(
-                func, x0=_x0, jac=jac, method=_method, options=_options, **utils.filter_kwargs(kwargs, minimize))
+                func, x0=_x0, 
+                jac=jac if not _use_jac else None, 
+                method=_method, options=_options, **utils.filter_kwargs(_temp_kwargs, minimize))
             # save results:
             success.append(result.success)
             min_value.append(result.fun)
@@ -116,7 +126,10 @@ def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
             if feedback > 0:
                 print('    - Success', result.success)
                 print('    - Loss function', result.fun)
-                print('    - Function /Jacobian evaluations', result.nfev, '/', result.njev)
+                if hasattr(result, 'nfev') and hasattr(result, 'njev'):
+                    print('    - Function /Jacobian evaluations', result.nfev, '/', result.njev)
+                if not result.success:
+                    print('    - Message', result.message)
         # convert to numpy array:
         success = np.array(success)
         min_value = np.array(min_value)
@@ -174,7 +187,7 @@ def find_flow_MAP(
         best_population = initial_points
     # feedback:
     if feedback > 0:
-        print('  using abstract coordinates =', abstract)
+        print('      using abstract coordinates =', abstract)
     # map to abstract space:
     if abstract:
         best_population = flow.map_to_abstract_coord(best_population)
@@ -246,8 +259,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             print('  * box_prior  =', self.box_prior)
             print('  * parameters =', flow.param_names)
         # initialize the parent with the flow (so we can do margestats)
-        _samples = flow.chain_samples
-        _loglikes = flow.chain_loglikes
+        if hasattr(flow, 'chain_samples') and flow.chain_samples is not None:
+            _samples = flow.chain_samples
+            _loglikes = flow.chain_loglikes
+        else:
+            _samples = flow.sample(1000 * flow.num_params).numpy()
+            _loglikes = -flow.log_probability(_samples).numpy()
         super().__init__(
             samples=_samples,
             loglikes=_loglikes,
@@ -274,11 +291,16 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # initial feedback:
         if self.feedback > 0:
             print('  * initializing profiler data.')
+            
+        # get default options:
+        _update_MAP = kwargs.get('update_MAP', True)
+        _update_1D = kwargs.get('update_1D', True)
+        _update_2D = kwargs.get('update_2D', True)
 
         # draw the initial population of samples:
-        if 'update_MAP' in kwargs.keys() or \
-           'update_1D' in kwargs.keys() or \
-           'update_2D' in kwargs.keys():
+        if _update_MAP or \
+           _update_1D or \
+           _update_2D:
             self.sample_profile_population(**kwargs)
 
         # get parameter names:
@@ -288,20 +310,20 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             indexes = list(range(self.n))
 
         # initialize best fit:
-        if kwargs.get('update_MAP', True):
+        if _update_MAP:
             if self.feedback > 0:
                 print('  * finding MAP')
             self.find_MAP(**kwargs)
 
         # initialize 1D profiles:
-        if kwargs.get('update_1D', True):
+        if _update_1D:
             if self.feedback > 0:
                 print('  * initializing 1D profiles')
             for ind in tqdm.tqdm(indexes, file=sys.stdout, desc='    1D profiles'):
                 self.get1DDensityGridData(ind, **kwargs)
 
         # initialize 2D profiles:
-        if kwargs.get('update_2D', True):
+        if _update_2D:
             if self.feedback > 0:
                 print('  * initializing 2D profiles')
             # prepare indexes:
@@ -549,7 +571,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    * generating samples for profiler')
         # settings:
-        num_minimization_samples = kwargs.get('num_minimization_samples', 20000 * self.flow.num_params)
+        num_minimization_samples = kwargs.get('num_minimization_samples', 30000 * self.flow.num_params)
         # feedback:
         if self.feedback > 1:
             print('    - number of random search samples =', num_minimization_samples)
@@ -801,7 +823,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _filter_finite = np.isfinite(_result_logP)
             _result_logP = _result_logP[_filter_finite]
             _flow_full_samples = self._1d_samples[par_name.name][_filter_finite,:]
-
         else:
             # check that we have cached samples, otherwise generate:
             if self.temp_samples is None:
@@ -809,7 +830,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 
             # if not cached redo the calculation:
             if self.feedback > 1:
-                print('    * calculating the 1D profile for:', par_name.name)
+                print('    * calculating the 1D profile for:', par_name.name, 'with index', idx)
                 
             # feedback:
             if self.feedback > 1:
@@ -897,11 +918,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _temp_ranges = None
 
                 # read in options:
-                _method = kwargs.get('method', 'L-BFGS-B')
-                _options = kwargs.get('options', {
+                _temp_kwargs = kwargs
+                _method = _temp_kwargs.pop('method', 'L-BFGS-B')
+                _options = _temp_kwargs.pop('options', {
                     'ftol': 1.e-6,
-                    'gtol': 1e-05,
+                    'gtol': 1.e-05,
                 })
+                _use_jac = _temp_kwargs.pop('use_jac', True)
+                if self.feedback > 2:
+                    print('      method:', _method)
+                    print('      options:', _options)
+                    print('      use_jac:', _use_jac)
 
                 # polish:
                 _polished_ensemble, _polished_logP = [], []
@@ -918,6 +945,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         _x = np.insert(x, idx, x0)
                         _jac = -self.flow.log_probability_jacobian(self.flow.cast(_x)).numpy().astype(np.float64)
                         return np.delete(_jac, idx)
+                    if not _use_jac:
+                        temp_jac = None
 
                     result = minimize(
                         temp_func,
@@ -926,7 +955,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         bounds=_temp_ranges,
                         method=_method,
                         options=_options,
-                        **utils.filter_kwargs(kwargs, minimize))
+                        **utils.filter_kwargs(_temp_kwargs, minimize))
+                    
                     if -result.fun > _val:
                         _polished_logP.append(-result.fun)
                         _polished_ensemble.append(np.insert(result.x, idx, x0))
@@ -1084,7 +1114,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         # initialize the density:
         density1D = Density1D(_temp_x, P=_temp_P, view_ranges=marge_density.view_ranges)
+        # save out maximum value:
+        density1D.maximum = np.amax(_temp_P)
+        # normalize:
         density1D.normalize('max', in_place=True)
+        # save out the samples:
         density1D.profile_subspace = _flow_full_samples
 
         # cache result:
@@ -1121,7 +1155,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         # if not cached redo the calculation:
         if self.feedback > 1:
-            print('    * calculating the 2D profile for: ' + parx.name + ', ' + pary.name)
+            print('    * calculating the 2D profile for: ' + parx.name + ', ' + pary.name + ' with indexes ', idx1, idx2)
         # call the MCSamples method to have the marginalized density:
         marge_density = super().get2DDensityGridData(idx1, idx2, fine_bins_2D=num_points_2D, **kwargs)
 
@@ -1238,11 +1272,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _temp_ranges = None
 
                 # read in options:
-                _method = kwargs.get('method', 'L-BFGS-B')
-                _options = kwargs.get('options', {
+                _temp_kwargs = kwargs
+                _method = _temp_kwargs.pop('method', 'L-BFGS-B')
+                _options = _temp_kwargs.pop('options', {
                     'ftol': 1.e-6,
-                    'gtol': 1e-05,
+                    'gtol': 1.e-05,
                 })
+                _use_jac = _temp_kwargs.pop('use_jac', True)
+                if self.feedback > 2:
+                    print('      method:', _method)
+                    print('      options:', _options)
+                    print('      use_jac:', _use_jac)
 
                 # polish:
                 _polished_ensemble, _polished_logP = [], []
@@ -1253,13 +1293,15 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     x0_2 = _samp[idx2]
 
                     def temp_func(x):
-                        _x = np.insert(x, [idx1, idx2], [x0_1, x0_2])
+                        _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
                         return -self.flow.log_probability(self.flow.cast(_x)).numpy().astype(np.float64)
 
                     def temp_jac(x):
-                        _x = np.insert(x, [idx1, idx2], [x0_1, x0_2])
+                        _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
                         _jac = -self.flow.log_probability_jacobian(self.flow.cast(_x)).numpy().astype(np.float64)
                         return np.delete(_jac, [idx1, idx2])
+                    if not _use_jac:
+                        temp_jac = None
 
                     result = minimize(
                         temp_func,
@@ -1268,10 +1310,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         bounds=_temp_ranges,
                         method=_method,
                         options=_options,
-                        **utils.filter_kwargs(kwargs, minimize))
+                        **utils.filter_kwargs(_temp_kwargs, minimize))
                     if -result.fun > _val:
                         _polished_logP.append(-result.fun)
-                        _polished_ensemble.append(np.insert(result.x, [idx1, idx2], [x0_1, x0_2]))
+                        _polished_ensemble.append(np.insert(result.x, [idx1, idx2-1], [x0_1, x0_2]))
                         success += 1
                     else:
                         _polished_logP.append(_val)
@@ -1441,11 +1483,15 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         # initialize getdist densities:
         density2D = Density2D(_temp_x, _temp_y, P=_temp_P, view_ranges=marge_density.view_ranges)
-        density2D.normalize('max', in_place=True)
-
         density2D_T = Density2D(
             _temp_y, _temp_x, P=_temp_P.T, view_ranges=[marge_density.view_ranges[1], marge_density.view_ranges[0]])
+        # save out maximum value:
+        density2D.maximum = np.amax(_temp_P)
+        density2D_T.maximum = density2D.maximum
+        # normalize:
+        density2D.normalize('max', in_place=True)
         density2D_T.normalize('max', in_place=True)
+        # save out the samples:
         density2D.profile_subspace = _flow_full_samples
         density2D_T.profile_subspace = _flow_full_samples
 
@@ -1460,7 +1506,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return density2D
 
-    def _masked_gradient_ascent(self, learning_rate, num_iterations, ensemble, mask, atol=1.0):
+    def _masked_gradient_ascent(self, learning_rate, num_iterations, ensemble, mask, atol=0.0):
         """
         Masked gradient ascent for an ensemble of points.
         Mask is a [0, 1] vector that decides which coordinates are updated.
@@ -1514,11 +1560,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _jac = _jacobian(ensemb)
             # apply mask:
             _jac = mask * _jac
-            # normalize Jacobian:
-            #_norm = tf.norm(_jac, axis=1, keepdims=True)
-            ## normalize if needed:
-            #_norm_filter = _norm > 1.
-            #_jac = tf.where(_norm_filter, _jac / _norm, _jac)
             # update positions, do not move the mask:
             ensemb_temp = ensemb + _h * _jac
             # check new probability values:
@@ -1545,3 +1586,37 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         #
         return ensemble, values, num_moving, num_iter
+    
+    ####################################################################################################
+    # methods to save and load the object:
+    
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['flow']  # can't pickle the flow
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.flow = None
+        
+    def savePickle(self, filename):
+        """
+        Save the current object to a file in pickle format.
+        Note that the flow cannot be pickled so the cached flow would  not have it...
+        :param filename: The file to write to
+        """
+        with open(filename, 'wb') as output:
+            pickle.dump(self, output, pickle.HIGHEST_PROTOCOL)
+    
+    @classmethod 
+    def loadPickle(self, filename, flow=None):
+        """
+        Load the object from a pickle file.
+        :param filename: The file to read from
+        :param flow: The flow to associate with the object, if not None
+        """
+        with open(filename, 'rb') as input:
+            loaded = pickle.load(input)
+            self.__dict__.update(loaded.__dict__)
+            self.flow = flow
+

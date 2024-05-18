@@ -200,6 +200,7 @@ class FlowCallback(Callback):
         # feedback:
         if self.feedback > 1:
             print('    - flow name:', self.name_tag)
+            print('    - precision:', prec)
 
         # initialize param names:
         if param_names is None:
@@ -470,7 +471,7 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_training_dataset(self, validation_split=0.1, rng=None):
+    def _init_training_dataset(self, validation_split=0.1, rng=None, validation_training_idx=None):
         """
         Initialize the training dataset, splitting training and validation.
         """
@@ -480,12 +481,15 @@ class FlowCallback(Callback):
 
         # split training/test:
         n = self.chain_samples.shape[0]
-        if rng is not None:
-            indices = rng.permutation(n)
+        if validation_training_idx is None:
+            if rng is not None:
+                indices = rng.permutation(n)
+            else:
+                indices = np.random.permutation(n)
+            n_split = int(validation_split * n)
+            self.test_idx, self.training_idx = indices[:n_split], indices[n_split:]
         else:
-            indices = np.random.permutation(n)
-        n_split = int(validation_split * n)
-        self.test_idx, self.training_idx = indices[:n_split], indices[n_split:]
+            self.test_idx, self.training_idx = validation_training_idx
 
         # training samples:
         self.training_samples = self.fixed_bijector.inverse(
@@ -707,7 +711,9 @@ class FlowCallback(Callback):
         if verbose is None:
             if self.feedback == 0:
                 verbose = 0
-            elif self.feedback > 0:
+            elif self.feedback >= 1:
+                verbose = 2
+            elif self.feedback >= 3:
                 verbose = 1
         # set callbacks:
         if callbacks is None:
@@ -1490,13 +1496,13 @@ class FlowCallback(Callback):
         Utility function to plot the KS test results.
         """
         # KS result probability:
-        ln1 = ax.plot(self.log["chi2Z_ks_p"], label='$p$', lw=1., ls='-')
+        ln1 = ax.plot(self.log["chi2Z_ks_p"], label='$p$', lw=1., ls='-', color='tab:blue')
         ax.set_title(r"KS test ($\chi^2$)")
         ax.set_xlabel(r"Epoch $\#$")
         ax.set_ylabel(r"$p$-value")
         # KL difference:
         ax2 = ax.twinx()
-        ln2 = ax2.plot(self.log["chi2Z_ks"], label='$D_n$', lw=1., ls='--')
+        ln2 = ax2.plot(self.log["chi2Z_ks"], label='$D_n$', lw=1., ls='--', color='tab:orange')
         ax2.set_ylabel(r'$D_n$')
         # legend:
         lns = ln1 + ln2
@@ -1759,6 +1765,7 @@ class FlowCallback(Callback):
         # save out:
         if file_path is not None:
             plt.savefig(file_path)
+            plt.close('all')
         #
         return None
 
@@ -1778,7 +1785,7 @@ class FlowCallback(Callback):
         self.compute_training_metrics(logs=logs)
 
         # text monitoring of output:
-        if self.feedback > 1:
+        if self.feedback > 2:
             for met in self.training_metrics:
                 if met in self.log.keys():
                     logs[met] = self.log[met][-1]
@@ -2110,7 +2117,16 @@ class average_flow(FlowCallback):
                 self.__dict__[info] = flows[0].__dict__[info]
             except KeyError:
                 print("Flow does not have attribute :", info)
-
+        # check and save training and validation indexes:
+        validation_training_idx = kwargs.get('validation_training_idx')
+        if validation_training_idx is None:
+            print('Warning: validation_training_idx not found in kwargs. You should ensure that training and validation indexes are coherent across average flow.')
+        else:
+            self.test_idx, self.training_idx = validation_training_idx
+        # check consistency of training and validation split across average flows:
+        for flow in flows:
+            if not np.all(flow.test_idx == self.test_idx) or not np.all(flow.training_idx == self.training_idx):
+                print('Warning: validation and training indexes are not consistent across average flows.')
         # copy in flows:
         self.flows = flows
         # process:
@@ -2155,6 +2171,20 @@ class average_flow(FlowCallback):
             flow.global_train(**kwargs)
         return None
 
+    ###############################################################################
+    # Plotting:
+
+    @matplotlib.rc_context(plot_options)
+    def training_plot(self, logs=None, file_path=None, ipython_plotting=False):
+        """
+        Method to produce training plot with training metrics
+        """
+        file_name, file_format = os.path.splitext(file_path)
+        for _i, flow in enumerate(self.flows):
+            flow.training_plot(logs=logs, file_path=file_name+'_'+str(_i)+'.'+file_format, ipython_plotting=ipython_plotting)
+        #
+        return None
+    
     ###############################################################################
     # Utility functions:
 
@@ -2270,6 +2300,11 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
             if cache_dir is not None:
                 flow.save(_outroot)
             flows.append(flow)
+        # initialize training and validation split to make consistent:
+        if i==0:
+            validation_training_idx = flow.test_idx, flow.training_idx
+            kwargs['validation_training_idx'] = validation_training_idx
+
     # initialize the average flow:
     if len(flows) == 1:
         _avg_flow = flows[0]
