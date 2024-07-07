@@ -36,3 +36,4 @@ clean:
 	@rm -rf tensiometer.egg-info
 	@rm -rf build dist
 	@rm -f .coverage
+	@rm -rf tensiometer/__pycache__ tensiometer/*/__pycache__

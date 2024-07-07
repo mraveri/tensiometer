@@ -571,7 +571,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    * generating samples for profiler')
         # settings:
-        num_minimization_samples = kwargs.get('num_minimization_samples', 30000 * self.flow.num_params)
+        num_minimization_samples = kwargs.get('num_minimization_samples', 20000 * self.flow.num_params)
         # feedback:
         if self.feedback > 1:
             print('    - number of random search samples =', num_minimization_samples)
@@ -1293,13 +1293,20 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     x0_2 = _samp[idx2]
 
                     def temp_func(x):
-                        _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
+                        if idx1 < idx2:
+                            _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
+                        else:
+                            _x = np.insert(x, [idx2, idx1-1], [x0_2, x0_1])
                         return -self.flow.log_probability(self.flow.cast(_x)).numpy().astype(np.float64)
 
                     def temp_jac(x):
-                        _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
+                        if idx1 < idx2:
+                            _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
+                        else:
+                            _x = np.insert(x, [idx2, idx1-1], [x0_2, x0_1])
                         _jac = -self.flow.log_probability_jacobian(self.flow.cast(_x)).numpy().astype(np.float64)
                         return np.delete(_jac, [idx1, idx2])
+                    
                     if not _use_jac:
                         temp_jac = None
 
@@ -1313,7 +1320,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         **utils.filter_kwargs(_temp_kwargs, minimize))
                     if -result.fun > _val:
                         _polished_logP.append(-result.fun)
-                        _polished_ensemble.append(np.insert(result.x, [idx1, idx2-1], [x0_1, x0_2]))
+                        if idx1 < idx2:
+                            _polished_ensemble.append(np.insert(result.x, [idx1, idx2-1], [x0_1, x0_2]))
+                        else:
+                            _polished_ensemble.append(np.insert(result.x, [idx2, idx1-1], [x0_2, x0_1]))
                         success += 1
                     else:
                         _polished_logP.append(_val)
@@ -1608,15 +1618,15 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         with open(filename, 'wb') as output:
             pickle.dump(self, output, pickle.HIGHEST_PROTOCOL)
     
-    @classmethod 
-    def loadPickle(self, filename, flow=None):
+    @classmethod
+    def loadPickle(cls, filename, flow=None):
         """
         Load the object from a pickle file.
         :param filename: The file to read from
         :param flow: The flow to associate with the object, if not None
         """
         with open(filename, 'rb') as input:
-            loaded = pickle.load(input)
-            self.__dict__.update(loaded.__dict__)
-            self.flow = flow
+            _profiler = pickle.load(input)
+            _profiler.flow = flow
+        return _profiler
 

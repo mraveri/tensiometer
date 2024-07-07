@@ -2121,12 +2121,14 @@ class average_flow(FlowCallback):
         validation_training_idx = kwargs.get('validation_training_idx')
         if validation_training_idx is None:
             print('Warning: validation_training_idx not found in kwargs. You should ensure that training and validation indexes are coherent across average flow.')
+            self.test_idx, self.training_idx = None, None
         else:
             self.test_idx, self.training_idx = validation_training_idx
         # check consistency of training and validation split across average flows:
         for flow in flows:
-            if not np.all(flow.test_idx == self.test_idx) or not np.all(flow.training_idx == self.training_idx):
-                print('Warning: validation and training indexes are not consistent across average flows.')
+            if hasattr(flow, 'test_idx') and hasattr(flow, 'training_idx'):
+                if not np.all(flow.test_idx == self.test_idx) or not np.all(flow.training_idx == self.training_idx):
+                    print('Warning: validation and training indexes are not consistent across average flows.')
         # copy in flows:
         self.flows = flows
         # process:
@@ -2144,7 +2146,7 @@ class average_flow(FlowCallback):
         _temp_weights = []
         for flow in self.flows:
             if key not in flow.log.keys():
-                _temp_weights.append(np.inf)
+                raise ValueError('Cannot initialize average flow weights. Key', key, 'not found in flow', flow.name_tag)
             else:
                 _temp_weights.append(flow.log[key][-1])
         # compute weighting factors:
@@ -2267,21 +2269,84 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
     return flow
 
 
-def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob', **kwargs):
+def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob', use_mpi=True, **kwargs):
     """
     Helper to initialize and train a synthetic probability starting from a chain.
     If a cache directory is specified then training results are cached and
     retreived at later calls.
     """
+    
+    # get feedback flag:
+    feedback = kwargs.get('feedback', 0)
+    if feedback is None:
+        feedback = 0
 
-    # check if we want to create a cache folder:
+    # MPI is incompatible with no cache:
+    if use_mpi and cache_dir is None:
+        use_mpi = False
+        print('Warning: MPI is incompatible with no cache. Disabling MPI.')    
+
+    # check if we want to use MPI:
+    if use_mpi:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+        if rank is None:
+            rank = 0
+        if size is None:
+            size = 1
+    else:
+        rank = 0
+        size = 1
+
+    if size > 1 and rank == 0 and feedback > 0:
+        print('Training average flow with MPI enabled')
+        print('MPI size:', size)
+
+   # check if we want to create a cache folder:
     if cache_dir is not None:
         if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
+            if rank == 0:
+                os.makedirs(cache_dir)    
+        
+    # draw training and test indexes so that they are shared across flows:
+    if 'validation_training_idx' not in kwargs:
+        validation_training_idx = None
+        if rank == 0:
+            idx_cache_files = cache_dir + '/' + root_name + '.validation_training_idx.pickle'
+            if os.path.isfile(idx_cache_files):
+                with open(idx_cache_files, 'rb') as handle:
+                    validation_training_idx = pickle.load(handle)
+            else:
+                # get number of samples:
+                n = chain.samples.shape[0]
+                # draw:
+                indices = np.random.permutation(n)
+                # get validation split:
+                validation_split = kwargs.get('validation_split', 0.1)
+                n_split = int(validation_split * n)
+                validation_training_idx = indices[:n_split], indices[n_split:]
+                # save to file:
+                if cache_dir is not None:
+                    with open(idx_cache_files, 'wb') as handle:
+                        pickle.dump(validation_training_idx, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        # broadcast:
+        if use_mpi:
+            validation_training_idx = comm.bcast(validation_training_idx, root=0)
+        kwargs['validation_training_idx'] = validation_training_idx
 
     # load each flow from cache or compute:
     flows = []
     for i in range(num_flows):
+        
+        # skip if not in rank:
+        if i % size != rank:
+            continue
+        # proceed:
+        if use_mpi and feedback > 0 and size > 1:
+            print('Training flow', i, 'on MPI worker', rank)
+            
         # get output root:
         if cache_dir is not None:
             _outroot = cache_dir + '/' + root_name + '_' + str(i)
@@ -2300,15 +2365,21 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
             if cache_dir is not None:
                 flow.save(_outroot)
             flows.append(flow)
-        # initialize training and validation split to make consistent:
-        if i==0:
-            validation_training_idx = flow.test_idx, flow.training_idx
-            kwargs['validation_training_idx'] = validation_training_idx
 
-    # initialize the average flow:
-    if len(flows) == 1:
-        _avg_flow = flows[0]
-    else:
-        _avg_flow = average_flow(flows, **kwargs)
-    #
-    return _avg_flow
+    # we cannot syncronize the flows over pickle, but the flows are saved to file...
+    if use_mpi and size > 1:
+        # barrier:
+        comm.Barrier()
+        return average_flow_from_chain(chain=chain, 
+                                       num_flows=num_flows, 
+                                       cache_dir=cache_dir, 
+                                       root_name=root_name, 
+                                       use_mpi=False, **kwargs)
+    else:    
+        # initialize the average flow:
+        if len(flows) == 1:
+            _avg_flow = flows[0]
+        else:
+            _avg_flow = average_flow(flows, **kwargs)
+        #
+        return _avg_flow
