@@ -89,7 +89,7 @@ def from_chi2_to_sigma(val, dofs, exact_threshold=6):
     # prepare:
     x = val/dofs
     # if value over dofs is low use direct calculation:
-    if x < 6:
+    if x < exact_threshold:
         res = from_confidence_to_sigma(scipy.stats.chi2.cdf(val, dofs))
     # if value is high use first order asyntotic expansion:
     else:
@@ -107,7 +107,7 @@ def from_chi2_to_sigma(val, dofs, exact_threshold=6):
 
 def KL_decomposition(matrix_a, matrix_b):
     """
-    Computes the Karhunen–Loeve (KL) decomposition of the matrix A and B. \n
+    Computes the Karhunen-Loeve (KL) decomposition of the matrix A and B. \n
     Notice that B has to be real, symmetric and positive. \n
     The algorithm is taken from
     `this link <http://fourier.eng.hmc.edu/e161/lectures/algebra/node7.html>`_.

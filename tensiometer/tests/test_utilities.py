@@ -74,8 +74,10 @@ class test_chi2_to_sigma(unittest.TestCase):
     # test values:
     def test_values(self):
         assert np.allclose(ttu.from_chi2_to_sigma(1., 1.), 1.0)
+        assert np.allclose(ttu.from_chi2_to_sigma(5.0, 2.),
+                           ttu.from_chi2_to_sigma(5.0, 2., 1000))
         assert np.allclose(ttu.from_chi2_to_sigma(20.0, 2.),
-                           ttu.from_chi2_to_sigma(20.0, 2., 1000))
+                           ttu.from_chi2_to_sigma(20.0, 2., 9))
 
     # test raises:
     def test_errors(self):
@@ -224,6 +226,8 @@ class test_random_samples_reshuffle(unittest.TestCase):
 
     # test values:
     def test_values(self):
+        ttu.random_samples_reshuffle(self.chain)
+        self.chain.loglikes = None
         ttu.random_samples_reshuffle(self.chain)
 
     # test raises:
