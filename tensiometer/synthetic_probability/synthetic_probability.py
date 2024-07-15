@@ -421,7 +421,7 @@ class FlowCallback(Callback):
             self.bijectors.append(bijector)
 
         self.fixed_bijector = tfb.Chain(self.bijectors)
-
+        
         #
         return None
 
@@ -437,6 +437,12 @@ class FlowCallback(Callback):
         if 'periodic_params' not in kwargs.keys():
             kwargs['periodic_params'] = [True if name in self.trainable_periodic_params else False for name in self.param_names]
 
+        # calculate minimum ranges in training space:
+        _training_samples = self.fixed_bijector.inverse(self.chain_samples).numpy()
+        _training_space_min = np.amin(_training_samples, axis=0).astype(np_prec)
+        _training_space_max = np.amax(_training_samples, axis=0).astype(np_prec)
+        kwargs['parameters_min'] = _training_space_min
+        kwargs['parameters_max'] = _training_space_max
         # select model for trainable transformation:
         if trainable_bijector == 'AutoregressiveFlow':
             self.trainable_transformation = tb.AutoregressiveFlow(self.num_params, 
@@ -607,7 +613,7 @@ class FlowCallback(Callback):
             self,
             learning_rate=1.e-3,
             global_clipnorm=1.0,
-            alpha_lossv=1.0,
+            alpha_lossv=0.5,
             beta_lossv=0.0,
             loss_mode='standard',
             **kwargs):
@@ -710,11 +716,11 @@ class FlowCallback(Callback):
         # get tensorflow verbosity:
         if verbose is None:
             if self.feedback == 0:
-                verbose = 0
+                _verbose = 0
             elif self.feedback >= 1:
-                verbose = 2
+                _verbose = 2
             elif self.feedback >= 3:
-                verbose = 1
+                _verbose = 1
         # set callbacks:
         if callbacks is None:
             callbacks = []
@@ -722,6 +728,11 @@ class FlowCallback(Callback):
             lr_schedule = lr.LRAdaptLossSlopeEarlyStop(min_lr=self.final_learning_rate,
                                                        **utils.filter_kwargs(kwargs, lr.LRAdaptLossSlopeEarlyStop))
             callbacks.append(lr_schedule)
+            # TQDM progress bar:
+            if verbose == -1:
+                from tqdm.keras import TqdmCallback
+                callbacks.append(TqdmCallback(verbose=self.feedback))
+                _verbose = 0
 
         # Run training:
         hist = self.model.fit(
@@ -730,7 +741,7 @@ class FlowCallback(Callback):
             epochs=epochs,
             steps_per_epoch=steps_per_epoch,
             validation_data=self.validation_dataset,
-            verbose=verbose,
+            verbose=_verbose,
             callbacks=[tf.keras.callbacks.TerminateOnNaN(), self] + callbacks,
             **utils.filter_kwargs(kwargs, self.model.fit))
         # model is now trained:
@@ -1704,7 +1715,7 @@ class FlowCallback(Callback):
         return None
     
     @matplotlib.rc_context(plot_options)
-    def training_plot(self, logs=None, file_path=None, ipython_plotting=False):
+    def training_plot(self, logs=None, file_path=None, ipython_plotting=False, title=None):
         """
         Method to produce training plot with training metrics
         """
@@ -1756,8 +1767,11 @@ class FlowCallback(Callback):
             self._plot_chi2_ks_p(axes[9], logs=_logs)
 
         # plot title:
-        if 'population' in self.log.keys():
-            plt.suptitle('Training population ' + str(self.log['population']), fontweight='bold')
+        if title is not None:
+            plt.suptitle(title, fontweight='bold')
+        else:
+            if 'population' in self.log.keys():
+                plt.suptitle('Training population ' + str(self.log['population']), fontweight='bold')
             
         # finalize plot:
         plt.tight_layout(pad=0.5, w_pad=0.5, h_pad=0.5)
@@ -1813,6 +1827,21 @@ class FlowCallback(Callback):
             plt.show()
         #
         return None
+    
+    def print_training_summary(self):
+        """
+        Prints the summary of training metrics.
+        """
+        # length of maximum label for formatting:
+        _max_label = max(len(_t) for _t in self.training_metrics)
+        # cycle over metrics:        
+        for _t in self.training_metrics:
+            _v = self.log[_t][-1]
+            if np.abs(_v) > 1e3 or np.abs(_v) < 1e-3:
+                _pv = f"{_v:.4e}"
+            else:
+                _pv = f"{_v:.4f}"
+            print(_t.ljust(_max_label)+':', _pv)
 
 
 ###############################################################################
@@ -2020,7 +2049,6 @@ class TransformedFlowCallback(FlowCallback):
                 self.parameter_ranges = {p:(temp_samples[:,i].min(), temp_samples[:,i].max()) for i,p in enumerate(transformation.param_names_out)}
                 for i in fix_params:
                     name = flow.param_names[i]
-                    # print(name)
                     self.parameter_ranges[name] = flow.parameter_ranges[name]
 
         else:
@@ -2138,23 +2166,34 @@ class average_flow(FlowCallback):
         #
         return None
 
-    def _set_flow_weights(self, key='val_loss'):
+    def _set_flow_weights(self, mode='val_loss'):
         """
         Compute the relative weights of flows based on validation loss
         """
         # get weights:
-        _temp_weights = []
-        for flow in self.flows:
-            if key not in flow.log.keys():
-                raise ValueError('Cannot initialize average flow weights. Key', key, 'not found in flow', flow.name_tag)
+        if mode == 'equal':
+            self.weights = np.ones(self.num_flows) / self.num_flows
+        else:       
+            _temp_weights = []
+            for flow in self.flows:
+                if mode not in flow.log.keys():
+                    raise ValueError('Cannot initialize average flow weights. Key', key, 'not found in flow', flow.name_tag)
+                _temp_weights.append(flow.log[mode][-1])
+
+            if mode == 'loss' or mode == 'val_loss':
+                _temp_weights = np.exp(np.amin(_temp_weights) - _temp_weights)
+                self.weights = _temp_weights / np.sum(_temp_weights)
+                
+            if mode == 'chi2Z_ks_p':
+                _temp_weights = np.exp(np.log(_temp_weights) - np.amax(np.log(_temp_weights)))
+                self.weights = _temp_weights / np.sum(_temp_weights)
+            
             else:
-                _temp_weights.append(flow.log[key][-1])
-        # compute weighting factors:
-        _temp_weights = _temp_weights / np.amin(_temp_weights)
-        _temp_weights = np.exp(-_temp_weights)
-        # normalize and save:
-        self.weights = _temp_weights / np.sum(_temp_weights)
+                self.weights = _temp_weights / np.sum(_temp_weights)
+
+        # save:
         self.weights = self.cast(self.weights)
+
         # initialize multinomial over weights for sampling:
         self.weights_prob = tfp.distributions.Multinomial(1, probs=self.weights, validate_args=True)
         self.distribution = tfp.distributions.Mixture(
@@ -2174,18 +2213,43 @@ class average_flow(FlowCallback):
         return None
 
     ###############################################################################
-    # Plotting:
+    # Plotting and feedback:
 
     @matplotlib.rc_context(plot_options)
     def training_plot(self, logs=None, file_path=None, ipython_plotting=False):
         """
         Method to produce training plot with training metrics
         """
-        file_name, file_format = os.path.splitext(file_path)
+        if file_path is not None:
+            file_name, file_format = os.path.splitext(file_path)
         for _i, flow in enumerate(self.flows):
-            flow.training_plot(logs=logs, file_path=file_name+'_'+str(_i)+'.'+file_format, ipython_plotting=ipython_plotting)
+            if file_path is not None:
+                _temp_name = file_name+'_'+str(_i)+file_format
+            else:
+                _temp_name = None
+            flow.training_plot(logs=logs, 
+                               file_path=_temp_name, 
+                               ipython_plotting=ipython_plotting,
+                               title='Training flow '+str(_i))
         #
         return None
+
+    def print_training_summary(self):
+        """
+        Prints the summary of training metrics. IW
+        """
+        # print number of flows:
+        print('Number of flows:', self.num_flows)
+        # print flow weights:
+        with np.printoptions(precision=2, suppress=True):
+            print('Flow weights   :', self.weights.numpy())
+        # cycle over training metrics using the first flow as template:
+        _max_label = max(len(_t) for _t in self.flows[0].training_metrics)
+        # cycle over metrics:        
+        for _t in self.flows[0].training_metrics:
+            _v = np.array([_f.log[_t][-1] for _f in self.flows])          
+            with np.printoptions(precision=2, suppress=False):
+                print(_t.ljust(_max_label)+':', _v)
     
     ###############################################################################
     # Utility functions:
@@ -2308,14 +2372,17 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
     if cache_dir is not None:
         if not os.path.exists(cache_dir):
             if rank == 0:
-                os.makedirs(cache_dir)    
+                os.makedirs(cache_dir)
         
     # draw training and test indexes so that they are shared across flows:
     if 'validation_training_idx' not in kwargs:
         validation_training_idx = None
         if rank == 0:
-            idx_cache_files = cache_dir + '/' + root_name + '.validation_training_idx.pickle'
-            if os.path.isfile(idx_cache_files):
+            if cache_dir is not None:
+                idx_cache_files = cache_dir + '/' + root_name + '.validation_training_idx.pickle'
+            else:
+                idx_cache_files = None
+            if idx_cache_files is not None and os.path.isfile(idx_cache_files):
                 with open(idx_cache_files, 'rb') as handle:
                     validation_training_idx = pickle.load(handle)
             else:
@@ -2346,6 +2413,8 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
         # proceed:
         if use_mpi and feedback > 0 and size > 1:
             print('Training flow', i, 'on MPI worker', rank)
+        else:
+            print('Training flow', i)
             
         # get output root:
         if cache_dir is not None:

@@ -684,6 +684,8 @@ class AutoregressiveFlow(TrainableTransformation):
             kernel_initializer=None,
             permutations=True,
             scale_roto_shift=False,
+            parameters_min=None,
+            parameters_max=None,
             # spline parameters:
             map_to_unitcube=False,
             spline_knots=8,
@@ -694,10 +696,11 @@ class AutoregressiveFlow(TrainableTransformation):
             autoregressive_scale_with_dim=True,
             autoregressive_identity_dims=None,
             int_np_prec=np.int32,
+            np_prec=np.float32,
             feedback=0,
             **kwargs):
         """
-        :param num_params: number of parameters of the distribution.
+        :param num_params: number of parameters of the distribution. IW 
         :param transformation_type: type of transformation, either 'affine' or 'spline'.
         :param autoregressive_type: type of autoregressive network, either 'masked' or 'flex'.
         :param n_transformations: number of transformations to concatenate.
@@ -745,6 +748,18 @@ class AutoregressiveFlow(TrainableTransformation):
                 periodic_params = None
         if periodic_params is not None: 
             assert transformation_type == 'spline'
+            
+        # check ranges for non-periodic parameters:
+        if parameters_min is not None and parameters_max is not None:
+            if transformation_type == 'spline':
+                # the spline range better enclose all the samples:
+                _temp_range_max = max(np.abs(np.amin(parameters_min)), np.abs(np.amax(parameters_max))).astype(type(range_max))
+                if range_max < _temp_range_max:
+                    print('WARNING: range_max should be larger than the maximum range of the data and is beeing adjusted.')
+                    print('    range_max:', range_max)
+                    print('    max range:', _temp_range_max)
+                    range_max = (_temp_range_max + 1).astype(np_prec)
+                    print('    new range_max:', range_max)
         
         # initialize kernel initializer:    
         if kernel_initializer is None:
@@ -752,7 +767,7 @@ class AutoregressiveFlow(TrainableTransformation):
                 scale=1. / n_transformations,
                 mode='fan_avg',
                 distribution='truncated_normal',
-                seed=np.random.randint(np.iinfo(np.int32).max))
+                seed=np.random.randint(np.iinfo(int_np_prec).max))
 
         # Build transformed distribution
         bijectors = []
