@@ -102,7 +102,6 @@ def tensor_deflation(A, l, x):
     :param A: the input tensor
     :param l: the scalar to deflate
     :param x: the vector to deflate
-    :return : the deflated tensor
     """
     # get dimension and rank:
     m = len(A.shape)
