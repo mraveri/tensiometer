@@ -11,6 +11,7 @@ import tqdm
 import sys
 import copy
 import numpy as np
+import scipy
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d
 from scipy.interpolate import LinearNDInterpolator
@@ -33,6 +34,7 @@ from getdist.densities import Density1D, Density2D
 # tensiometer imports:
 from .. import utilities as utils
 from . import fixed_bijectors as pb
+from . import synthetic_probability as sp
 
 ###############################################################################
 # utility functions:
@@ -85,7 +87,7 @@ def _binned_argmax_2D(x_bins, y_bins, vals, num_bins_x, num_bins_y):
 # minimizer functions
 
 
-def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
+def points_minimizer(func, jac, x0, bounds=None, feedback=0, use_scipy=True, **kwargs):
     """
     Minimize one point. Has default options to deal with 32 bit precisions.
     Note that the scipy implementation can be run with boundaries
@@ -99,6 +101,7 @@ def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
         _options = _temp_kwargs.pop('options', {
             'ftol': 1.e-6,
             'gtol': 1.e-05,
+            'maxls': 100,
         })
         _use_jac = _temp_kwargs.pop('use_jac', True)
         # feedback:
@@ -106,24 +109,31 @@ def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
             print('      method:', _method)
             print('      options:', _options)
             print('      use_jac:', _use_jac)
+            print('      using bounds:', bounds is not None)
         # prepare:
         success, min_value, min_point = [], [], []
         # do the loop:
         for i, _x0 in enumerate(x0):
             # feedback:
-            if feedback > 0:
+            if feedback > 1:
                 print('  * sample', i + 1)
+            if feedback > 2:
+                print('    - initial point', _x0)
+                print('    - initial loss function', func(_x0))
             # main minimizer call:
             result = minimize(
                 func, x0=_x0, 
                 jac=jac if not _use_jac else None, 
-                method=_method, options=_options, **utils.filter_kwargs(_temp_kwargs, minimize))
+                bounds=bounds,
+                method=_method, 
+                options=_options, 
+                **utils.filter_kwargs(_temp_kwargs, minimize))
             # save results:
             success.append(result.success)
             min_value.append(result.fun)
             min_point.append(result.x)
             # feedback:
-            if feedback > 0:
+            if feedback > 1:
                 print('    - Success', result.success)
                 print('    - Loss function', result.fun)
                 if hasattr(result, 'nfev') and hasattr(result, 'njev'):
@@ -135,6 +145,8 @@ def points_minimizer(func, jac, x0, feedback=0, use_scipy=True, **kwargs):
         min_value = np.array(min_value)
         min_point = np.array(min_point)
     else:
+        if bounds is not None:
+            print('WARNING: tensorflow minimizer does not support bounds. Ignoring bounds.')
         result = tfp.optimizer.lbfgs_minimize(
             value_and_gradients_function=lambda x: [func(x), jac(x)],
             initial_position=x0,
@@ -158,6 +170,7 @@ def find_flow_MAP(
         num_best_to_follow=10,
         initial_points=None,
         use_scipy=True,
+        box_bijector=None,
         **kwargs):
     """
     We want to do precise maximization in a large number of dimensions.
@@ -188,9 +201,15 @@ def find_flow_MAP(
     # feedback:
     if feedback > 0:
         print('      using abstract coordinates =', abstract)
+        print('      using box bijector =', box_bijector is not None)  
+    # abstract and box bijector are incompatible:
+    if abstract and box_bijector is not None:
+        raise ValueError('Cannot use abstract coordinates and box bijector at the same time.')      
     # map to abstract space:
     if abstract:
-        best_population = flow.map_to_abstract_coord(best_population)
+        best_population = flow.map_to_abstract_coord(flow.cast(best_population))
+    elif box_bijector is not None:
+        best_population = box_bijector.inverse(flow.cast(best_population))
     # create the tensorflow functions (so that tracing happens here)
     if abstract:
 
@@ -199,6 +218,19 @@ def find_flow_MAP(
 
         def jac(x):
             return -flow.log_probability_abs_jacobian(x)
+        
+    elif box_bijector is not None:
+        
+        def func(x):
+            return -flow.log_probability(box_bijector(x))
+        
+        @tf.function
+        def jac(x):
+            with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+                tape.watch(x)
+                f = func(x)
+            return tape.gradient(f, x)
+        
     else:
 
         def func(x):
@@ -217,12 +249,34 @@ def find_flow_MAP(
             return -flow.log_probability_jacobian(flow.cast(x)).numpy().astype(np.float64)
     else:
         func2, jac2 = func, jac
+    # now set the ranges:
+    if hasattr(flow, 'parameter_ranges') and flow.parameter_ranges is not None:
+        bounds = [flow.parameter_ranges[name] for name in flow.param_names]
+    else:
+        bounds = None
+    if box_bijector is not None or abstract:
+        bounds = None
     # now do the minimization
     success, min_value, min_point = points_minimizer(
-        func2, jac2, best_population, feedback=feedback, use_scipy=use_scipy, **kwargs)
+        func2, jac2, best_population, 
+        bounds=bounds,
+        feedback=feedback-1, 
+        use_scipy=use_scipy, 
+        **kwargs)
+    # we need to filter for finite values:
+    _filter = np.all(np.isfinite(min_point), axis=1)
+    _filter = np.logical_and(_filter, np.isfinite(min_value))
+    _filter = np.logical_and(_filter, success)
+    min_value = min_value[_filter]
+    min_point = min_point[_filter]
     # then find best solution and send out:
-    _value = min_value[np.argmin(min_value)]
-    _solution = min_point[np.argmin(min_value)]
+    _min_idx = np.argmin(min_value)
+    _value = -min_value[_min_idx]
+    _solution = min_point[_min_idx]
+    # feedback:
+    if feedback > 0:
+        print('  * best value found =', _value)
+        print('  * best point found =', _solution)    
     #
     return _value, _solution
 
@@ -232,6 +286,37 @@ def find_flow_MAP(
 
 
 class posterior_profile_plotter(mcsamples.MCSamples):
+    
+    # default options:
+    options = {
+               'initialize_cache': False,
+               'use_scipy': True,
+               'pre_polish': True,
+               'polish': True,
+               'smoothing': True,
+               'box_prior': False,
+               'update_MAP': True,
+               'update_1D': True,
+               'update_2D': True,
+               # maximization options:
+               'num_minimization_samples': 20000,
+               # 1D profile options:               
+               'num_points_1D': 64,
+               'learning_rate_1D': 0.1,
+               'num_gd_interactions_1D': 100,
+               # 2D profile options:
+               'num_points_2D': 32,
+               'learning_rate_2D': 0.1,
+               'num_gd_interactions_2D': 100,
+               # scipy minimizer options:
+               'scipy_method': 'L-BFGS-B',
+               'scipy_options': {'ftol': 1.e-6, 'gtol': 1.e-05},
+               'scipy_use_jac': True,
+               # tensorflow minimizer options:
+               'tf_tolerance': 1.e-5,
+               'tf_max_iterations': 1000,
+               'tf_max_line_search_iterations': 20,
+            }
 
     def __init__(self, flow, feedback=1, **kwargs):
         """
@@ -241,14 +326,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # initialize settings:
         self.feedback = feedback
         # initialize internal variables:
-        initialize_cache = kwargs.get('initialize_cache', True)
+        initialize_cache = kwargs.get('initialize_cache', self.options['initialize_cache'])
         name_tag = kwargs.get('name_tag', flow.name_tag + '_profiler')
         # initialize global options:
-        self.use_scipy = kwargs.get('use_scipy', False)
-        self.pre_polish = kwargs.get('pre_polish', True)
-        self.polish = kwargs.get('polish', True)
-        self.smoothing = kwargs.get('smoothing', True)
-        self.box_prior = kwargs.get('box_prior', True)
+        self.use_scipy = kwargs.get('use_scipy', self.options['use_scipy'])
+        self.pre_polish = kwargs.get('pre_polish', self.options['pre_polish'])
+        self.polish = kwargs.get('polish', self.options['polish'])
+        self.smoothing = kwargs.get('smoothing', self.options['smoothing'])
+        self.box_prior = kwargs.get('box_prior', self.options['box_prior'])
         # feedback:
         if self.feedback > 0:
             print('Flow profiler')
@@ -258,6 +343,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             print('  * smoothing  =', self.smoothing)
             print('  * box_prior  =', self.box_prior)
             print('  * parameters =', flow.param_names)
+            print('  * feedback   =', self.feedback)
         # initialize the parent with the flow (so we can do margestats)
         if hasattr(flow, 'chain_samples') and flow.chain_samples is not None:
             _samples = flow.chain_samples
@@ -277,6 +363,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         self.flow = flow
         # define the empty caches:
         self.reset_cache()
+        # initialize options:
+        self.options.update(kwargs)
         # call the initial calculation:
         if initialize_cache:
             self.update_cache(**kwargs)
@@ -292,10 +380,13 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 0:
             print('  * initializing profiler data.')
             
+        # update options:
+        self.options.update(kwargs)
+
         # get default options:
-        _update_MAP = kwargs.get('update_MAP', True)
-        _update_1D = kwargs.get('update_1D', True)
-        _update_2D = kwargs.get('update_2D', True)
+        _update_MAP = kwargs.get('update_MAP', self.options.get('update_MAP'))
+        _update_1D = kwargs.get('update_1D', self.options.get('update_1D'))
+        _update_2D = kwargs.get('update_2D', self.options.get('update_2D'))
 
         # draw the initial population of samples:
         if _update_MAP or \
@@ -348,27 +439,15 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 0:
             print('  * initializing profiler data.')
 
-        # # draw the initial population of samples:
-        # if 'update_MAP' in kwargs.keys() or \
-        #    'update_1D' in kwargs.keys() or \
-        #    'update_2D' in kwargs.keys():
-        #     self.sample_profile_population(**kwargs)
-
         # get parameter names:
         if params is not None:
             indexes = [self._parAndNumber(name)[0] for name in params]
         else:
             indexes = list(range(self.n))
 
-        # # initialize best fit:
-        # if kwargs.get('update_MAP', True):
-        #     if self.feedback > 0:
-        #         print('  * finding MAP')
-        #     self.find_MAP(**kwargs)
-
         # initialize 1D profiles:
 
-        if kwargs.get('update_1D', True):
+        if kwargs.get('update_1D', self.options.get('update_1D')):
             self._1d_bins = {}
             # prepare indexes:
             self._1d_name_idx = list(zip(params, indexes))
@@ -380,7 +459,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             for name, ind in tqdm.tqdm(self._1d_name_idx, file=sys.stdout, desc='    1D profiles'):
                 # call the MCSamples method to have the marginalized density:
                 marge_density = super().get1DDensityGridData(
-                    name, fine_bins=kwargs.get('num_points_1D', 64), num_bins=kwargs.get('num_points_1D', 64), **kwargs)
+                    name, 
+                    fine_bins=kwargs.get('num_points_1D', self.options.get('num_points_1D')), 
+                    num_bins=kwargs.get('num_points_1D', self.options.get('num_points_1D')), 
+                    **kwargs)
                 # get valid bins:
                 if self.flow.parameter_ranges is not None:
                     _rang = self.flow.parameter_ranges[name]
@@ -392,7 +474,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 self._1d_logP[name] = np.full(len(x_bins) - 1, -np.inf, dtype=np.float32)
 
         # initialize 2D profiles:
-        if kwargs.get('update_2D', True):
+        if kwargs.get('update_2D', self.options.get('update_2D')):
             self._2d_bins = {}
             # prepare indexes:
             names = list(combinations(params, 2))
@@ -409,7 +491,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 name1, name2 = name
                 # call the MCSamples method to have the marginalized density:
                 marge_density = super().get2DDensityGridData(
-                    ind1, ind2, fine_bins_2D=kwargs.get('num_points_2D', 32), **kwargs)
+                    ind1, ind2, fine_bins_2D=kwargs.get('num_points_2D', self.options.get('num_points_2D')), **kwargs)
                 # get valid bins:
                 if self.flow.parameter_ranges is not None:
                     _rang = self.flow.parameter_ranges[name1]
@@ -428,7 +510,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             # sample
             self.sample_profile_population(**kwargs)
             # do 1d
-            if kwargs.get('update_1D', True):
+            if kwargs.get('update_1D', self.options.get('update_1D')):
                 for name, idx in self._1d_name_idx:
                     # protect for samples inside bins:
                     x_bins = self._1d_bins[name]
@@ -464,7 +546,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         self._1d_samples[name][_filter_valid_bins])
                 
             
-            if kwargs.get('update_2D', True):
+            if kwargs.get('update_2D', self.options.get('update_2D')):
                 for names, idxs in self._2d_name_idx:
                     idx1, idx2 = idxs
                     name1, name2 = names
@@ -510,14 +592,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     
 
         # initialize 1D profiles:
-        if kwargs.get('update_1D', True):
+        if kwargs.get('update_1D', self.options.get('update_1D')):
             if self.feedback > 0:
                 print('  * initializing 1D profiles')
             for _, ind in tqdm.tqdm(self._1d_name_idx, file=sys.stdout, desc='    1D profiles'):
                 self.get1DDensityGridData(ind, **kwargs)
                 
         # initialize 2D profiles:
-        if kwargs.get('update_2D', True):
+        if kwargs.get('update_2D', self.options.get('update_2D')):
             if self.feedback > 0:
                 print('  * initializing 2D profiles')
             # run the loop:
@@ -571,7 +653,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         if self.feedback > 1:
             print('    * generating samples for profiler')
         # settings:
-        num_minimization_samples = kwargs.get('num_minimization_samples', 20000 * self.flow.num_params)
+        num_minimization_samples = kwargs.get('num_minimization_samples', self.options.get('num_minimization_samples'))
         # feedback:
         if self.feedback > 1:
             print('    - number of random search samples =', num_minimization_samples)
@@ -629,7 +711,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         #
         return bound_bijector
 
-    def find_MAP(self, x0=None, randomize=True, num_best_to_follow=10, abstract=False, **kwargs):
+    def find_MAP(self, x0=None, randomize=True, num_best_to_follow=100, abstract=False, **kwargs):
         """
         Find the flow MAP. Strategy is sample and then minimize.
         """
@@ -673,6 +755,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             else:
                 print('    - doing minimization (tensorflow)')
         t0 = time.time()
+        # prepare kwargs:
+        _temp_kwargs = kwargs
+        if self.use_scipy:
+            _temp_kwargs['options'] = kwargs.pop('scipy_options', self.options.get('scipy_options'))
+            _temp_kwargs['method'] = kwargs.pop('scipy_method', self.options.get('scipy_method'))
+            _temp_kwargs['use_jac'] = kwargs.pop('scipy_use_jac', self.options.get('scipy_use_jac'))
+        else:
+            _temp_kwargs['tolerance'] = kwargs.pop('tf_tolerance', self.options.get('tf_tolerance'))
+            _temp_kwargs['max_iterations'] = kwargs.pop('tf_max_iterations', self.options.get('tf_max_iterations'))
+            _temp_kwargs['max_line_search_iterations'] = kwargs.pop(
+                'tf_max_line_search_iterations', self.options.get('tf_max_line_search_iterations'))
         # call population minimizer:
         _value, _solution = find_flow_MAP(
             self.flow,
@@ -680,7 +773,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             abstract=abstract,
             initial_points=initial_population,
             use_scipy=self.use_scipy,
-            **kwargs)
+            box_bijector=self._get_masked_box_bijector() if self.box_prior else None,
+            **_temp_kwargs)
         # feedback:
         t1 = time.time() - t0
         if self.feedback > 1:
@@ -691,11 +785,16 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         self.flow_MAP_logP = _value
         # initialize getdist things:
         self._initialize_bestfit()
-        self._initialize_likestats()
         #
         return _value, _solution
 
-    def _initialize_likestats(self):
+    def getLikeStats(self, profile_lims=True):
+        """
+        Get likelihood statistics
+        """
+        return self._initialize_likestats(profile_lims=profile_lims)
+            
+    def _initialize_likestats(self, profile_lims=True):
         """
         Initialize likestats
         """
@@ -704,48 +803,83 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             raise ValueError('_initialize_likestats can only run after MAP finder')
         # initialize likestats:
         m = types.LikeStats()
-        maxlike = -self.flow_MAP_logP
-        m.logLike_sample = maxlike
-        # samples statistics:
+        maxlike = self.flow_MAP_logP
+        m.logLike_sample = -maxlike
+        # check that we have cached samples, otherwise generate:
         if self.temp_samples is None:
-            _temp_samples = self.temp_samples
-            _temp_loglikes = -self.temp_probs
-        else:
-            _temp_samples = self.samples
-            _temp_loglikes = self.loglikes
-        try:
-            if np.max(self.loglikes) - maxlike < 30:
-                m.logMeanInvLike = np.log(self.mean(np.exp(_temp_loglikes - maxlike))) + maxlike
-            else:
-                m.logMeanInvLike = None
-        except:
-            raise
+            self.sample_profile_population()
+        # get samples and loglikes from flow:
+        _temp_samples = self.temp_samples.numpy()
+        _temp_loglikes = self.temp_probs.numpy()
+        # compute likelihood statistics:
         m.meanLogLike = np.mean(_temp_loglikes)
-        m.logMeanLike = -np.log(self.mean(np.exp(-(_temp_loglikes - maxlike)))) + maxlike
-        # assuming maxlike is well determined
-        m.complexity = 2 * (m.meanLogLike - maxlike)
+        m.complexity = 2 * (maxlike - m.meanLogLike)
+        m.logMeanInvLike = np.log(np.mean(np.exp(-_temp_loglikes + maxlike))) - maxlike
+        m.logMeanLike = -np.log(np.mean(np.exp(_temp_loglikes - maxlike))) + maxlike
         m.names = self.paramNames.names
 
-        # get N-dimensional confidence region
-        indexes = _temp_loglikes.argsort()
-        _num_samples = len(indexes)
-        cumsum = np.cumsum(np.ones(_num_samples))
-        ncontours = len(self.contours)
-        m.ND_contours = np.searchsorted(cumsum, _num_samples * self.contours[0:ncontours])
+        if profile_lims:
 
-        for j, par in enumerate(self.paramNames.names):
-            par.ND_limit_bot = np.empty(ncontours)
-            par.ND_limit_top = np.empty(ncontours)
-            for i, cont in enumerate(m.ND_contours):
-                region = _temp_samples[indexes[:cont], j]
-                par.ND_limit_bot[i] = np.min(region)
-                par.ND_limit_bot[i] = np.max(region)
-            par.bestfit_sample = self.flow_MAP[j]
+            ncontours = len(self.contours)
+            for j, par in enumerate(self.paramNames.names):
+                # get the 1D profile:
+                _prof = self.get1DDensityGridData(j)
+                par.ND_limit_bot = np.empty(ncontours)
+                par.ND_limit_top = np.empty(ncontours)
+                # get minimum and maximum:
+                _min_val = par.limmin if hasattr(par, 'limmin') else _prof.x[0]
+                _max_val = par.limmax if hasattr(par, 'limmax') else _prof.x[-1]
+                # get the likelihood ratio contours:                
+                for i, cont in enumerate(self.contours):
+                    # initialize:
+                    _lim_bot = _min_val
+                    _lim_top = _max_val
+                    # prepare the likelihood ratio:
+                    _filter = _prof.P > 0
+                    _log_P = np.log(_prof.P[_filter])
+                    _temp_x = _prof.x[_filter]
+                    _temp_y = _log_P.max() - _log_P - scipy.stats.chi2.ppf(cont, 1)
+                    # get the limits:
+                    zero_crossings = np.where(np.diff(np.sign(_temp_y)))[0]
+                    # discriminate several cases:
+                    if len(zero_crossings) == 1:
+                        if zero_crossings[0] != 0:
+                            # detect if growing or decreasing:
+                            if _temp_y[zero_crossings[0]] - _temp_y[zero_crossings[0] - 1] < 0:
+                                _lim_bot = _temp_x[zero_crossings[0]]
+                            else:
+                                _lim_top = _temp_x[zero_crossings[0]]
+                    elif len(zero_crossings) > 1:
+                        _lim_bot = _temp_x[zero_crossings[0]]
+                        _lim_top = _temp_x[zero_crossings[-1]]
+                    # save limits:
+                    par.ND_limit_bot[i] = _lim_bot
+                    par.ND_limit_top[i] = _lim_top
+                                        
+                par.bestfit_sample = self.flow_MAP[j]
+                    
+        else:
+
+            # get N-dimensional confidence region, standard getdist code
+            indexes = _temp_loglikes.argsort()
+            _num_samples = len(indexes)
+            cumsum = np.cumsum(np.ones(_num_samples))
+            ncontours = len(self.contours)
+            m.ND_contours = np.searchsorted(cumsum, _num_samples * self.contours[0:ncontours])
+
+            for j, par in enumerate(self.paramNames.names):
+                par.ND_limit_bot = np.empty(ncontours)
+                par.ND_limit_top = np.empty(ncontours)
+                for i, cont in enumerate(m.ND_contours):
+                    region = _temp_samples[indexes[:cont], j]
+                    par.ND_limit_bot[i] = np.min(region)
+                    par.ND_limit_bot[i] = np.max(region)
+                par.bestfit_sample = self.flow_MAP[j]
 
         # save out:
         self.likeStats = m
         #
-        return None
+        return self.likeStats
 
     def _initialize_bestfit(self):
         """
@@ -793,6 +927,20 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             self.get1DDensityGridData(name, **kwargs)
         #
         return None
+    
+    def normalize(self, by='max', **kwargs):
+        """
+        Normalize the cached profile posterior.
+        """
+        # normalize 1D profiles:
+        for key in self.profile_density_1D.keys():
+            self.profile_density_1D[key].normalize(by=by, **kwargs)
+        # normalize 2D profiles:
+        for key in self.profile_density_2D.keys():
+            for key2 in self.profile_density_2D[key].keys():
+                self.profile_density_2D[key][key2].normalize(by=by, **kwargs)
+        #
+        return None
 
     def get1DDensityGridData(self, name, num_points_1D=64, **kwargs):
         """
@@ -814,24 +962,34 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # look for cached results:
         if idx in self.profile_density_1D.keys():
             return self.profile_density_1D[idx]
-        
+
+        # if not cached redo the calculation:
+        if self.feedback > 1:
+            print('')
+            print('    * calculating the 1D profile for:', par_name.name, 'with index', idx)
+
         # call the MCSamples method to have the marginalized density:
-        marge_density = super().get1DDensityGridData(name, fine_bins=num_points_1D, num_bins=num_points_1D, **kwargs)
+        marge_density = super().get1DDensityGridData(name, 
+                                                     fine_bins=num_points_1D, # these have to be kept the same
+                                                     num_bins=num_points_1D, # these have to be kept the same
+                                                     smooth_scale_1D=10.0, # this should not matter here
+                                                     )
         
         if hasattr(self, '_1d_logP'):
+
             _result_logP = self._1d_logP[par_name.name]
             _filter_finite = np.isfinite(_result_logP)
             _result_logP = _result_logP[_filter_finite]
             _flow_full_samples = self._1d_samples[par_name.name][_filter_finite,:]
+
         else:
+            
             # check that we have cached samples, otherwise generate:
             if self.temp_samples is None:
                 self.sample_profile_population(**kwargs)
-                
-            # if not cached redo the calculation:
-            if self.feedback > 1:
-                print('    * calculating the 1D profile for:', par_name.name, 'with index', idx)
-                
+                       
+            # randomized maximizer algorithm:
+         
             # feedback:
             if self.feedback > 1:
                 print('    - doing initial randomized search')
@@ -843,9 +1001,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 x_bins = marge_density.x[np.logical_and(_rang[0] <= marge_density.x, _rang[1] >= marge_density.x)]
             else:
                 x_bins = marge_density.x
+
+            # we need to re-draw the grid since it might have been changed by getdist:
+            x_bins = np.linspace(np.min(x_bins), np.max(x_bins), num_points_1D + 1)
+
             # protect for samples inside bins:
             _valid_filter = np.logical_and(
                 self.temp_samples[:, idx] > np.amin(x_bins), self.temp_samples[:, idx] < np.amax(x_bins))
+
             # first find best samples in the bin:
             _indexes = np.digitize(self.temp_samples.numpy()[_valid_filter, idx], x_bins)
             _max_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_valid_filter], len(x_bins))
@@ -879,8 +1042,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             t0 = time.time()
 
             # do the iterations:
-            _learning_rate = kwargs.get('learning_rate_1D', 0.1)
-            _num_iterations = kwargs.get('num_gd_interactions_1D', 400)
+            _learning_rate = kwargs.get('learning_rate_1D', self.options.get('learning_rate_1D'))
+            _num_iterations = kwargs.get('num_gd_interactions_1D', self.options.get('num_gd_interactions_1D'))
             _ensemble = copy.deepcopy(_flow_full_samples)
             _ensemble, temp_probs, num_moving, num_iter = self._masked_gradient_ascent(
                 learning_rate=_learning_rate, num_iterations=_num_iterations, ensemble=_ensemble, mask=_mask)
@@ -919,12 +1082,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
                 # read in options:
                 _temp_kwargs = kwargs
-                _method = _temp_kwargs.pop('method', 'L-BFGS-B')
-                _options = _temp_kwargs.pop('options', {
-                    'ftol': 1.e-6,
-                    'gtol': 1.e-05,
-                })
-                _use_jac = _temp_kwargs.pop('use_jac', True)
+                _method = _temp_kwargs.pop('scipy_method', self.options.get('scipy_method'))
+                _options = _temp_kwargs.pop('scipy_options', self.options.get('scipy_options'))
+                _use_jac = _temp_kwargs.pop('scipy_use_jac', self.options.get('scipy_use_jac'))
                 if self.feedback > 2:
                     print('      method:', _method)
                     print('      options:', _options)
@@ -1038,9 +1198,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     value_and_gradients_function=lambda x: [func(x), jac(x)],
                     initial_position=_initial_x,
                     initial_inverse_hessian_estimate=0.5 * (_masked_fisher + tf.transpose(_masked_fisher)),
-                    tolerance=kwargs.get('tolerance', 1.e-5),
-                    max_iterations=kwargs.get('max_iterations', 100),
-                    max_line_search_iterations=kwargs.get('max_line_search_iterations', 100),
+                    tolerance=kwargs.get('tf_tolerance', self.options.get('tf_tolerance')),
+                    max_iterations=kwargs.get('tf_max_iterations', self.options.get('tf_max_iterations')),
+                    max_line_search_iterations=kwargs.get('tf_max_line_search_iterations', self.options.get('tf_max_line_search_iterations')),
                 )
                 _filter = -_tf_results.objective_value > _result_logP
                 # feedback:
@@ -1082,9 +1242,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _flow_full_samples = _flow_full_samples.numpy()
 
         # now interpolate:
+        _max_log_P = np.amax(_result_logP)
         _temp_interp = interp1d(
-            _flow_full_samples[:, idx], np.exp(_result_logP), kind='cubic', bounds_error=False, fill_value=0.0)
-        _temp_x = np.linspace(marge_density.view_ranges[0], marge_density.view_ranges[1], num_points_1D)
+            _flow_full_samples[:, idx], np.exp(_result_logP - _max_log_P), kind='cubic', bounds_error=False, fill_value=0.0)
+        _temp_x = np.linspace(marge_density.view_ranges[0], marge_density.view_ranges[1], num_points_1D + 1)
         _temp_P = _temp_interp(_temp_x)
 
         t1 = time.time() - t0
@@ -1115,16 +1276,72 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # initialize the density:
         density1D = Density1D(_temp_x, P=_temp_P, view_ranges=marge_density.view_ranges)
         # save out maximum value:
-        density1D.maximum = np.amax(_temp_P)
+        density1D.maximum = _max_log_P
         # normalize:
         density1D.normalize('max', in_place=True)
         # save out the samples:
         density1D.profile_subspace = _flow_full_samples
-
+        # save out smoothing scale:
+        if self.smoothing:
+            density1D.profile_smoothing_scale_1D = _smoothing_sigma
+        else:
+            density1D.profile_smoothing_scale_1D = None
+            
         # cache result:
         self.profile_density_1D[idx] = density1D
         #
         return density1D
+    
+    def get_1d_profile_variance(self, param, normalize_by='integral', **kwargs):
+        """
+        In case we are using an average flow we can calculate the variance of the profile
+        """
+        # check that the flow is an average flow:
+        if not isinstance(self.flow, sp.average_flow):
+            raise ValueError('get_1d_profile_variance can only be used with an average flow.')
+        # get parameter index and density:
+        _idx = self.index[param]
+        _density = self.get1DDensityGridData(param, **kwargs)
+        # get the profile data:        
+        _profile_subspace = _density.profile_subspace
+        _x = _density.x
+        # calculate log probabilities on the profile subspace:
+        _log_probabilities, _probabilities = [], []
+        for _f in self.flow.flows:
+            # calculate the log probability on the profile subspace:
+            _temp_log_P = _f.log_probability(_f.cast(_profile_subspace)).numpy()
+            # interpolate and evaluate on the density grid:
+            _max_log_P = np.amax(_temp_log_P)
+            _temp_interp = interp1d(_profile_subspace[:, _idx], 
+                                    np.exp(_temp_log_P - _max_log_P), kind='cubic', bounds_error=False, fill_value=0.0)
+            _temp_P = _temp_interp(_x)
+            # if the profile is smoothed apply the same smoothing:
+            if hasattr(_density, 'profile_smoothing_scale_1D') and \
+                _density.profile_smoothing_scale_1D is not None:
+                 _temp_P = gaussian_filter1d(_temp_P, _density.profile_smoothing_scale_1D, mode='reflect')
+            # normalize:
+            if normalize_by == 'integral':
+                _temp_P = _temp_P / np.trapz(_temp_P, _x)
+            elif normalize_by == 'max':
+                _temp_P = _temp_P / np.amax(_temp_P)
+            else:
+                raise ValueError('normalize_by should be either integral or max')
+            # save out probabilities:
+            _probabilities.append(_temp_P)
+        # calculate the variance of probability (taking into account flow weights):
+        _temp_average = np.average(_probabilities, axis=0, weights=self.flow.weights)
+        _temp_variance = np.average((_probabilities-_temp_average)**2, axis=0, weights=self.flow.weights)
+        _temp_std = np.sqrt(_temp_variance)
+        # calculate the profile:
+        _profile = _density.Prob(_x)
+        if normalize_by == 'integral':
+            _profile = _profile / np.trapz(_profile, _x)
+        elif normalize_by == 'max':
+            _profile = _profile / np.amax(_profile)
+        else:
+            raise ValueError('normalize_by should be either integral or max')
+        #
+        return _x, _profile, _temp_std      
 
     def precompute_2D(self, param_pairs, **kwargs):
         """
@@ -1155,11 +1372,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         # if not cached redo the calculation:
         if self.feedback > 1:
+            print('')
             print('    * calculating the 2D profile for: ' + parx.name + ', ' + pary.name + ' with indexes ', idx1, idx2)
+
         # call the MCSamples method to have the marginalized density:
-        marge_density = super().get2DDensityGridData(idx1, idx2, fine_bins_2D=num_points_2D, **kwargs)
+        marge_density = super().get2DDensityGridData(idx1, idx2, 
+                                                     fine_bins_2D=num_points_2D, 
+                                                     smooth_scale_2D=10.0,
+                                                     )
 
         if hasattr(self, '_2d_logP'):
+            
             _result_logP = self._2d_logP[parx.name, pary.name]
             _filter_finite = np.isfinite(_result_logP)
             _result_logP = _result_logP[_filter_finite]
@@ -1188,6 +1411,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 x_bins = marge_density.x
                 y_bins = marge_density.y
 
+            # we need to re-draw the grid since it might have been changed by getdist:
+            x_bins = np.linspace(np.amin(x_bins), np.amax(x_bins), num_points_2D + 1)
+            y_bins = np.linspace(np.amin(y_bins), np.amax(y_bins), num_points_2D + 1)
+
             # protect for samples inside bins:
             _valid_filter_x = np.logical_and(
                 self.temp_samples[:, idx1] > np.amin(x_bins), self.temp_samples[:, idx1] < np.amax(x_bins))
@@ -1212,16 +1439,16 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for random algorithm {0:.4g} (s)'.format(t1))
+
+        if self.feedback > 1:
+            print('    - number of 2D bins', num_points_2D**2)
+            print('    - number of empty/filled 2D bins', num_points_2D**2 - len(_result_logP.numpy()), '/', len(_result_logP.numpy()))
             
         # prepare mask:
         _mask = np.ones(self.flow.num_params)
         _mask[idx1] = 0
         _mask[idx2] = 0
         _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
-
-        if self.feedback > 1:
-            print('    - number of 2D bins', num_points_2D**2)
-            print('    - number of empty/filled 2D bins', num_points_2D**2 - len(_result_logP), '/', len(_result_logP))
 
         # gradient descent polishing:
         if self.pre_polish:
@@ -1232,8 +1459,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             t0 = time.time()
 
             # do the iterations:
-            _learning_rate = kwargs.get('learning_rate_2D', 0.1)
-            _num_iterations = kwargs.get('num_gd_interactions_2D', 400)
+            _learning_rate = kwargs.get('learning_rate_2D', self.options.get('learning_rate_2D'))
+            _num_iterations = kwargs.get('num_gd_interactions_2D', self.options.get('num_gd_interactions_2D'))
             _ensemble = copy.deepcopy(_flow_full_samples)
             _ensemble, temp_probs, num_moving, num_iter = self._masked_gradient_ascent(
                 learning_rate=_learning_rate, num_iterations=_num_iterations, ensemble=_ensemble, mask=_mask)
@@ -1273,12 +1500,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
                 # read in options:
                 _temp_kwargs = kwargs
-                _method = _temp_kwargs.pop('method', 'L-BFGS-B')
-                _options = _temp_kwargs.pop('options', {
-                    'ftol': 1.e-6,
-                    'gtol': 1.e-05,
-                })
-                _use_jac = _temp_kwargs.pop('use_jac', True)
+                _method = _temp_kwargs.pop('scipy_method', self.options.get('scipy_method'))
+                _options = _temp_kwargs.pop('scipy_options', self.options.get('scipy_options'))
+                _use_jac = _temp_kwargs.pop('scipy_use_jac', self.options.get('scipy_use_jac'))
                 if self.feedback > 2:
                     print('      method:', _method)
                     print('      options:', _options)
@@ -1412,9 +1636,9 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     value_and_gradients_function=lambda x: [func(x), jac(x)],
                     initial_position=_initial_x,
                     initial_inverse_hessian_estimate=0.5 * (_masked_fisher + tf.transpose(_masked_fisher)),
-                    tolerance=kwargs.get('tolerance', 1.e-5),
-                    max_iterations=kwargs.get('max_iterations', 100),
-                    max_line_search_iterations=kwargs.get('max_line_search_iterations', 100),
+                    tolerance=kwargs.get('tf_tolerance', self.options.get('tolerance')),
+                    max_iterations=kwargs.get('tf_max_iterations', self.options.get('max_iterations')),
+                    max_line_search_iterations=kwargs.get('tf_max_line_search_iterations', self.options.get('max_line_search_iterations')),
                 )
 
                 _filter = -_tf_results.objective_value > _result_logP

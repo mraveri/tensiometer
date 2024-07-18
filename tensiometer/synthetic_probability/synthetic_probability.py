@@ -766,8 +766,11 @@ class FlowCallback(Callback):
         while ind <= pop_size:
             # feedback:
             if self.feedback > 0:
-                print('* Training population', ind)
-
+                if pop_size > 1:
+                    print('* Training population', ind)
+                else:
+                    print('* Training')
+                    
             # initialize logs:
             self.log = {_k: [] for _k in self.log.keys()}
             self.log['population'] = ind
