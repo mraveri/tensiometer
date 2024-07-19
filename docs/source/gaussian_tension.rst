@@ -1,5 +1,5 @@
 tensiometer.gaussian_tension
-==================================
+============================
 
 .. currentmodule:: tensiometer.gaussian_tension
 

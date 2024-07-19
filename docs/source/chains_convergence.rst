@@ -1,5 +1,5 @@
 tensiometer.chains_convergence
-==================================
+==============================
 
 .. currentmodule:: tensiometer.chains_convergence
 

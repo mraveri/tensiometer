@@ -7,5 +7,15 @@ build machine learning normalizing flow models for the distribution.
 The synthetic distribution can then be evaluated at arbitrary points, is differentiable and we can sample from it. 
 """
 
-#
-from .synthetic_probability import FlowCallback, flow_from_chain, average_flow_from_chain
+# module imports:
+from . import synthetic_probability
+from . import flow_utilities
+from . import flow_profiler
+from . import analytic_flow
+from . import flow_CPCA
+
+# internal modules:
+from . import fixed_bijectors
+from . import trainable_bijectors
+from . import loss_functions
+from . import lr_schedulers

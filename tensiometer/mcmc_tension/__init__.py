@@ -13,7 +13,7 @@ of a difference in parameters with normalizing flow methods.
 
 For more details on the method implemented see
 `arxiv 1806.04649 <https://arxiv.org/pdf/1806.04649.pdf>`_
-and `arxiv 1912.04880 <https://arxiv.org/pdf/1912.04880.pdf>`_.
+and `arxiv 2105.03324 <https://arxiv.org/pdf/2105.03324.pdf>`_.
 """
 
 # parameter difference module import:

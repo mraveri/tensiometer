@@ -1,12 +1,13 @@
 tensiometer.utilities
-==================================
+=====================
 
-.. currentmodule:: tensiometer.utilities
+Tensiometer has several general purpose utilities modules
 
-.. automodule:: tensiometer.utilities
-   :members:
+.. toctree::
+   :maxdepth: 1
+   :caption: modules
 
-.. currentmodule:: tensiometer.tensor_eigenvalues
+   utilities/utilities
+   utilities/cosmosis_interface 
 
-.. automodule:: tensiometer.tensor_eigenvalues
-   :members:
+
