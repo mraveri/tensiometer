@@ -1,5 +1,8 @@
 """
+This module contains functions to estimate the probability of a parameter shift given
+with KDE methods.
 
+For further details we refer to `arxiv 2105.03324 <https://arxiv.org/pdf/2105.03324.pdf>`_.
 """
 
 ###############################################################################

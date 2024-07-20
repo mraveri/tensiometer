@@ -1,7 +1,9 @@
-GetDist>=1.1.2
-joblib>=1.0.1
-coverage>=5.5
+# basic packages:
 tqdm
+joblib
+coverage
+# core packages:
+GetDist
 autograd
 pymanopt==0.2.5
 tensorflow>=2.15.0

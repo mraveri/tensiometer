@@ -72,11 +72,13 @@ def get_prior_covariance(chain, param_names=None):
     (`link <https://en.wikipedia.org/wiki/Uniform_distribution_(continuous)>`_)
     is given by:
 
-    .. math:: C_{ij} = \\delta_{ij} \\frac{( max(p_i) - min(p_i) )^2}{12}
+    .. math:: C_{ij} = \\delta_{ij} \\frac{( \\mathrm{max}(p_i) - \\mathrm{min}(p_i) )^2}{12}
 
-    :param chain: :class:`~getdist.mcsamples.MCSamples` the input chain.
-    :param param_names: optional choice of parameter names to
+    :param chain: the input chain.
+    :type chain: :class:`~getdist.mcsamples.MCSamples`
+    :param param_names: choice of parameter names to
         restrict the calculation.
+    :type param_names: optional
     :return: the estimated covariance of the prior.
     """
     # get the parameter names to use:
@@ -104,7 +106,21 @@ def get_prior_covariance(chain, param_names=None):
 def get_localized_covariance(chain_1, chain_2, param_names,
                              localize_params=None, scale=10.):
     """
-    Get localized covariance of chain_1 localized with chain_2
+    This function calculates the localized covariance matrix of `chain_1` using `chain_2` as a reference.
+    The localization is performed by adjusting the weights of the samples in `chain_1` based on their
+    likelihoods with respect to `chain_2`. The resulting covariance matrix is then computed by removing
+    the localization covariance from the full covariance matrix of `chain_1`.
+
+    :param chain_1: the first chain to be localized.
+    :type chain_1: :class:`~getdist.mcsamples.MCSamples`
+    :param chain_2: the second chain used for localization.
+    :type chain_2: :class:`~getdist.mcsamples.MCSamples`
+    :param param_names: the names of the parameters.
+    :param localize_params: the parameters to be localized. If not provided, all parameters will be localized.
+    :type localize_params: optional
+    :param scale: the scaling factor for the covariance matrix. Default is 10.
+    :type scale: optional
+    :return: The localized covariance matrix.
     """
     # initialize param names:
     param_names_1 = _check_param_names(chain_1, param_names)
@@ -170,23 +186,28 @@ def get_Neff(chain, prior_chain=None, param_names=None,
     :math:`\\mathcal{C}_\\Pi` is the covariance of the prior and
     :math:`\\mathcal{C}_p` is the posterior covariance.
 
-    :param chain: :class:`~getdist.mcsamples.MCSamples` the input chain.
-    :param prior_chain: (optional) the prior chain.
+    :param chain: the input chain.
+    :type chain: :class:`~getdist.mcsamples.MCSamples`
+    :param prior_chain: the prior chain.
         If the prior is not well approximated by
         a ranged prior and is informative it is better to explicitly
         use a prior only chain.
         If this is not given the algorithm will assume ranged priors with the
         ranges computed from the input chain.
-    :param param_names: (optional) parameter names to restrict the
+    :type prior_chain: :class:`~getdist.mcsamples.MCSamples` - optional
+    :param param_names: parameter names to restrict the
         calculation of :math:`N_{\\rm eff}`.
         If none is given the default assumes that all running parameters
         should be used.
-    :param prior_factor: (optional) factor to scale the prior covariance.
+    :type param_names: optional
+    :param prior_factor: factor to scale the prior covariance.
         In case of strongly non-Gaussian posteriors it might be useful to
         artificially tighten the prior to have less noise in telling apart
         parameter space directions that are constrained by data and prior.
         Default is no scaling, prior_factor=1.
-    :param localize: (optional) whether to localize the covariance.
+    :type prior_factor: optional
+    :param localize: whether to localize the covariance.
+    :type localize: optional
     :return: the number of effective parameters.
     """
     # initialize param names:
@@ -226,11 +247,13 @@ def gaussian_approximation(chain, param_names=None, **kwargs):
     """
     Function that computes the Gaussian approximation of a given chain.
 
-    :param chain: :class:`~getdist.mcsamples.MCSamples` the input chain.
-    :param param_names: (optional) parameter names to restrict the
+    :param chain: the input chain.
+    :type chain: :class:`~getdist.mcsamples.MCSamples`
+    :param param_names: parameter names to restrict the
         Gaussian approximation.
         If none is given the default assumes that all parameters
         should be used.
+    :type param_names: optional
     :return: :class:`~getdist.gaussian_mixtures.GaussianND` object with the
         Gaussian approximation of the chain.
     """
@@ -292,25 +315,29 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
         the first input chain.
     :param chain_2: :class:`~getdist.mcsamples.MCSamples`
         the second input chain.
-    :param prior_chain: (optional) the prior only chain.
+    :param prior_chain: the prior only chain.
         If the prior is not well approximated by a ranged prior and is
         informative it is better to explicitly use a prior only chain.
         If this is not given the algorithm will assume ranged priors
         with the ranges computed from the input chains.
-    :param param_names: (optional) parameter names of the parameters to be used
+    :type prior_chain: :class:`~getdist.mcsamples.MCSamples` - optional
+    :param param_names: parameter names of the parameters to be used
         in the calculation. By default all running parameters.
-    :param cutoff: (optional) the algorithms needs to detect prior
+    :type param_names: optional
+    :param cutoff: the algorithms needs to detect prior
         constrained directions (that do not contribute to the test)
         from data constrained directions.
         This is achieved through a Karhunen–Loeve decomposition to avoid issues
         with physical dimensions of parameters and cutoff sets the minimum
         improvement with respect to the prior that is used.
         Default is five percent.
-    :param prior_factor: (optional) factor to scale the prior covariance.
+    :type cutoff: optional
+    :param prior_factor: factor to scale the prior covariance.
         In case of strongly non-Gaussian posteriors it might be useful to
         artificially tighten the prior to have less noise in telling apart
         parameter space directions that are constrained by data and prior.
         Default is no scaling, prior_factor=1.
+    :type prior_factor: optional
     :return: :math:`Q_{\\rm DM}` value and number of degrees of freedom.
         Since :math:`Q_{\\rm DM}` is :math:`\\chi^2` distributed the
         probability to exceed the test can be computed
@@ -385,35 +412,43 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
                 normparam=None, dimensional_reduce=True,
                 dimensional_threshold=0.1):
     """
-    Documentation
+    Performs the CPCA analysis of two Fisher matrices.
+    As discussed in (`Dacunha et al. 22 <https://arxiv.org/pdf/1806.04649.pdf>`_)
+    this quantifies the modes that the joint chain improves over the single one.
+    Note this is a lower-level function that does not require GetDist chains.
 
-    conventions for 2d output: indexes are [parameter, mode]
-    conventions for projector [mode, parameters]
-
-    :param chain_1: :class:`~getdist.mcsamples.MCSamples` the first input chain.
-    :param chain_12: :class:`~getdist.mcsamples.MCSamples` the second input chain.
+    :param fisher_1: first input Fisher matrix.
+    :type fisher_1: numpy.ndarray
+    :param fisher_12: second input Fisher matrix.
+    :type fisher_12: numpy.ndarray
     :param param_names: list of names of the parameters to use
-    :param param_names: (optional) parameter names to restrict the
-        calculation.
-        If none is given the default assumes that all running parameters
+    :type param_names: list[str]
     :param conditional_params: (optional) list of parameters to treat as fixed,
         i.e. for KL_PCA conditional on fixed values of these parameters
+    :type conditional_params: list[str]
     :param param_map: (optional) a transformation to apply to parameter values;
         A list or string containing either N (no transformation)
         or L (for log transform) or M (for minus log transform of negative
         parameters) for each parameter.
         By default uses log if no parameter values cross zero.
         The transformed parameters are added to the joint chain.
+    :type param_map: Union[str, List[str]]
     :param normparam: (optional) name of parameter to normalize result
         (i.e. this parameter will have unit power)
         By default scales to the parameter that has the largest impactr on the KL mode variance.
+    :type normparam: str
     :param dimensional_reduce: (optional) perform dimensional reduction of the KL modes considered
         keeping only parameters with a large impact on KL mode variances.
         Default is True.
+    :type dimensional_reduce: bool
     :param dimensional_threshold: (optional) threshold for dimensional reducetion.
         Default is 10% so that parameters with a contribution less than 10% of KL mode
         variance are neglected from a specific KL mode.
+    :type dimensional_threshold: float
     :param verbose: (optional) chatty output. Default True.
+    :type verbose: bool
+    :return: dictionary containing the results of the CPCA analysis
+    :rtype: dict
     """
     # initialize param names:
     num_params = len(param_names)
@@ -546,7 +581,16 @@ def linear_CPCA_chains(chain_1, chain_12, param_names, **kwargs):
 
 def print_CPCA_results(CPCA_results, verbose=True, num_modes=None):
     """
-    Documentation
+    Print the results of the CPCA analysis.
+
+    :param CPCA_results: The results of the CPCA analysis.
+    :type CPCA_results: dict
+    :param verbose: Whether to print additional information. Defaults to True.
+    :type verbose: bool, optional
+    :param num_modes: The number of modes to consider. Defaults to None.
+    :type num_modes: int, optional
+    :return: The formatted text containing the CPCA results.
+    :rtype: str
     """
     PCAtext = ''
     # initialize parameters:
@@ -689,14 +733,16 @@ def Q_UDM_KL_components(chain_1, chain_12, param_names=None):
     This function is used for the parameter shift algorithm in
     update form.
 
-    :param chain_1: :class:`~getdist.mcsamples.MCSamples`
-        the first input chain.
-    :param chain_12: :class:`~getdist.mcsamples.MCSamples`
-        the joint input chain.
-    :param param_names: (optional) parameter names of the parameters to be used
+    :param chain_1: the first input chain.
+    :type chain_1: :class:`~getdist.mcsamples.MCSamples`
+    :param chain_12: the joint input chain.
+    :type chain_12: :class:`~getdist.mcsamples.MCSamples`
+    :param param_names: parameter names of the parameters to be used
         in the calculation. By default all running parameters.
+    :type param_names: list, optional
     :return: the KL eigenvalues, the KL eigenvectors and the parameter names
         that are used, sorted in decreasing order.
+    :rtype: tuple
     """
     # initialize param names:
     param_names_1 = _check_param_names(chain_1, param_names)

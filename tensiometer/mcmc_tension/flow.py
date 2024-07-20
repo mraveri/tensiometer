@@ -1,5 +1,8 @@
 """
+This module contains functions to estimate the probability of a parameter shift given a 
+synthetic probability model of the parameter difference distribution.
 
+For further details we refer to `arxiv 2105.03324 <https://arxiv.org/pdf/2105.03324.pdf>`_.
 """
 
 ###############################################################################
@@ -16,9 +19,14 @@ from .. import utilities as utils
 
 def estimate_shift(flow, prior_flow=None, tol=0.05, max_iter=1000, step=100000):
     """
-    Compute the normalizing flow estimate of the probability of a parameter shift given the input parameter difference chain. This is done with a Monte Carlo estimate by comparing the probability density at the zero-shift point to that at samples drawn from the normalizing flow approximation of the distribution.
+    Compute the normalizing flow estimate of the probability of a parameter shift 
+    given the input parameter difference chain. 
+    This is done with a Monte Carlo estimate by comparing the probability density 
+    at the zero-shift point to that at samples drawn from the normalizing flow 
+    approximation of the distribution.
 
     :param flow: the input flow for a parameter difference distribution.
+    :param prior_flow: the input flow for the prior distribution, defaults to None.
     :param tol: absolute tolerance on the shift significance, defaults to 0.05.
     :type tol: float, optional
     :param max_iter: maximum number of sampling steps, defaults to 1000.
@@ -65,8 +73,9 @@ def estimate_shift(flow, prior_flow=None, tol=0.05, max_iter=1000, step=100000):
 
 def flow_parameter_shift(diff_chain, cache_dir=None, root_name='sprob', tol=0.05, max_iter=1000, step=100000, **kwargs):
     """
-    Wrapper function to compute a normalizing flow estimate of the probability of a parameter shift given the input parameter difference chain with a standard MAF. It creates a :class:`~.DiffFlowCallback` object with a :class:`~.SimpleMAF` model (to which kwargs are passed), trains the model and returns the estimated shift probability.
-    The function accepts as kwargs all the ones that are relevant for :meth:`~synthetic_probability.flow_from_chain`.
+    Wrapper function to compute a normalizing flow estimate of the probability of a parameter shift given the input 
+    parameter difference chain. 
+    The function accepts as kwargs all the ones that are relevant for the function flow_from_chain.
 
     :param diff_chain: input parameter difference chain.
     :type diff_chain: :class:`~getdist.mcsamples.MCSamples`
@@ -82,7 +91,7 @@ def flow_parameter_shift(diff_chain, cache_dir=None, root_name='sprob', tol=0.05
     """
 
     # initialize and train parameter difference flow:
-    diff_flow = synthetic_probability.flow_from_chain(diff_chain, cache_dir=cache_dir, root_name=root_name, **kwargs)
+    diff_flow = synthetic_probability.synthetic_probability.flow_from_chain(diff_chain, cache_dir=cache_dir, root_name=root_name, **kwargs)
     # Compute tension:
     result = estimate_shift(diff_flow, tol=tol, max_iter=max_iter, step=step)
     #

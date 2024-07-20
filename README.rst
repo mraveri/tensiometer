@@ -4,18 +4,19 @@ Tensiometer
 -------------------------------
  Test a model until it breaks!
 -------------------------------
-:Tensiometer: utilities to understand concordance and discordance of posterior distributions
+:Tensiometer: A tool to test the level of agreement/disagreement between high dimensional posterior distributions.
 :Author: Marco Raveri and Cyrille Doux
 :Homepage: https://tensiometer.readthedocs.io
 :Source: https://github.com/mraveri/tensiometer
-:References: https://arxiv.org/abs/2105.03324 (non-Gaussian metrics), https://arxiv.org/abs/1806.04649 and https://arxiv.org/abs/1912.04880 (Gaussian)
+:References: `2105.03324 <https://arxiv.org/abs/2105.03324>`_ (non-Gaussian tension metrics), 
+             `1806.04649 <https://arxiv.org/abs/1806.04649>`_ and 
+             `1912.04880 <https://arxiv.org/abs/1912.04880>`_ (Gaussian tension metrics),
+             `2112.05737 <https://arxiv.org/abs/2112.05737>`_ (measured parameters).
 
-.. image:: https://travis-ci.org/mraveri/tensiometer.svg?branch=master
-    :target: https://travis-ci.org/mraveri/tensiometer
+.. image:: https://app.travis-ci.com/mraveri/tensiometer.svg?token=5WSkZzMAWJkYtRNZbp5a&branch=master
+    :target: https://app.travis-ci.com/mraveri/tensiometer
 .. image:: https://readthedocs.org/projects/tensiometer/badge/?version=latest
    :target: https://tensiometer.readthedocs.org/en/latest
-.. image:: https://mybinder.org/badge_logo.svg
-   :target: https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb
 .. image:: https://coveralls.io/repos/github/mraveri/tensiometer/badge.svg?branch=master
    :target: https://coveralls.io/github/mraveri/tensiometer?branch=master
 .. image:: https://img.shields.io/pypi/v/tensiometer.svg?style=flat
@@ -24,13 +25,23 @@ Tensiometer
 Description
 ============
 
-The tensiometer package is a collection of tools to test the level of
-agreement/disagreement between different posterior distributions.
+The tensiometer package is a collection of tools to help understanding the structure of high 
+dimensional posterior distributions. 
+In particular it implements a number of metrics to quantify the level of agreement/disagreement
+between different distributions.
+Some of these methods are based on a `Gaussian approximation <https://arxiv.org/abs/1806.04649>`_.
+Others are capable of capturing `non-Gaussian features <https://arxiv.org/abs/2105.03324>`_ of the distributions 
+thanks to machine learning techniques.
 
-The best way to get up to speed is to read through the worked example
-`full worked example <https://tensiometer.readthedocs.org/en/latest/tension_example.html>`_
-that you can `run online <https://mybinder.org/v2/gh/mraveri/tensiometer/master?filepath=docs%2Fexample_notebooks%2Ftension_example.ipynb>`_! There's also a documented example of
-`non-Gaussian tension estimates between DES Y1 and Planck 18 <https://tensiometer.readthedocs.io/en/latest/non_gaussian_tension.html>`_.
+The best way to get up to speed is to walk through some worked example, based on 
+what is needed:
+
+* `Normalizing flow models for posterior distributions <https://tensiometer.readthedocs.org/en/latest/example_synthetic_probability.html>`_;
+* `Tension between two Gaussian posteriors <https://tensiometer.readthedocs.org/en/latest/example_gaussian_tension.html>`_;
+* `Tension between two non-Gaussian posteriors <https://tensiometer.readthedocs.org/en/latest/example_non_gaussian_tension.html>`_;
+* `Posterior profiles <https://tensiometer.readthedocs.org/en/latest/example_posterior_profiles.html>`_;
+* `Measured parameters <https://tensiometer.readthedocs.org/en/latest/example_measured_parameters.html>`_;
+* `Quantify convergence of chains <https://tensiometer.readthedocs.org/en/latest/example_chains_convergence_test.html>`_;
 
 
 Installation
@@ -56,7 +67,9 @@ Dependencies
 =============
 
 Tensiometer uses mostly standard python packages.
-Notable exceptions are GetDist and Tensorflow.
+Notable exceptions are GetDist, Tensorflow and Tensorflow Probability.
+Installing the last two is likely painful and we advice to not delegate that to 
+automatic dependency resolvers...
 
 For the full list of requirements see the `requirements.txt` file.
 
@@ -94,4 +107,4 @@ Then you can issue the command::
 Acknowledgements
 ================
 
-We thank Samuel Goldstein for help developing the code.
+We thank Samuel Goldstein, Shivam Pandey for help developing the code.

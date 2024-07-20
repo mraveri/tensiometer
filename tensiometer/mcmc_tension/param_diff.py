@@ -1,5 +1,8 @@
 """
+This module contains functions to obtain the parameter difference posterior
+given posterior samples from two independent chains.
 
+For further details we refer to `arxiv 2105.03324 <https://arxiv.org/pdf/2105.03324.pdf>`_.
 """
 
 ###############################################################################

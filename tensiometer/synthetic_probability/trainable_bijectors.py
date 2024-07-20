@@ -216,6 +216,8 @@ class CircularRationalQuadraticSpline(tfb.RationalQuadraticSpline):
                  range_max=1,
                  validate_args=False,
                  name=None):
+        """
+        """
 
         with tf.name_scope(name or 'RationalQuadraticSpline') as name:
 
@@ -402,7 +404,9 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         slope_std=None,
         softplus_alpha=10.,
         dtype=tf.float32,
-    ):
+        ):
+        """
+        """
         parameters = dict(locals())
         name = name or 'spline_flow'
 
@@ -521,7 +525,9 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
         slope_std=None,
         softplus_alpha=10.,
         dtype=tf.float32,
-    ):
+        ):
+        """
+        """
         parameters = dict(locals())
         name = name or 'circular_spline_flow'
 
@@ -911,7 +917,6 @@ class AutoregressiveFlow(TrainableTransformation):
         :type num_params: int
         :param path: path of the directory from which to load.
         :type path: str
-        :return: a :class:`~.SimpleMAF`.
         """
         permutations = pickle.load(open(path + '_permutations.pickle', 'rb'))
         maf = AutoregressiveFlow(
@@ -924,12 +929,21 @@ class AutoregressiveFlow(TrainableTransformation):
 
 
 class BijectorLayer(tf.keras.layers.Layer):
+    """
+    Custom Keras layer that applies a bijector transformation to the inputs.
+    """
 
     def __init__(self, bijector, **kwargs):
+        """
+        Initializes the BijectorLayer.
+        """
         super().__init__(**kwargs)
         self.bijector = bijector
 
     def call(self, inputs):
+        """
+        Applies the forward transformation of the bijector to the inputs.
+        """
         return self.bijector.forward(inputs)
 
 

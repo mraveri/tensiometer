@@ -96,7 +96,7 @@ class FlowCallback(Callback):
     * `Y` designates samples in the gaussian approximation space, `Y` is obtained by shifting and scaling `X` by its mean and covariance (like a PCA);
     * `Z` designates samples in the gaussianized space, connected to `Y` with a normalizing flow denoted `trainable_bijector`.
 
-    The user may provide the `trainable_bijector` as a :class:`~tfp.bijectors.Bijector` object from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_ or make use of the utility class :class:`~.MaskedAutoregressiveFLow` to instantiate a Masked Autoregressive Flow (with `trainable_bijector='MAF'`).
+    The user may provide the `trainable_bijector` as a :class:`~tfp.bijectors.Bijector` object from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_ or make use of the utility class MaskedAutoregressiveFLow to instantiate a Masked Autoregressive Flow (with `trainable_bijector='MAF'`).
 
     This class derives from :class:`~tf.keras.callbacks.Callback` from Keras, which allows for visualization during training. The normalizing flows (X->Y->Z) are implemented as :class:`~tfp.bijectors.Bijector` objects and encapsulated in a Keras :class:`~tf.keras.Model`.
 
@@ -117,7 +117,7 @@ class FlowCallback(Callback):
         in the calculation. By default all running parameters.
     :type param_names: list, optional
     :param trainable_bijector: either a :class:`~tfp.bijectors.Bijector` object
-        representing the mapping from `Z` to `Y`, or 'MAF' to instantiate a :class:`~.MaskedAutoregressiveFLow`, defaults to 'MAF'.
+        representing the mapping from `Z` to `Y`, or 'MAF', defaults to 'MAF'.
     :type trainable_bijector: optional
     :param learning_rate: initial learning rate, defaults to 1e-3.
     :type learning_rate: float, optional
@@ -755,8 +755,7 @@ class FlowCallback(Callback):
         random weight initializations and selects the one that has the best
         performances on the validation set after training.
 
-        :param pop_size: number of weight initializations. Time to solution
-        scales linearly with this parameter.
+        :param pop_size: number of weight initializations. Time to solution scales linearly with this parameter.
         """
         # initialize:
         best_loss, best_val_loss, best_weights, best_log = None, None, None, None

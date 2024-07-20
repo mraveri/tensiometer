@@ -8,6 +8,7 @@ Tensiometer has several general purpose utilities modules
    :caption: modules
 
    utilities/utilities
+   utilities/tensor_eigenvalues
    utilities/cosmosis_interface 
 
 

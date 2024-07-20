@@ -78,7 +78,7 @@ def from_chi2_to_sigma(val, dofs, exact_threshold=6):
         the asyntotic formula.
     :return: the effective number of standard deviations.
     :reference: https://arxiv.org/1806.04649
-   """
+    """
     # check:
     if (np.all(val < 0.)):
         raise ValueError('Input chi2 value has to be positive.\n',
