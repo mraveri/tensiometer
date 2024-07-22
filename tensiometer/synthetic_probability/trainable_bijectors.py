@@ -706,7 +706,7 @@ class AutoregressiveFlow(TrainableTransformation):
             feedback=0,
             **kwargs):
         """
-        :param num_params: number of parameters of the distribution. IW 
+        :param num_params: number of parameters of the distribution.
         :param transformation_type: type of transformation, either 'affine' or 'spline'.
         :param autoregressive_type: type of autoregressive network, either 'masked' or 'flex'.
         :param n_transformations: number of transformations to concatenate.
@@ -766,6 +766,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     print('    max range:', _temp_range_max)
                     range_max = (_temp_range_max + 1).astype(np_prec)
                     print('    new range_max:', range_max)
+                    range_max = tf.cast(range_max, dtype=np_prec)
         
         # initialize kernel initializer:    
         if kernel_initializer is None:
