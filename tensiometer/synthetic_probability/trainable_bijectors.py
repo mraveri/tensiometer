@@ -767,6 +767,10 @@ class AutoregressiveFlow(TrainableTransformation):
                     range_max = (_temp_range_max + 1).astype(np_prec)
                     print('    new range_max:', range_max)
                     range_max = tf.cast(range_max, dtype=np_prec)
+        # save ramge max:
+        self.range_max = None
+        if transformation_type == 'spline':
+            self.range_max = range_max
         
         # initialize kernel initializer:    
         if kernel_initializer is None:

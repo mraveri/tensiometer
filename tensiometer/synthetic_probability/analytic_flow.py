@@ -25,15 +25,16 @@ from .. import utilities as utils
 
 
 class tf_prob_wrapper():
-    def __init__(self, dist):
+    def __init__(self, dist, prec=tf.float32):
         self.dist = dist
         self.label = dist.name
         num_params = dist.event_shape.as_list()[0]
         self.names = ['p'+str(i) for i in range(num_params)]
+        self.prec = prec
 
     @tf.function()
     def log_pdf(self, coord):
-        return self.dist.log_prob(tf.cast(coord, tf.float64))
+        return self.dist.log_prob(tf.cast(coord, self.prec))
 
     @tf.function()
     def sim(self, N):
