@@ -673,6 +673,19 @@ class FlowCallback(Callback):
         #
         return None
 
+    def reset_tensorflow_caches(self):
+        """
+        Reset tensorflow caches. Useful for memory management.
+        """
+        # get all methods:        
+        _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
+        # get the methods that are tensorflow functions:
+        _tf_functions = [func for func in _self_functions if isinstance(getattr(self, func), tf_defun.Function)]
+        # clear their caches:
+        for _func in _tf_functions:
+            if getattr(self, _func)._stateful_fn is not None:
+                getattr(self, _func)._stateful_fn._function_cache.clear()
+
     def on_epoch_begin(self, epoch, logs):
         """
         Initialization to be done at the beginning of every epoch:
@@ -1230,7 +1243,7 @@ class FlowCallback(Callback):
         if temp is not None:
             print('WARNING: trainable_bijector_path is set and will be ignored by load function')
         # if feedback is not set, then set it to 0:
-        temp = kwargs.pop('feedback', None)
+        temp = kwargs.get('feedback', None)
         if temp is None:
             kwargs['feedback'] = 0
         # re-create the object (we have to do this because we cannot pickle all TF things)        
@@ -2413,10 +2426,11 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
         if i % size != rank:
             continue
         # proceed:
-        if use_mpi and feedback > 0 and size > 1:
-            print('Training flow', i, 'on MPI worker', rank)
-        else:
-            print('Training flow', i)
+        if feedback > 0:
+            if use_mpi and size > 1:
+                print('Training flow', i, 'on MPI worker', rank)
+            else:
+                print('Training flow', i)
             
         # get output root:
         if cache_dir is not None:

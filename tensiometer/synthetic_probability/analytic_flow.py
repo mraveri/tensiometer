@@ -178,3 +178,6 @@ class analytic_flow():
             return self.cast(np.array([self._hessian_logP(_c)[0] for _c in _coord]))
         else:
             return self.cast(self._hessian_logP(_coord))
+
+    def reset_tensorflow_caches(self):
+        return None

@@ -761,11 +761,13 @@ class AutoregressiveFlow(TrainableTransformation):
                 # the spline range better enclose all the samples:
                 _temp_range_max = max(np.abs(np.amin(parameters_min)), np.abs(np.amax(parameters_max))).astype(type(range_max))
                 if range_max < _temp_range_max:
-                    print('WARNING: range_max should be larger than the maximum range of the data and is beeing adjusted.')
-                    print('    range_max:', range_max)
-                    print('    max range:', _temp_range_max)
+                    if feedback > 0:
+                        print('WARNING: range_max should be larger than the maximum range of the data and is beeing adjusted.')
+                        print('    range_max:', range_max)
+                        print('    max range:', _temp_range_max)
                     range_max = (_temp_range_max + 1).astype(np_prec)
-                    print('    new range_max:', range_max)
+                    if feedback > 0:
+                        print('    new range_max:', range_max)
                     range_max = tf.cast(range_max, dtype=np_prec)
         # save ramge max:
         self.range_max = None
