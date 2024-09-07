@@ -32,11 +32,9 @@ class tf_prob_wrapper():
         self.names = ['p'+str(i) for i in range(num_params)]
         self.prec = prec
 
-    @tf.function()
     def log_pdf(self, coord):
         return self.dist.log_prob(tf.cast(coord, self.prec))
 
-    @tf.function()
     def sim(self, N):
         return self.dist.sample(N)
     

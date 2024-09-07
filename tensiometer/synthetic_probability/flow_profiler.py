@@ -911,7 +911,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
     def getBestFit(self, max_posterior=True):
         """
-        Override standard behavior to reutn cached result
+        Override standard behavior to return cached result
         """
         # check if we can run:
         if self.bestfit is None:
@@ -1840,7 +1840,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         :param filename: The file to write to
         """
         with open(filename, 'wb') as output:
-            pickle.dump(self, output, pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self, output)
     
     @classmethod
     def loadPickle(cls, filename, flow=None):

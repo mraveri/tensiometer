@@ -931,7 +931,7 @@ class AutoregressiveFlow(TrainableTransformation):
             permutations=permutations,
             **kwargs)
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
-        checkpoint.read(path)
+        checkpoint.read(path).expect_partial()
         return maf
 
 
