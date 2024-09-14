@@ -1,0 +1,62 @@
+name: test-CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    strategy:
+
+      matrix:
+        python-version: ["3.9", "3.10", "3.12"]
+        tensorflow-version: ["2.15.0", "2.17.0"]
+        tfp-version: ["0.23.0", "0.24.0"]
+        exclude:
+          - python-version: "3.12"
+            tensorflow-version: "2.15.0"
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install tensorflow==${{ matrix.tensorflow-version }}
+          pip install coveralls
+          pip install -r requirements.txt
+
+      - name: Software versions
+        run: |
+          python -c "import sys; print(sys.version)"
+          python -c "import tensorflow as tf; print(tf.__version__)"
+          python -c "import tensorflow_probability as tfp; print(tfp.__version__)"
+
+      - name: Run unit tests
+        run: |
+          make test_with_coverage
+
+      - name: Upload coverage to coveralls
+        run: coveralls --service=github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build documentation
+        run: |
+          make documentation
+      
+      - name: Test installation
+        run: |
+          make install

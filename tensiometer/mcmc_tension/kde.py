@@ -1,5 +1,8 @@
 """
+This module contains functions to estimate the probability of a parameter shift given
+with KDE methods.
 
+For further details we refer to `arxiv 2105.03324 <https://arxiv.org/pdf/2105.03324.pdf>`_.
 """
 
 ###############################################################################
@@ -13,10 +16,10 @@ from numba import jit
 import numpy as np
 import getdist.chains as gchains
 gchains.print_load_details = False
-from getdist import MCSamples, WeightedSamples
+from getdist import MCSamples
 import scipy
 from scipy.linalg import sqrtm
-from scipy.integrate import simps
+from scipy.integrate import simpson as simps 
 from scipy.spatial import cKDTree
 
 from .. import utilities as utils
@@ -615,7 +618,9 @@ def _neighbor_parameter_shift(white_samples, weights, zero_prob, num_samples,
     return _num_filtered
 
 
-def kde_parameter_shift_1D_fft(diff_chain, param_names=None,
+def kde_parameter_shift_1D_fft(diff_chain, 
+                               prior_diff_chain=None,
+                               param_names=None,
                                scale=None, nbins=1024, feedback=1,
                                boundary_correction_order=1,
                                mult_bias_correction_order=1,
@@ -629,6 +634,9 @@ def kde_parameter_shift_1D_fft(diff_chain, param_names=None,
 
     :param diff_chain: :class:`~getdist.mcsamples.MCSamples`
         input parameter difference chain
+    :param prior_diff_chain: :class:`~getdist.mcsamples.MCSamples`
+        (optional) prior parameter difference chain. If present the code will use likelihood 
+        thresholded tension calculation, giving a result that is parameter invariant.
     :param param_names: (optional) parameter names of the parameters to be used
         in the calculation. By default all running parameters.
     :param scale: (optional) scale for the KDE smoothing.
@@ -654,7 +662,14 @@ def kde_parameter_shift_1D_fft(diff_chain, param_names=None,
             raise ValueError('Input parameter is not in the diff chain.\n',
                              'Input parameters ', param_names, '\n'
                              'Possible parameters', chain_params)
-    # check that we only have two parameters:
+    # check that param_names are in the prior_diff_chain:
+    if prior_diff_chain is not None:
+        prior_params = prior_diff_chain.getParamNames().list()
+        if not np.all([name in prior_params for name in param_names]):
+            raise ValueError('Input parameter is not in the prior diff chain.\n',
+                             'Input parameters ', param_names, '\n'
+                             'Possible parameters', prior_params)
+    # check that we only have one parameter:
     if len(param_names) != 1:
         raise ValueError('Calling 1D algorithm with more than 1 parameters')
     # initialize scale:
@@ -671,10 +686,26 @@ def kde_parameter_shift_1D_fft(diff_chain, param_names=None,
                                       mult_bias_correction_order=mult_bias_correction_order)
     # initialize the spline:
     density._initSpline()
-    # get density of zero:
+    # compute prior density:
+    if prior_diff_chain is not None:
+        # indexes:
+        prior_ind = [prior_diff_chain.index[name] for name in param_names]
+        # density:
+        prior_density = prior_diff_chain.get1DDensity(name=prior_ind[0], normalized=True,
+                                                      num_bins=nbins,
+                                                      smooth_scale_1D=scale,
+                                                      boundary_correction_order=boundary_correction_order,
+                                                      mult_bias_correction_order=mult_bias_correction_order)
+        # initialize the spline:
+        prior_density._initSpline()
+    # compute probability of zero:
     prob_zero = density.Prob([0.])[0]
+    if prior_diff_chain is not None:
+        prob_zero = prob_zero / prior_density.Prob([0.])[0]
     # do the MC integral:
     probs = density.Prob(diff_chain.samples[:, ind[0]])
+    if prior_diff_chain is not None:
+        probs = probs / prior_density.Prob(diff_chain.samples[:, ind[0]])
     # filter:
     _filter = probs > prob_zero
     # if there are samples above zero then use MC:
@@ -687,8 +718,14 @@ def kde_parameter_shift_1D_fft(diff_chain, param_names=None,
                                                             alpha=0.32)
     # if there are no samples try to do the integral:
     else:
+        # normalize the density:
         norm = simps(density.P, density.x)
-        _second_filter = density.P < prob_zero
+        # filter:
+        if prior_diff_chain is None:
+            _second_filter = density.P < prob_zero
+        else:
+            _second_filter = density.P / prior_density.Prob(density.x) < prob_zero
+        # do the integral:
         density.P[_second_filter] = 0
         _P = simps(density.P, density.x)/norm
         _low, _upper = None, None
@@ -700,7 +737,9 @@ def kde_parameter_shift_1D_fft(diff_chain, param_names=None,
     return _P, _low, _upper
 
 
-def kde_parameter_shift_2D_fft(diff_chain, param_names=None,
+def kde_parameter_shift_2D_fft(diff_chain, 
+                               prior_diff_chain=None,
+                               param_names=None,
                                scale=None, nbins=1024, feedback=1,
                                boundary_correction_order=1,
                                mult_bias_correction_order=1,
@@ -714,6 +753,9 @@ def kde_parameter_shift_2D_fft(diff_chain, param_names=None,
 
     :param diff_chain: :class:`~getdist.mcsamples.MCSamples`
         input parameter difference chain
+    :param prior_diff_chain: :class:`~getdist.mcsamples.MCSamples`
+        (optional) prior parameter difference chain. If present the code will use likelihood
+        thresholded tension calculation, giving a result that is parameter invariant.
     :param param_names: (optional) parameter names of the parameters to be used
         in the calculation. By default all running parameters.
     :param scale: (optional) scale for the KDE smoothing.
@@ -739,6 +781,13 @@ def kde_parameter_shift_2D_fft(diff_chain, param_names=None,
             raise ValueError('Input parameter is not in the diff chain.\n',
                              'Input parameters ', param_names, '\n'
                              'Possible parameters', chain_params)
+    # check that param_names are in the prior_diff_chain:
+    if prior_diff_chain is not None:
+        prior_params = prior_diff_chain.getParamNames().list()
+        if not np.all([name in prior_params for name in param_names]):
+            raise ValueError('Input parameter is not in the prior diff chain.\n',
+                             'Input parameters ', param_names, '\n'
+                             'Possible parameters', prior_params)
     # check that we only have two parameters:
     if len(param_names) != 2:
         raise ValueError('Calling 2D algorithm with more than 2 parameters')
@@ -756,11 +805,28 @@ def kde_parameter_shift_2D_fft(diff_chain, param_names=None,
                                       mult_bias_correction_order=mult_bias_correction_order)
     # initialize the spline:
     density._initSpline()
+    # compute prior density:
+    if prior_diff_chain is not None:
+        # indexes:
+        prior_ind = [prior_diff_chain.index[name] for name in param_names]
+        # compute density:
+        prior_density = prior_diff_chain.get2DDensity(x=prior_ind[0], y=prior_ind[1], normalized=True,
+                                                      fine_bins_2D=nbins,
+                                                      smooth_scale_2D=scale,
+                                                      boundary_correction_order=boundary_correction_order,
+                                                      mult_bias_correction_order=mult_bias_correction_order)
+        # initialize the spline:
+        prior_density._initSpline()
     # get density of zero:
     prob_zero = density.spl([0.], [0.])[0][0]
+    if prior_diff_chain is not None:
+        prob_zero = prob_zero / prior_density.spl([0.], [0.])[0][0]
     # do the MC integral:
     probs = density.spl.ev(diff_chain.samples[:, ind[0]],
                            diff_chain.samples[:, ind[1]])
+    if prior_diff_chain is not None:
+        probs = probs / prior_density.spl.ev(diff_chain.samples[:, ind[0]],
+                                             diff_chain.samples[:, ind[1]])
     # filter:
     _filter = probs > prob_zero
     # if there are samples above zero then use MC:
@@ -778,6 +844,8 @@ def kde_parameter_shift_2D_fft(diff_chain, param_names=None,
         density.P[_second_filter] = 0
         _P = simps(simps(density.P, density.y), density.x)/norm
         _low, _upper = None, None
+        if prior_diff_chain is not None:
+            _P = 1.0
     #
     t1 = time.time()
     if feedback > 0:

@@ -12,14 +12,27 @@ from getdist import MCSamples
 ###############################################################################
 # get samples at each intermediate space:
 
-def get_samples_bijectors(flow, feedback=False):
+def get_samples_bijectors(flow, feedback=False, extra_samples=None):
     
     # initialize the flow:
     _flow = flow
     # initialize lists to store samples:
     training_samples_spaces = []
     validation_samples_spaces = []
-    # initialize MCSamples with training samples:
+    if extra_samples is not None:
+        extra_samples_spaces = []
+    # initialize MCSamples with original space samples:
+    training_samples_spaces.append(MCSamples(samples=_flow.chain_samples[_flow.training_idx, :],
+                                            weights=_flow.chain_weights[_flow.training_idx],
+                                            name_tag='original_space',
+                                            ))
+    validation_samples_spaces.append(MCSamples(samples=_flow.chain_samples[_flow.test_idx, :],
+                                            weights=_flow.chain_weights[_flow.test_idx],
+                                            name_tag='original_space',
+                                            ))
+    if extra_samples is not None:
+        extra_samples_spaces.append(extra_samples)
+    # append MCSamples with training samples:
     training_samples_spaces.append(MCSamples(samples=_flow.training_samples,
                                             weights=_flow.training_weights,
                                             name_tag='training_space',
@@ -28,9 +41,13 @@ def get_samples_bijectors(flow, feedback=False):
                                             weights=_flow.test_weights,
                                             name_tag='validation_space',
                                             ))
+    if extra_samples is not None:
+        extra_samples_spaces.append(flow.fixed_bijector.inverse(extra_samples).numpy())
     # loop over bijectors:
     _temp_train_samples = _flow.training_samples
     _temp_test_samples = _flow.test_samples
+    if extra_samples is not None:
+        _temp_extra_samples = flow.fixed_bijector.inverse(extra_samples).numpy()
     for ind, bijector in enumerate(_flow.trainable_bijector._bijectors):
         # feedback:
         if feedback:
@@ -38,6 +55,9 @@ def get_samples_bijectors(flow, feedback=False):
         # process samples trough the bijector:
         _temp_train_samples = bijector.inverse(_temp_train_samples)
         _temp_test_samples = bijector.inverse(_temp_test_samples)
+        if extra_samples is not None:
+            _temp_extra_samples = bijector.inverse(_temp_extra_samples)
+            extra_samples_spaces.append(_temp_extra_samples.numpy())
         # get the training samples:
         training_samples_spaces.append(MCSamples(samples=_temp_train_samples.numpy(),
                                                 weights=_flow.training_weights,
@@ -49,7 +69,10 @@ def get_samples_bijectors(flow, feedback=False):
                                                 name_tag=str(ind)+'_after_'+bijector.name,
                                                 ))
     # return the samples:
-    return training_samples_spaces, validation_samples_spaces
+    if extra_samples is not None:
+        return training_samples_spaces, validation_samples_spaces, extra_samples_spaces
+    else:
+        return training_samples_spaces, validation_samples_spaces
 
 ###############################################################################
 # flow KL divergence:

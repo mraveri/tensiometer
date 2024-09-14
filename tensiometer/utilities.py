@@ -78,7 +78,7 @@ def from_chi2_to_sigma(val, dofs, exact_threshold=6):
         the asyntotic formula.
     :return: the effective number of standard deviations.
     :reference: https://arxiv.org/1806.04649
-   """
+    """
     # check:
     if (np.all(val < 0.)):
         raise ValueError('Input chi2 value has to be positive.\n',
@@ -210,12 +210,12 @@ def bernoulli_thin(chain, temperature=1, num_repeats=1):
     new_weights = np.exp((1. - temperature) * test)
     test = temperature*(test - np.amax(test))
     # do the trial:
-    _filter = np.zeros(len(test)).astype(np.bool)
-    _sample_repeat = np.zeros(len(test)).astype(np.int)
+    _filter = np.zeros(len(test)).astype(bool)
+    _sample_repeat = np.zeros(len(test)).astype(int)
     for i in range(num_repeats):
         _temp = np.random.binomial(1, np.exp(test))
-        _sample_repeat += _temp.astype(np.int)
-        _filter = np.logical_or(_filter, _temp.astype(np.bool))
+        _sample_repeat += _temp.astype(int)
+        _filter = np.logical_or(_filter, _temp.astype(bool))
     new_weights = _sample_repeat*new_weights
     # filter the chain:
     chain.setSamples(samples=chain.samples[_filter, :],

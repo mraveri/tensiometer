@@ -19,6 +19,25 @@ import tensorflow as tf
 from . import synthetic_probability as sp
 from .. import utilities as utils
 
+
+###############################################################################
+# wrapper for tensorflow probability distributions:
+
+
+class tf_prob_wrapper():
+    def __init__(self, dist, prec=tf.float32):
+        self.dist = dist
+        self.label = dist.name
+        num_params = dist.event_shape.as_list()[0]
+        self.names = ['p'+str(i) for i in range(num_params)]
+        self.prec = prec
+
+    def log_pdf(self, coord):
+        return self.dist.log_prob(tf.cast(coord, self.prec))
+
+    def sim(self, N):
+        return self.dist.sample(N)
+    
 ###############################################################################
 # analytic flow class:
 
@@ -157,3 +176,6 @@ class analytic_flow():
             return self.cast(np.array([self._hessian_logP(_c)[0] for _c in _coord]))
         else:
             return self.cast(self._hessian_logP(_coord))
+
+    def reset_tensorflow_caches(self):
+        return None

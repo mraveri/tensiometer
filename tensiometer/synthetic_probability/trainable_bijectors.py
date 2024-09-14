@@ -216,6 +216,8 @@ class CircularRationalQuadraticSpline(tfb.RationalQuadraticSpline):
                  range_max=1,
                  validate_args=False,
                  name=None):
+        """
+        """
 
         with tf.name_scope(name or 'RationalQuadraticSpline') as name:
 
@@ -402,7 +404,9 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         slope_std=None,
         softplus_alpha=10.,
         dtype=tf.float32,
-    ):
+        ):
+        """
+        """
         parameters = dict(locals())
         name = name or 'spline_flow'
 
@@ -521,7 +525,9 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
         slope_std=None,
         softplus_alpha=10.,
         dtype=tf.float32,
-    ):
+        ):
+        """
+        """
         parameters = dict(locals())
         name = name or 'circular_spline_flow'
 
@@ -700,7 +706,7 @@ class AutoregressiveFlow(TrainableTransformation):
             feedback=0,
             **kwargs):
         """
-        :param num_params: number of parameters of the distribution. IW 
+        :param num_params: number of parameters of the distribution.
         :param transformation_type: type of transformation, either 'affine' or 'spline'.
         :param autoregressive_type: type of autoregressive network, either 'masked' or 'flex'.
         :param n_transformations: number of transformations to concatenate.
@@ -755,11 +761,18 @@ class AutoregressiveFlow(TrainableTransformation):
                 # the spline range better enclose all the samples:
                 _temp_range_max = max(np.abs(np.amin(parameters_min)), np.abs(np.amax(parameters_max))).astype(type(range_max))
                 if range_max < _temp_range_max:
-                    print('WARNING: range_max should be larger than the maximum range of the data and is beeing adjusted.')
-                    print('    range_max:', range_max)
-                    print('    max range:', _temp_range_max)
+                    if feedback > 0:
+                        print('WARNING: range_max should be larger than the maximum range of the data and is beeing adjusted.')
+                        print('    range_max:', range_max)
+                        print('    max range:', _temp_range_max)
                     range_max = (_temp_range_max + 1).astype(np_prec)
-                    print('    new range_max:', range_max)
+                    if feedback > 0:
+                        print('    new range_max:', range_max)
+                    range_max = tf.cast(range_max, dtype=np_prec)
+        # save ramge max:
+        self.range_max = None
+        if transformation_type == 'spline':
+            self.range_max = range_max
         
         # initialize kernel initializer:    
         if kernel_initializer is None:
@@ -911,7 +924,6 @@ class AutoregressiveFlow(TrainableTransformation):
         :type num_params: int
         :param path: path of the directory from which to load.
         :type path: str
-        :return: a :class:`~.SimpleMAF`.
         """
         permutations = pickle.load(open(path + '_permutations.pickle', 'rb'))
         maf = AutoregressiveFlow(
@@ -919,17 +931,26 @@ class AutoregressiveFlow(TrainableTransformation):
             permutations=permutations,
             **kwargs)
         checkpoint = tf.train.Checkpoint(bijector=maf.bijector)
-        checkpoint.read(path)
+        checkpoint.read(path).expect_partial()
         return maf
 
 
 class BijectorLayer(tf.keras.layers.Layer):
+    """
+    Custom Keras layer that applies a bijector transformation to the inputs.
+    """
 
     def __init__(self, bijector, **kwargs):
+        """
+        Initializes the BijectorLayer.
+        """
         super().__init__(**kwargs)
         self.bijector = bijector
 
     def call(self, inputs):
+        """
+        Applies the forward transformation of the bijector to the inputs.
+        """
         return self.bijector.forward(inputs)
 
 

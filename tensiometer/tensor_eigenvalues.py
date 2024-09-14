@@ -91,6 +91,7 @@ def number_eigenvalues(d, m):
 
     :param d: number of dimensions
     :param m: rank of the tensor
+    :returns: the number of eigenvalues
     """
     return d*(m-1)**(d-1)
 
@@ -102,7 +103,7 @@ def tensor_deflation(A, l, x):
     :param A: the input tensor
     :param l: the scalar to deflate
     :param x: the vector to deflate
-    :return : the deflated tensor
+    :returns: the deflated tensor :math:`A - l x^m`
     """
     # get dimension and rank:
     m = len(A.shape)
