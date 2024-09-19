@@ -243,10 +243,10 @@ def find_flow_MAP(
     if use_scipy:
 
         def func2(x):
-            return -flow.log_probability(flow.cast(x)).numpy().astype(np.float64)
+            return -flow.log_probability(flow.cast([x]))[0].numpy().astype(np.float64)
 
         def jac2(x):
-            return -flow.log_probability_jacobian(flow.cast(x)).numpy().astype(np.float64)
+            return -flow.log_probability_jacobian(flow.cast([x]))[0].numpy().astype(np.float64)
     else:
         func2, jac2 = func, jac
     # now set the ranges:
@@ -1099,11 +1099,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
                     def temp_func(x):
                         _x = np.insert(x, idx, x0)
-                        return -self.flow.log_probability(self.flow.cast(_x)).numpy().astype(np.float64)
+                        return -self.flow.log_probability(self.flow.cast([_x]))[0].numpy().astype(np.float64)
 
                     def temp_jac(x):
                         _x = np.insert(x, idx, x0)
-                        _jac = -self.flow.log_probability_jacobian(self.flow.cast(_x)).numpy().astype(np.float64)
+                        _jac = -self.flow.log_probability_jacobian(self.flow.cast([_x]))[0].numpy().astype(np.float64)
                         return np.delete(_jac, idx)
                     if not _use_jac:
                         temp_jac = None
@@ -1521,14 +1521,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                             _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
                         else:
                             _x = np.insert(x, [idx2, idx1-1], [x0_2, x0_1])
-                        return -self.flow.log_probability(self.flow.cast(_x)).numpy().astype(np.float64)
+                        return -self.flow.log_probability(self.flow.cast([_x]))[0].numpy().astype(np.float64)
 
                     def temp_jac(x):
                         if idx1 < idx2:
                             _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
                         else:
                             _x = np.insert(x, [idx2, idx1-1], [x0_2, x0_1])
-                        _jac = -self.flow.log_probability_jacobian(self.flow.cast(_x)).numpy().astype(np.float64)
+                        _jac = -self.flow.log_probability_jacobian(self.flow.cast([_x]))[0].numpy().astype(np.float64)
                         return np.delete(_jac, [idx1, idx2])
                     
                     if not _use_jac:
