@@ -46,7 +46,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install tensorflow==${{ matrix.tensorflow-version }}
           pip install tensorflow-probability==${{ matrix.tfp-version }}
-          pip install tf-keras
+          # Install tf-keras for tensorflow 2.16.1
+          if [ "${{ matrix.tensorflow-version }}" == "2.16.1" ]; then
+            pip install tf-keras
+          fi
+          # Install tf-keras for tensorflow 2.17.0
+          if [ "${{ matrix.tensorflow-version }}" == "2.17.0" ]; then
+            pip install tf-keras
+          fi
           pip install coveralls
           pip install -r requirements.txt
 
@@ -56,10 +63,8 @@ jobs:
                      print('Python version: ', sys.version); \
                      import tensorflow as tf; \
                      import tensorflow_probability as tfp; \
-                     import tf_keras as tfk; \
                      print('Tensorflow version             =', tf.__version__); \
                      print('Tensorflow Probability version =', tfp.__version__); \
-                     print('TF_Keras version               =', tfk.__version__); \
                      "
 
       - name: Run unit tests
