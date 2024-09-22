@@ -47,20 +47,24 @@ jobs:
           pip install tensorflow==${{ matrix.tensorflow-version }}
           pip install tensorflow-probability==${{ matrix.tfp-version }}
           pip install tf-keras
-          export TF_USE_LEGACY_KERAS=1
           pip install coveralls
           pip install -r requirements.txt
 
       - name: Software versions
         run: |
-          python -c "import sys; print(sys.version)"
-          python -c "import tensorflow as tf; print(tf.__version__)"
-          python -c "import tensorflow_probability as tfp; print(tfp.__version__)"
-          python -c "import tf_keras as tfk; print(tfk.__version__)"
-          echo "TF_USE_LEGACY_KERAS: $TF_USE_LEGACY_KERAS"
+          python -c "import sys; \
+                     print('Python version: ', sys.version); \
+                     import tensorflow as tf; \
+                     import tensorflow_probability as tfp; \
+                     import tf_keras as tfk; \
+                     print('Tensorflow version             =', tf.__version__); \
+                     print('Tensorflow Probability version =', tfp.__version__); \
+                     print('TF_Keras version               =', tfk.__version__); \
+                     "
 
       - name: Run unit tests
         run: |
+          export TF_USE_LEGACY_KERAS=1
           make test_with_coverage
 
       - name: Upload coverage to coveralls
