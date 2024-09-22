@@ -8,7 +8,9 @@ sphinx-rtd-theme
 GetDist
 autograd
 pymanopt==0.2.5
-tensorflow>=2.15.0
-tensorflow_probability>=0.23.0
 gast==0.4.0
 numba>=0.53.0
+# tensorflow:
+tensorflow>=2.15.0
+tensorflow_probability>=0.23.0
+tf_keras
