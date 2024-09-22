@@ -37,44 +37,38 @@ from .. import gaussian_tension
 gchains.print_load_details = False
 
 # tensorflow imports:
-try:
 
-    # here we check the compatibility of tensorflow and tensorflow_probability:
-    if 'tensorflow' in sys.modules:
-        # get the version of tensorflow:
-        _tf_version = sys.modules['tensorflow'].__version__ 
-        if _tf_version > '2.16':
-            # check tf version compatibility:
-            _rant = 'To ensure the compatibility of tensorflow and tensorflow_probability, the environment variable TF_USE_LEGACY_KERAS should be set to 1.'
-            if 'TF_USE_LEGACY_KERAS' in os.environ.keys():
-                if os.environ['TF_USE_LEGACY_KERAS'] != "1":
-                    print(_rant, flush=True)
-                    raise ValueError('TF_USE_LEGACY_KERAS is set to an invalid value, it should be set to 1 and is set to:', os.environ['TF_USE_LEGACY_KERAS'])
-            else:
+# here we check the compatibility of tensorflow and tensorflow_probability:
+if 'tensorflow' in sys.modules:
+    # get the version of tensorflow:
+    _tf_version = sys.modules['tensorflow'].__version__ 
+    if _tf_version > '2.16':
+        # check tf version compatibility:
+        _rant = 'To ensure the compatibility of tensorflow and tensorflow_probability, the environment variable TF_USE_LEGACY_KERAS should be set to 1.'
+        if 'TF_USE_LEGACY_KERAS' in os.environ.keys():
+            if os.environ['TF_USE_LEGACY_KERAS'] != "1":
                 print(_rant, flush=True)
-                raise ValueError('TF_USE_LEGACY_KERAS is not set, it should be set to 1')
-    else:
-        # tfp and keras 3 compatibility:
-        os.environ['TF_USE_LEGACY_KERAS'] = "1"
+                raise ValueError('TF_USE_LEGACY_KERAS is set to an invalid value, it should be set to 1 and is set to:', os.environ['TF_USE_LEGACY_KERAS'])
+        else:
+            print(_rant, flush=True)
+            raise ValueError('TF_USE_LEGACY_KERAS is not set, it should be set to 1')
+else:
+    # tfp and keras 3 compatibility:
+    os.environ['TF_USE_LEGACY_KERAS'] = "1"
     
-    # import tensorflow:
-    import tensorflow as tf
-    import tensorflow_probability as tfp
-    tfb = tfp.bijectors
-    tfd = tfp.distributions
-    from tensorflow.keras.models import Model
-    from tensorflow.keras.layers import Input
-    from tensorflow.keras.callbacks import Callback
-    import tensorflow.keras.callbacks as keras_callbacks
-    import tensorflow.python.eager.def_function as tf_defun
-    HAS_FLOW = True
-    # tensorflow precision:
-    prec = tf.float32
-    np_prec = np.float32
-except Exception as e:
-    print("Could not import tensorflow or tensorflow_probability: ", e)
-    Callback = object
-    HAS_FLOW = False
+# import tensorflow:
+import tensorflow as tf
+import tensorflow_probability as tfp
+tfb = tfp.bijectors
+tfd = tfp.distributions
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input
+from tensorflow.keras.callbacks import Callback
+import tensorflow.keras.callbacks as keras_callbacks
+import tensorflow.python.eager.def_function as tf_defun
+# tensorflow precision:
+prec = tf.float32
+np_prec = np.float32
 
 # plotting global settings:
 matplotlib_backend = matplotlib.get_backend()
