@@ -69,7 +69,12 @@ jobs:
 
       - name: Run unit tests
         run: |
-          export TF_USE_LEGACY_KERAS=1
+          if [ "${{ matrix.tensorflow-version }}" == "2.16.1" ]; then
+            export TF_USE_LEGACY_KERAS=1
+          fi
+          if [ "${{ matrix.tensorflow-version }}" == "2.17.0" ]; then
+            export TF_USE_LEGACY_KERAS=1
+          fi
           make test_with_coverage
 
       - name: Upload coverage to coveralls
