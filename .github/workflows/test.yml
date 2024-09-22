@@ -43,6 +43,7 @@ jobs:
           pip install tensorflow-probability==${{ matrix.tfp-version }}
           if ${{ matrix.tensorflow-version }} >= "2.16.0"; then
             pip install tf-keras
+            export TF_USE_LEGACY_KERAS=1
           fi
           pip install coveralls
           pip install -r requirements.txt
