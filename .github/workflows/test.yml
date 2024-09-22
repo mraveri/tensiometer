@@ -16,7 +16,7 @@ jobs:
 
       matrix:
         python-version: ["3.9", "3.10", "3.12"]
-        tensorflow-version: ["2.15.0", "2.17.0"]
+        tensorflow-version: ["2.15.0", "2.16.1", "2.17.0"]
         tfp-version: ["0.23.0", "0.24.0"]
         exclude:
           - python-version: "3.12"
@@ -35,6 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install tensorflow==${{ matrix.tensorflow-version }}
+          pip install tensorflow-probability==${{ matrix.tfp-version }}
           pip install coveralls
           pip install -r requirements.txt
 
