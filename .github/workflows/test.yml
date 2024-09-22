@@ -17,6 +17,7 @@ jobs:
       fail-fast: true
 
       matrix:
+
         python-version: ["3.9", "3.10", "3.12"]
         tensorflow-version: ["2.15.0", "2.16.1", "2.17.0"]
         tfp-version: ["0.23.0", "0.24.0"]
@@ -45,7 +46,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install tensorflow==${{ matrix.tensorflow-version }}
           pip install tensorflow-probability==${{ matrix.tfp-version }}
-          if ${{ matrix.tensorflow-version }} >= "2.16.0"; then
+          if ${{ matrix.tensorflow-version }} == "2.16.1" or ${{ matrix.tensorflow-version }} == "2.17.0"; then
             pip install tf-keras
             export TF_USE_LEGACY_KERAS=1
           fi

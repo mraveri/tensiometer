@@ -1328,7 +1328,6 @@ class FlowCallback(Callback):
         # save out trainable transformation:
         if self.trainable_transformation is not None:
             self.trainable_transformation.save(outroot)
-        
         #
         return None
 
