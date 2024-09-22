@@ -14,12 +14,13 @@ jobs:
 
     strategy:
 
-      fail-fast: false
+      fail-fast: true
 
       matrix:
         python-version: ["3.9", "3.10", "3.12"]
         tensorflow-version: ["2.15.0", "2.16.1", "2.17.0"]
         tfp-version: ["0.23.0", "0.24.0"]
+
         exclude:
           - python-version: "3.12"
             tensorflow-version: "2.15.0"
@@ -40,6 +41,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install tensorflow==${{ matrix.tensorflow-version }}
           pip install tensorflow-probability==${{ matrix.tfp-version }}
+          if ${{ matrix.tensorflow-version }} >= "2.16.0"; then
+            pip install tf-keras
+          fi
           pip install coveralls
           pip install -r requirements.txt
 
