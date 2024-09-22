@@ -28,7 +28,7 @@ def get_long_description():
     with open('README.rst',  encoding='utf-8-sig') as f:
         lines = f.readlines()
         i = -1
-        while '=====' not in lines[i]:
+        while '****************' not in lines[i]:
             i -= 1
         return ''.join(lines[:i])
 
