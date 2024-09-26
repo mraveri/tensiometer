@@ -2256,6 +2256,7 @@ class average_flow(FlowCallback):
             'param_names',
             'param_labels',
             'parameter_ranges',
+            'periodic_params',
             'chain_samples',
             'chain_loglikes',
             'has_loglikes',
