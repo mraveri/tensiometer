@@ -38,9 +38,9 @@ def estimate_shift(flow, prior_flow=None, tol=0.05, max_iter=1000, step=100000):
     counter = max_iter
 
     # define threshold for tension calculation:
-    _thres = flow.log_probability(flow.cast(np.zeros(flow.num_params)))
+    _thres = flow.log_probability(flow.cast([np.zeros(flow.num_params)]))[0]
     if prior_flow is not None:
-        _thres = _thres - prior_flow.log_probability(prior_flow.cast(np.zeros(prior_flow.num_params)))
+        _thres = _thres - prior_flow.log_probability(prior_flow.cast([np.zeros(prior_flow.num_params)]))[0]
 
     _num_filtered = 0
     _num_samples = 0
@@ -89,9 +89,9 @@ def estimate_shift_from_samples(flow, prior_flow=None):
     """
 
     # define threshold for tension calculation:
-    _thres = flow.log_probability(flow.cast(np.zeros(flow.num_params)))
+    _thres = flow.log_probability(flow.cast([np.zeros(flow.num_params)]))[0]
     if prior_flow is not None:
-        _thres = _thres - prior_flow.log_probability(prior_flow.cast(np.zeros(prior_flow.num_params)))
+        _thres = _thres - prior_flow.log_probability(prior_flow.cast([np.zeros(prior_flow.num_params)]))[0]
 
     # calculate probability on the samples:
     _s_prob = flow.log_probability(flow.cast(flow.chain_samples))
