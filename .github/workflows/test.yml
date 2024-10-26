@@ -19,7 +19,7 @@ jobs:
       matrix:
 
         python-version: ["3.9", "3.10", "3.12"]
-        tensorflow-version: ["2.15.0", "2.16.1", "2.17.0"]
+        tensorflow-version: ["2.15.0", "2.16.1", "2.17.0", "2.18.0"]
         tfp-version: ["0.23.0", "0.24.0"]
 
         exclude:
@@ -30,6 +30,8 @@ jobs:
           - tensorflow-version: "2.16.1"
             tfp-version: "0.23.0"
           - tensorflow-version: "2.17.0"
+            tfp-version: "0.23.0"
+          - tensorflow-version: "2.18.0"
             tfp-version: "0.23.0"
 
     steps:
@@ -46,6 +48,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install tensorflow==${{ matrix.tensorflow-version }}
           pip install tensorflow-probability==${{ matrix.tfp-version }}
+
           # Install tf-keras for tensorflow 2.16.1
           if [ "${{ matrix.tensorflow-version }}" == "2.16.1" ]; then
             pip install tf-keras
@@ -54,6 +57,11 @@ jobs:
           if [ "${{ matrix.tensorflow-version }}" == "2.17.0" ]; then
             pip install tf-keras
           fi
+          # Install tf-keras for tensorflow 2.18.0
+          if [ "${{ matrix.tensorflow-version }}" == "2.17.0" ]; then
+            pip install tf-keras
+          fi
+
           pip install coveralls
           pip install -r requirements.txt
 
@@ -73,6 +81,9 @@ jobs:
             export TF_USE_LEGACY_KERAS=1
           fi
           if [ "${{ matrix.tensorflow-version }}" == "2.17.0" ]; then
+            export TF_USE_LEGACY_KERAS=1
+          fi
+          if [ "${{ matrix.tensorflow-version }}" == "2.18.0" ]; then
             export TF_USE_LEGACY_KERAS=1
           fi
           make test_with_coverage
