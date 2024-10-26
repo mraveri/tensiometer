@@ -58,7 +58,7 @@ jobs:
             pip install tf-keras
           fi
           # Install tf-keras for tensorflow 2.18.0
-          if [ "${{ matrix.tensorflow-version }}" == "2.17.0" ]; then
+          if [ "${{ matrix.tensorflow-version }}" == "2.18.0" ]; then
             pip install tf-keras
           fi
 
