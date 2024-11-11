@@ -2484,7 +2484,7 @@ def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
     return flow
 
 
-def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob', use_mpi=True, **kwargs):
+def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob', use_mpi=False, **kwargs):
     """
     Helper to initialize and train a synthetic probability starting from a chain.
     If a cache directory is specified then training results are cached and
