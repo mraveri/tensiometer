@@ -816,6 +816,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         m.complexity = 2 * (maxlike - m.meanLogLike)
         m.logMeanInvLike = np.log(np.mean(np.exp(-_temp_loglikes + maxlike))) - maxlike
         m.logMeanLike = -np.log(np.mean(np.exp(_temp_loglikes - maxlike))) + maxlike
+        m.varLogLike = np.var(_temp_loglikes)
         m.names = self.paramNames.names
 
         if profile_lims:
