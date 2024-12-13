@@ -32,7 +32,7 @@ from getdist.paramnames import ParamInfo
 from getdist.densities import Density1D, Density2D
 
 # tensiometer imports:
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 from . import fixed_bijectors as pb
 from . import synthetic_probability as sp
 
@@ -127,7 +127,7 @@ def points_minimizer(func, jac, x0, bounds=None, feedback=0, use_scipy=True, **k
                 bounds=bounds,
                 method=_method, 
                 options=_options, 
-                **utils.filter_kwargs(_temp_kwargs, minimize))
+                **stutils.filter_kwargs(_temp_kwargs, minimize))
             # save results:
             success.append(result.success)
             min_value.append(result.fun)
@@ -358,7 +358,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             labels=flow.param_labels,
             ranges=flow.parameter_ranges,
             name_tag=name_tag,
-            **utils.filter_kwargs(kwargs, mcsamples.MCSamples))
+            **stutils.filter_kwargs(kwargs, mcsamples.MCSamples))
         # save the flow so that we can query it:
         self.flow = flow
         # define the empty caches:
@@ -1116,7 +1116,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         bounds=_temp_ranges,
                         method=_method,
                         options=_options,
-                        **utils.filter_kwargs(_temp_kwargs, minimize))
+                        **stutils.filter_kwargs(_temp_kwargs, minimize))
                     
                     if -result.fun > _val:
                         _polished_logP.append(-result.fun)
@@ -1542,7 +1542,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         bounds=_temp_ranges,
                         method=_method,
                         options=_options,
-                        **utils.filter_kwargs(_temp_kwargs, minimize))
+                        **stutils.filter_kwargs(_temp_kwargs, minimize))
                     if -result.fun > _val:
                         _polished_logP.append(-result.fun)
                         if idx1 < idx2:

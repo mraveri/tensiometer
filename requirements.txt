@@ -3,6 +3,9 @@ tqdm
 joblib
 coverage
 matplotlib
+# documentation:
+sphinx
+sphinxcontrib-jquery
 sphinx-rtd-theme
 # core packages:
 GetDist

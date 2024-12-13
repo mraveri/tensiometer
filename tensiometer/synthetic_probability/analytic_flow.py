@@ -17,7 +17,7 @@ import tensorflow as tf
 
 # relative imports:
 from . import synthetic_probability as sp
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 
 
 ###############################################################################
@@ -130,7 +130,7 @@ class analytic_flow():
             labels=self.param_labels,
             ranges=self.parameter_ranges,
             name_tag=self.name_tag,
-            **utils.filter_kwargs(kwargs, MCSamples)
+            **stutilsfilter_kwargs(kwargs, MCSamples)
             )
         #
         return mc_samples

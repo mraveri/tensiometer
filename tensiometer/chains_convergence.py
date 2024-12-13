@@ -11,9 +11,9 @@ import time
 import numpy as np
 from getdist import MCSamples
 
-from . import utilities as utils
 from . import gaussian_tension as gtens
-from . import tensor_eigenvalues as teig
+from .utilities import stats_utilities as stutils
+from .utilities import tensor_eigenvalues as teig
 
 ###############################################################################
 # Helpers for input tests:
@@ -26,7 +26,7 @@ def _helper_chains_to_chainlist(chains):
                 raise TypeError('Input list does not contain MCSamples')
         chainlist = chains
     elif isinstance(chains, MCSamples):
-        chainlist = utils.get_separate_mcsamples(chains)
+        chainlist = stutils.get_separate_mcsamples(chains)
     else:
         raise TypeError('Input chains is not of MCSamples type nor a \
                          list of chains.')
@@ -120,7 +120,7 @@ def GR_test_from_samples(samples, weights):
     if VM.ndim == 0:
         res, mode = VM/MV, np.array([1])
     else:
-        eig, eigv = np.linalg.eig(np.dot(VM, utils.QR_inverse(MV)))
+        eig, eigv = np.linalg.eig(np.dot(VM, stutils.QR_inverse(MV)))
         ind = np.argmax(eig)
         res, mode = np.abs(eig[ind]), np.abs(eigv[:, ind])
     #
@@ -157,7 +157,7 @@ def GRn_test_1D(chains, n, param_name, theta0=None):
     # digest chain or chains:
     chainlist = _helper_chains_to_chainlist(chains)
     # digest parameter names:
-    param_name = utils.make_list(param_name)
+    param_name = stutils.make_list(param_name)
     for ch in chainlist:
         param_name = gtens._check_param_names(ch, param_name)
     if len(param_name) != 1:

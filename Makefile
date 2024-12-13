@@ -17,7 +17,7 @@ install:
 # It uses Python's unittest module to discover and execute all test cases
 # located in the 'tensiometer/tests' directory.
 test:
-	@python -m unittest discover tensiometer/tests
+	@python -m unittest discover tensiometer/tests -p "*_test.py" -vvv -f
 
 # Runs a specific test file using Python's unittest module.
 # Usage: make test_file file=<test_filename>
@@ -35,7 +35,7 @@ coverage_report:
 # The '-vvv' flag provides verbose output, and the '-f' flag stops on the first failure.
 # After running the tests, it generates a coverage report.
 test_with_coverage:
-	@coverage run -m unittest discover tensiometer/tests -vvv -f
+	@coverage run -m unittest discover tensiometer/tests -p "*_test.py" -vvv -f
 	@coverage report
 
 ########################################################################################

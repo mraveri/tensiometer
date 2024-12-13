@@ -32,6 +32,7 @@ All are illustrated with physics examples.
    gaussian_tension
    chains_convergence
    utilities
+   interfaces
 
 Full documentation for the modules.
 

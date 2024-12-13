@@ -7,8 +7,10 @@ Tensiometer has several general purpose utilities modules
    :maxdepth: 1
    :caption: modules
 
-   utilities/utilities
+   utilities/stats_utilities
    utilities/tensor_eigenvalues
-   utilities/cosmosis_interface 
+   utilities/color_utilities
+   utilities/caching
+   utilities/subprocess_runner 
 
 

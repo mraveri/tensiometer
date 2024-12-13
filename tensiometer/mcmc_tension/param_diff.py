@@ -12,7 +12,7 @@ import numpy as np
 import getdist.chains as gchains
 gchains.print_load_details = False
 from getdist import MCSamples, WeightedSamples
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 
 ###############################################################################
 # Parameter difference chain:
@@ -280,7 +280,7 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
         for samp1, samp2 in chains_combinations]
     # create the samples:
     diff_samples = MCSamples(names=diff_param_names, labels=diff_param_labels,
-                             **utils.filter_kwargs(kwargs, MCSamples))
+                             **stutils.filter_kwargs(kwargs, MCSamples))
     diff_samples.chains = diff_chain_samples
     diff_samples.makeSingle()
     # get the ranges:

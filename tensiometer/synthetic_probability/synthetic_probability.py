@@ -31,7 +31,7 @@ from . import loss_functions as loss
 from . import trainable_bijectors as tb
 from . import fixed_bijectors as pb
 
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 from .. import gaussian_tension
 
 gchains.print_load_details = False
@@ -186,7 +186,7 @@ class FlowCallback(Callback):
         self._init_trainable_bijector(trainable_bijector=trainable_bijector, **kwargs)
         # initialize training dataset:
         self._init_training_dataset(
-            validation_split=validation_split, **utils.filter_kwargs(kwargs, self._init_training_dataset))
+            validation_split=validation_split, **stutils.filter_kwargs(kwargs, self._init_training_dataset))
         # initialize distribution:
         self._init_distribution()
         # initialize loss function:
@@ -832,7 +832,7 @@ class FlowCallback(Callback):
             callbacks = []
             # learning rate scheduler:
             lr_schedule = lr.LRAdaptLossSlopeEarlyStop(min_lr=self.final_learning_rate,
-                                                       **utils.filter_kwargs(kwargs, lr.LRAdaptLossSlopeEarlyStop))
+                                                       **stutils.filter_kwargs(kwargs, lr.LRAdaptLossSlopeEarlyStop))
             callbacks.append(lr_schedule)
             # TQDM progress bar:
             if verbose == -1:
@@ -849,7 +849,7 @@ class FlowCallback(Callback):
             validation_data=self.validation_dataset,
             verbose=_verbose,
             callbacks=[tf.keras.callbacks.TerminateOnNaN(), self] + callbacks,
-            **utils.filter_kwargs(kwargs, self.model.fit))
+            **stutils.filter_kwargs(kwargs, self.model.fit))
         # model is now trained:
         self.is_trained = True
         #
@@ -2057,7 +2057,7 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             # validation_data=self.validation_dataset,
             verbose=verbose,
             # callbacks=[tf.keras.callbacks.TerminateOnNaN()] + callbacks,
-            **utils.filter_kwargs(kwargs, self.model.fit))
+            **stutils.filter_kwargs(kwargs, self.model.fit))
 
         return hist
 

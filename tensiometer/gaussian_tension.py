@@ -18,7 +18,7 @@ from getdist import MCSamples
 from getdist.gaussian_mixtures import GaussianND
 import matplotlib.pyplot as plt
 
-from . import utilities as utils
+from .utilities import stats_utilities as stutils
 
 ###############################################################################
 # series of helpers to check input of functions:
@@ -342,7 +342,7 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
         Since :math:`Q_{\\rm DM}` is :math:`\\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
-        :meth:`tensiometer.utilities.from_chi2_to_sigma`.
+        :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
     """
     # initial checks:
     if cutoff < 0.0:
@@ -380,12 +380,12 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
                                for name in param_names])
     param_diff = theta_1-theta_2
     # do the calculation of Q:
-    C_Pi_inv = utils.QR_inverse(C_Pi)
+    C_Pi_inv = stutils.QR_inverse(C_Pi)
     temp = np.dot(np.dot(C_p1, C_Pi_inv), C_p2)
     diff_covariance = C_p1 + C_p2 - temp - temp.T
     # take the directions that are best constrained over the prior:
-    eig_1, eigv_1 = utils.KL_decomposition(C_p1, C_Pi)
-    eig_2, eigv_2 = utils.KL_decomposition(C_p2, C_Pi)
+    eig_1, eigv_1 = stutils.KL_decomposition(C_p1, C_Pi)
+    eig_2, eigv_2 = stutils.KL_decomposition(C_p2, C_Pi)
     # get the smallest spectrum, if same use first:
     if np.sum(1./eig_1-1. > cutoff) <= np.sum(1./eig_2-1. > cutoff):
         eig, eigv = eig_1, eigv_1
@@ -400,7 +400,7 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
     # project covariance:
     temp_cov = np.dot(np.dot(proj_matrix, diff_covariance), proj_matrix.T)
     # compute Q:
-    Q_DM = np.dot(np.dot(param_diff, utils.QR_inverse(temp_cov)), param_diff)
+    Q_DM = np.dot(np.dot(param_diff, stutils.QR_inverse(temp_cov)), param_diff)
     #
     return Q_DM, dofs
 
@@ -486,7 +486,7 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
     if normparam is not None:
         normparam = param_names.index(normparam)
     # perform the CPCA decomposition:
-    CPC_eig, CPC_eigv = utils.KL_decomposition(F_p12, F_p1)
+    CPC_eig, CPC_eigv = stutils.KL_decomposition(F_p12, F_p1)
     # sort in decreasing order (best mode first):
     idx = np.argsort(CPC_eig)[::-1]
     CPC_eig, CPC_eigv = CPC_eig[idx], CPC_eigv[:, idx]
@@ -557,7 +557,7 @@ def linear_CPCA_chains(chain_1, chain_12, param_names, **kwargs):
     fisher_12 = np.linalg.inv(chain_12.cov(param_names))
     # do CPCA with Fishers:
     CPCA_results = linear_CPCA(fisher_1, fisher_12, param_names,
-                               **utils.filter_kwargs(kwargs, linear_CPCA)
+                               **stutils.filter_kwargs(kwargs, linear_CPCA)
                                )
     param_names = CPCA_results['param_names']
     # add mean and parameter labels to results:
@@ -757,7 +757,7 @@ def Q_UDM_KL_components(chain_1, chain_12, param_names=None):
     # get the posterior covariances:
     C_p1, C_p12 = chain_1.cov(pars=param_names), chain_12.cov(pars=param_names)
     # perform the KL decomposition:
-    KL_eig, KL_eigv = utils.KL_decomposition(C_p1, C_p12)
+    KL_eig, KL_eigv = stutils.KL_decomposition(C_p1, C_p12)
     # sort:
     idx = np.argsort(KL_eig)[::-1]
     KL_eig = KL_eig[idx]
@@ -903,7 +903,7 @@ def Q_UDM_covariance_components(chain_1, chain_12, param_names=None,
                                                        chain_12,
                                                        param_names=param_names)
     # inverse KL components:
-    KL_eigv = utils.QR_inverse(KL_eigv)
+    KL_eigv = stutils.QR_inverse(KL_eigv)
     # compute covariance and fractional covariance matrix:
     if which == '1':
         diag_cov = np.sum(KL_eigv*KL_eigv*KL_eig, axis=1)
@@ -970,7 +970,7 @@ def Q_UDM(chain_1, chain_12, lower_cutoff=1.05, upper_cutoff=100.,
         Since :math:`Q_{\\rm UDM}` is :math:`\\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
-        :meth:`tensiometer.utilities.from_chi2_to_sigma`.
+        :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
     """
     # get the cutoff and perform the KL decomposition:
     _temp = Q_UDM_KL_components(chain_1, chain_12, param_names=param_names)
@@ -1094,7 +1094,7 @@ def Q_MAP(chain, num_data, prior_chain=None,
         Since :math:`Q_{\\rm MAP}` is :math:`\\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
-        :meth:`tensiometer.utilities.from_chi2_to_sigma`.
+        :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
     """
     # get the best fit:
     best_fit_data_like = get_MAP_loglike(chain, feedback=feedback)
@@ -1160,7 +1160,7 @@ def Q_DMAP(chain_1, chain_2, chain_12, prior_chain=None,
         Since :math:`Q_{\\rm DMAP}` is :math:`\\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
-        :meth:`tensiometer.utilities.from_chi2_to_sigma`.
+        :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
     """
     # check that all chains have the same running parameters:
 

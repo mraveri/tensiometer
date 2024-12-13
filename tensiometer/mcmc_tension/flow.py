@@ -10,7 +10,7 @@ For further details we refer to `arxiv 2105.03324 <https://arxiv.org/pdf/2105.03
 
 import numpy as np
 
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 
 ###############################################################################
 # function to estimate the flow probability of zero shift:
@@ -58,11 +58,11 @@ def estimate_shift(flow, prior_flow=None, tol=0.05, max_iter=1000, step=100000):
         _num_filtered += np.sum(_t)
         _num_samples += step
         _P = float(_num_filtered)/float(_num_samples)
-        _low, _upper = utils.clopper_pearson_binomial_trial(float(_num_filtered),
+        _low, _upper = stutils.clopper_pearson_binomial_trial(float(_num_filtered),
                                                             float(_num_samples),
                                                             alpha=0.32)
 
-        err = np.abs(utils.from_confidence_to_sigma(_upper)-utils.from_confidence_to_sigma(_low))
+        err = np.abs(stutils.from_confidence_to_sigma(_upper)-stutils.from_confidence_to_sigma(_low))
 
     return _P, _low, _upper
 
@@ -103,7 +103,7 @@ def estimate_shift_from_samples(flow, prior_flow=None):
     _num_filtered = np.sum(_t)
     _num_samples = len(_t)
     _P = float(_num_filtered)/float(_num_samples)
-    _low, _upper = utils.clopper_pearson_binomial_trial(float(_num_filtered),
+    _low, _upper = stutils.clopper_pearson_binomial_trial(float(_num_filtered),
                                                         float(_num_samples),
                                                         alpha=0.32)
 

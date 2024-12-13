@@ -22,7 +22,7 @@ from scipy.linalg import sqrtm
 from scipy.integrate import simpson as simps 
 from scipy.spatial import cKDTree
 
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 
 # imports for parallel calculations:
 import multiprocessing
@@ -170,7 +170,7 @@ def MISE_bandwidth(num_params, num_samples, feedback=0, **kwargs):
     alpha0 = kwargs.pop('alpha0', None)
     if alpha0 is None:
         alpha0 = MISE_bandwidth_1d(num_params, num_samples)
-    alpha0 = utils.PDM_to_vector(alpha0)
+    alpha0 = stutils.PDM_to_vector(alpha0)
     d, n = num_params, num_samples
     # build a constraint:
     bounds = kwargs.pop('bounds', None)
@@ -178,14 +178,14 @@ def MISE_bandwidth(num_params, num_samples, feedback=0, **kwargs):
         bounds = np.array([[None, None] for i in range(d*(d+1)//2)])
         bounds[np.tril_indices(d, 0)[0] == np.tril_indices(d, 0)[1]] = [alpha0[0]/100, alpha0[0]*100]
     # explicit optimization:
-    opt = scipy.optimize.minimize(lambda x: _mise_optimizer(utils.vector_to_PDM(x), d, n),
+    opt = scipy.optimize.minimize(lambda x: _mise_optimizer(stutils.vector_to_PDM(x), d, n),
                                   x0=alpha0, bounds=bounds, **kwargs)
     # check for success:
     if not opt.success or feedback > 2:
         print('MISE_bandwidth')
         print(opt)
     #
-    return utils.vector_to_PDM(opt.x)
+    return stutils.vector_to_PDM(opt.x)
 
 
 @jit(nopython=True, fastmath=True, parallel=True)
@@ -297,10 +297,10 @@ def UCV_bandwidth(weights, white_samples, alpha0=None, feedback=0, mode='full', 
             bounds = np.array([[None, None] for i in range(d*(d+1)//2)])
             bounds[np.tril_indices(d, 0)[0] == np.tril_indices(d, 0)[1]] = [alpha0[0, 0]/10, alpha0[0, 0]*10]
         # explicit optimization:
-        alpha0 = utils.PDM_to_vector(sqrtm(alpha0))
-        opt = scipy.optimize.minimize(lambda alpha: _UCV_optimizer_nearest(utils.vector_to_PDM(alpha), weights, white_samples, n_nearest),
+        alpha0 = stutils.PDM_to_vector(sqrtm(alpha0))
+        opt = scipy.optimize.minimize(lambda alpha: _UCV_optimizer_nearest(stutils.vector_to_PDM(alpha), weights, white_samples, n_nearest),
                                       x0=alpha0, bounds=bounds, **kwargs)
-        res = utils.vector_to_PDM(opt.x)
+        res = stutils.vector_to_PDM(opt.x)
         res = np.dot(res, res)
     # check for success and final feedback:
     if not opt.success or feedback > 2:
@@ -403,7 +403,7 @@ def OptimizeBandwidth_1D(diff_chain, param_names=None, num_bins=1000):
     _samples_cov = diff_chain.cov(pars=param_names)
     _num_params = len(ind)
     # whiten the samples:
-    _temp = sqrtm(utils.QR_inverse(_samples_cov))
+    _temp = sqrtm(stutils.QR_inverse(_samples_cov))
     white_samples = diff_chain.samples[:, ind].dot(_temp)
     # make these samples so that we can use GetDist band optization:
     temp_samples = MCSamples(samples=white_samples,
@@ -713,7 +713,7 @@ def kde_parameter_shift_1D_fft(diff_chain,
         _num_filtered = float(np.sum(diff_chain.weights[_filter]))
         _num_samples = float(np.sum(diff_chain.weights))
         _P = float(_num_filtered)/float(_num_samples)
-        _low, _upper = utils.clopper_pearson_binomial_trial(_num_filtered,
+        _low, _upper = stutils.clopper_pearson_binomial_trial(_num_filtered,
                                                             _num_samples,
                                                             alpha=0.32)
     # if there are no samples try to do the integral:
@@ -834,7 +834,7 @@ def kde_parameter_shift_2D_fft(diff_chain,
         _num_filtered = float(np.sum(diff_chain.weights[_filter]))
         _num_samples = float(np.sum(diff_chain.weights))
         _P = float(_num_filtered)/float(_num_samples)
-        _low, _upper = utils.clopper_pearson_binomial_trial(_num_filtered,
+        _low, _upper = stutils.clopper_pearson_binomial_trial(_num_filtered,
                                                             _num_samples,
                                                             alpha=0.32)
     # if there are no samples try to do the integral:
@@ -958,7 +958,7 @@ def kde_parameter_shift(diff_chain, param_names=None,
     _num_samples_eff = np.sum(diff_chain.weights)**2 / \
         np.sum(diff_chain.weights**2)
     # whighten samples:
-    _white_samples = utils.whiten_samples(diff_chain.samples[:, ind],
+    _white_samples = stutils.whiten_samples(diff_chain.samples[:, ind],
                                           diff_chain.weights)
     # scale for the kde:
     distance_weights = None
@@ -1056,7 +1056,7 @@ def kde_parameter_shift(diff_chain, param_names=None,
         print('Time taken for KDE calculation:', round(t1-t0, 1), '(s)')
     # probability and binomial error estimate:
     _P = float(_num_filtered)/float(_num_samples)
-    _low, _upper = utils.clopper_pearson_binomial_trial(float(_num_filtered),
+    _low, _upper = stutils.clopper_pearson_binomial_trial(float(_num_filtered),
                                                         float(_num_samples),
                                                         alpha=0.32)
     #

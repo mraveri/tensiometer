@@ -29,7 +29,7 @@ tfb = tfp.bijectors
 tfd = tfp.distributions
 
 # local imports:
-from .. import utilities as utils
+from ..utilities import stats_utilities as stutils
 from . import fixed_bijectors as fixed_bijectors
 
 ###############################################################################
@@ -848,7 +848,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     kernel_initializer=kernel_initializer,
                     scale_with_dim=autoregressive_scale_with_dim,
                     identity_dims=autoregressive_identity_dims,
-                    **utils.filter_kwargs(kwargs, Dense))
+                    **stutils.filter_kwargs(kwargs, Dense))
             elif _autoregressive_type == 'masked':
                 nn = tfb.AutoregressiveNetwork(
                     params=transf_params,
@@ -856,7 +856,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     hidden_units=hidden_units,
                     activation=activation,
                     kernel_initializer=kernel_initializer,
-                    **utils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
+                    **stutils.filter_kwargs(kwargs, tfb.AutoregressiveNetwork))
             else:
                 raise ValueError
 
@@ -866,18 +866,18 @@ class AutoregressiveFlow(TrainableTransformation):
                 if map_to_unitcube:
                     transformation = SplineHelper(
                         shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_min=0., range_max=1.,
-                        **utils.filter_kwargs(kwargs, SplineHelper))
+                        **stutils.filter_kwargs(kwargs, SplineHelper))
                 else:
                     if periodic_params is not None:
                         transformation = CircularSplineHelper(
                             shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max,
                             equispaced_x_knots=equispaced_x_knots, equispaced_y_knots=equispaced_y_knots,
-                            **utils.filter_kwargs(kwargs, CircularSplineHelper))
+                            **stutils.filter_kwargs(kwargs, CircularSplineHelper))
                     else:
                         transformation = SplineHelper(
                             shift_and_log_scale_fn=nn, spline_knots=spline_knots, range_max=range_max,
                             equispaced_x_knots=equispaced_x_knots, equispaced_y_knots=equispaced_y_knots,
-                            **utils.filter_kwargs(kwargs, SplineHelper))
+                            **stutils.filter_kwargs(kwargs, SplineHelper))
             bijectors.append(transformation)
             if map_to_unitcube:
                 bijectors.append(tfb.NormalCDF())
@@ -888,7 +888,7 @@ class AutoregressiveFlow(TrainableTransformation):
                     ScaleRotoShift(
                         num_params,
                         name='affine_' + str(i) + '_' + str(np.random.randint(0, 100000)),
-                        **utils.filter_kwargs(kwargs, ScaleRotoShift)))
+                        **stutils.filter_kwargs(kwargs, ScaleRotoShift)))
 
         self.bijector = tfb.Chain(bijectors)
 
