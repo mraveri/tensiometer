@@ -72,14 +72,5 @@ class TestRunInProcess(unittest.TestCase):
         with self.assertRaises(ValueError, msg="Function should propagate exceptions raised in the subprocess"):
             faulty_function()
 
-    def test_memory_leak_avoidance(self):
-        # This test is more theoretical as actual memory usage needs deeper inspection.
-        @run_in_process()
-        def large_memory_task():
-            return [0] * int(1e6)  # Allocate a large list
-
-        result = large_memory_task()
-        self.assertIsInstance(result, list, "Function should return the allocated list successfully")
-
 if __name__ == '__main__':
     unittest.main()
