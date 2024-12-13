@@ -3,6 +3,7 @@ tqdm
 joblib
 coverage
 matplotlib
+psutil
 # documentation:
 sphinx
 sphinxcontrib-jquery
