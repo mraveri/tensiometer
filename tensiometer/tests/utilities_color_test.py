@@ -3,7 +3,8 @@
 
 import unittest
 
-from tensiometer.utilities.color_utilities import color_linear_interpolation, nice_colors, bash_colors
+from tensiometer.utilities.color_utilities import color_linear_interpolation, nice_colors
+import tensiometer.utilities.color_utilities as cu
 
 ###############################################################################
 
@@ -55,35 +56,32 @@ class TestColorUtilities(unittest.TestCase):
 
 class TestBashColors(unittest.TestCase):
 
-    def setUp(self):
-        self.bash_color = bash_colors()
-
     def test_purple(self):
-        result = self.bash_color.purple('Test')
+        result = cu.bash_purple('Test')
         self.assertEqual(result, '\033[95mTest\033[0m')
 
     def test_blue(self):
-        result = self.bash_color.blue('Test')
+        result = cu.bash_blue('Test')
         self.assertEqual(result, '\033[94mTest\033[0m')
 
     def test_green(self):
-        result = self.bash_color.green('Test')
+        result = cu.bash_green('Test')
         self.assertEqual(result, '\033[92mTest\033[0m')
 
     def test_yellow(self):
-        result = self.bash_color.yellow('Test')
+        result = cu.bash_yellow('Test')
         self.assertEqual(result, '\033[93mTest\033[0m')
 
     def test_red(self):
-        result = self.bash_color.red('Test')
+        result = cu.bash_red('Test')
         self.assertEqual(result, '\033[91mTest\033[0m')
 
     def test_bold(self):
-        result = self.bash_color.bold('Test')
+        result = cu.bash_bold('Test')
         self.assertEqual(result, '\033[1mTest\033[0m')
 
     def test_underline(self):
-        result = self.bash_color.underline('Test')
+        result = cu.bash_underline('Test')
         self.assertEqual(result, '\033[4mTest\033[0m')
 
 ###############################################################################

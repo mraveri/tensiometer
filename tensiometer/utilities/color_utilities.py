@@ -161,115 +161,92 @@ def nice_colors(num, colormap='the_gold_standard', interpolation_method='linear'
 # ******************************************************************************
 # Definition of bash colors:
 
-class bash_colors:
+BASH_PURPLE    = '\033[95m' #: ANSI color for light purple.
+BASH_BLUE      = '\033[94m' #: ANSI color for blue.
+BASH_GREEN     = '\033[92m' #: ANSI color for green.
+BASH_YELLOW    = '\033[93m' #: ANSI color for yellow.
+BASH_RED       = '\033[91m' #: ANSI color for red.
+BASH_BOLD      = '\033[1m'  #: ANSI code for bold text.
+BASH_UNDERLINE = '\033[4m'  #: ANSI code for underlined text.
+BASH_ENDC      = '\033[0m'  #: ANSI code to restore the bash default.
+
+# --------------------------------------------------------------------------
+
+def bash_purple(string):
     """
-    This class contains the necessary definitions to print to bash screen with colors.
-    Sometimes it can be useful and nice!
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_PURPLE` color.
 
-    :ivar PURPLE: ANSI color for light purple.
-    :ivar BLUE: ANSI color for blue.
-    :ivar GREEN: ANSI color for green.
-    :ivar YELLOW: ANSI color for yellow.
-    :ivar RED: ANSI color for red.
-    :ivar BOLD: ANSI code for bold text.
-    :ivar UNDERLINE: ANSI code for underlined text.
-    :ivar ENDC: ANSI code to restore the bash default.
-
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
     """
+    return BASH_PURPLE + str(string) + BASH_ENDC
 
-    # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
-    PURPLE    = '\033[95m' #: ANSI color for light purple.
-    BLUE      = '\033[94m' #: ANSI color for blue.
-    GREEN     = '\033[92m' #: ANSI color for green.
-    YELLOW    = '\033[93m' #: ANSI color for yellow.
-    RED       = '\033[91m' #: ANSI color for red.
-    BOLD      = '\033[1m'  #: ANSI code for bold text.
-    UNDERLINE = '\033[4m'  #: ANSI code for underlined text.
-    ENDC      = '\033[0m'  #: ANSI code to restore the bash default.
+def bash_blue(string):
+    """
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_BLUE` color.
 
-    # --------------------------------------------------------------------------
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
+    """
+    return BASH_BLUE + str(string) + BASH_ENDC
 
-    def __init__(self):
-        pass
+# --------------------------------------------------------------------------
 
-    # --------------------------------------------------------------------------
+def bash_green(string):
+    """
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_GREEN` color.
 
-    def purple(self, string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.PURPLE` color.
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
+    """
+    return BASH_GREEN + str(string) + BASH_ENDC
 
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.PURPLE+str(string)+self.ENDC
+# --------------------------------------------------------------------------
 
-    # --------------------------------------------------------------------------
+def bash_yellow(string):
+    """
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_YELLOW` color.
 
-    def blue(self,string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BLUE` color.
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
+    """
+    return BASH_YELLOW + str(string) + BASH_ENDC
 
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.BLUE+str(string)+self.ENDC
+# --------------------------------------------------------------------------
 
-    # --------------------------------------------------------------------------
+def bash_red(string):
+    """
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_RED` color.
 
-    def green(self,string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.GREEN` color.
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
+    """
+    return BASH_RED + str(string) + BASH_ENDC
 
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.GREEN+str(string)+self.ENDC
+# --------------------------------------------------------------------------
 
-    # --------------------------------------------------------------------------
+def bash_bold(string):
+    """
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_BOLD` color.
 
-    def yellow(self,string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.YELLOW` color.
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
+    """
+    return BASH_BOLD + str(string) + BASH_ENDC
 
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.YELLOW+str(string)+self.ENDC
+# --------------------------------------------------------------------------
 
-    # --------------------------------------------------------------------------
+def bash_underline(string):
+    """
+    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_UNDERLINE` color.
 
-    def red(self,string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.RED` color.
+    :param string: input string.
+    :return: the input string with the relevant ANSI code at the beginning and at the end.
+    """
+    return BASH_UNDERLINE + str(string) + BASH_ENDC
 
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.RED+str(string)+self.ENDC
-
-    # --------------------------------------------------------------------------
-
-    def bold(self,string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BOLD` color.
-
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.BOLD+str(string)+self.ENDC
-
-    # --------------------------------------------------------------------------
-
-    def underline(self,string):
-        """
-        Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.UNDERLINE` color.
-
-        :param string: input string.
-        :return: the input string with the relevant ANSI code at the beginning and at the end.
-        """
-        return self.UNDERLINE+str(string)+self.ENDC
-
-    # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 
 # ******************************************************************************

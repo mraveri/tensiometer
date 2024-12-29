@@ -171,25 +171,81 @@ def run_in_process(**kwargs):
             # Set up and start the subprocess.
             ctx = mp.get_context(context)
             parent_conn, child_conn = ctx.Pipe()
+            
+            # create the process:
             process = ctx.Process(target=target_function, args=(child_conn, *args), kwargs=kwargs)
+            if feedback_level > 2:
+                print('* Sub-process created.', flush=True)
+            
             process.start()
+            if feedback_level > 2:
+                print('* Sub-process started.', flush=True)    
 
+            # initial memory usage:
+            if monitoring:
+                initial_memory = psutil.Process(process.pid).memory_info().rss / 1024 / 1024
+                if feedback_level > 1:
+                    print('* Initial memory usage:', initial_memory, 'MB', flush=True)
+                    print(feedback_separator, flush=True)
+                peak_memory = initial_memory / 1024 / 1024
+                    
             # Monitor the process and handle timeout.
             initial_time = time.time() if monitoring else None
+ 
             while True:
-                if not process.is_alive():
+
+                # exit by process status:
+                _process_status = process.is_alive()
+                if feedback_level > 2:
+                    print('* Process is alive:', _process_status, flush=True)
+                if not _process_status:
+                    if feedback_level > 2:
+                        print(f'* Process exited with code {process.exitcode}.', flush=True)
                     if process.exitcode == 0:
                         break
                     else:
-                        raise Exception(f'Process exited with code {process.exitcode}')
+                        raise Exception('Process exited with code %d' % process.exitcode)                    
+
+                # monitoring:
+                if monitoring:
+                    current_memory = psutil.Process(process.pid).memory_info().rss / 1024 / 1024
+                    if feedback_level > 2:
+                        print('* Current memory usage:', current_memory, 'MB', flush=True)
+                    peak_memory = max(peak_memory, current_memory)
+
+                # break if pipe is full:
+                if parent_conn.poll():
+                    if feedback_level > 2:
+                        print('* Breaking, sub-process pipe is full.', flush=True)
+                    break
+
+                # break by timeout:
                 if timeout and time.time() - initial_time > timeout:
                     process.terminate()
                     raise TimeoutError("Process timed out.")
+
+                # sleep for monitoring frequency:
                 time.sleep(monitoring_frequency)
 
-            # Retrieve the result from the pipe.
+            # Receive the result from the pipe
             result = parent_conn.recv()
+            if feedback_level > 2:
+                print('* Result received.', flush=True)
+
+            # Wait for the process to finish and get the result:
             process.join()
+            if feedback_level > 2:
+                print('* Process joined.', flush=True)
+
+            # monitoring stats if needed:
+            if monitoring:
+                final_time = time.time()
+                total_time = final_time - initial_time
+                if feedback_level > 0:
+                    print(feedback_separator, flush=True)
+                    print(f'* Total time elapsed: {total_time:.2f} seconds', flush=True)
+                    print(f'* Peak memory usage: {peak_memory:.2f} MB', flush=True)
+                    print(feedback_separator, flush=True)
 
             # Raise exceptions received from the subprocess.
             if isinstance(result, Exception):
