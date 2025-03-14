@@ -11,6 +11,8 @@ import functools
 import types
 import re
 
+from scipy.special import logsumexp
+
 from getdist.chains import loadNumpyTxt
 from getdist.mcsamples import MCSamples
 from getdist.types import BestFit
@@ -57,46 +59,76 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
     # get the parameter labels from the user provided dictionary:
     param_labels = get_param_labels(info, param_names, param_label_dict)
     # get the sampler:
-    sampler = get_sampler_type(info)
+    sampler_type, sampler = get_sampler_type(info)
     # get the name tag:
     if name_tag is None:
         name_tag = get_name_tag(info)
     # get the samples weights and likelihood:
     chain = loadNumpyTxt(chain_file, skiprows=0)
     # parse the chain depending on the sampler that produced it:
-    if sampler == 'nested':
+    if sampler_type == 'nested':
         # get number of samples to use:
         nsamples = int(list(filter(lambda x: 'nsample=' in x, info))
                        [0].replace(' ', '').split('=')[1])
         # get the chain:
         chain = chain[-nsamples:]
+        # decide whether we have weights or log weights:
+        if 'weight' in param_names:
+            _w = 'weight'
+        elif 'log_weight' in param_names:
+            _w = 'log_weight'
+        else:
+            raise ValueError('Nested sampler chains should have weights')
         # get all quantities:
         indexes = [i for i in range(len(param_names))
-                   if i != param_names.index('weight')
+                   if i != param_names.index(_w)
                    and i != param_names.index('post')]
         samples = chain[:, indexes]
-        weights = chain[:, param_names.index('weight')]
+        weights = chain[:, param_names.index(_w)]
+        if _w == 'log_weight':
+            weights = weights - logsumexp(weights)
+            weights = np.exp(weights)
         loglike = chain[:, param_names.index('post')]
         # delete the weights and likelihood from names:
         if param_labels is not None:
-            param_labels.pop(param_names.index('weight'))
-            param_labels.pop(param_names.index('post'))
-        param_names.pop(param_names.index('weight'))
+            param_labels.pop(param_labels.index(_w))
+            param_labels.pop(param_labels.index('post'))
+        param_names.pop(param_names.index(_w))
         param_names.pop(param_names.index('post'))
-    elif sampler == 'mcmc':
+    elif sampler_type == 'mcmc':
         # get all quantities:
         indexes = [i for i in range(len(param_names))
                    if i != param_names.index('post')]
         samples = chain[:, indexes]
         loglike = chain[:, param_names.index('post')]
-        # Cosmosis does not weight samples:
-        samples, idx, weights = np.unique(samples, return_index=True, return_counts=True, axis=0)
-        loglike = loglike[idx]
+        # process weights:
+        if sampler == 'importance':
+            # get the old weights or the old_log_weights:
+            if 'old_weight' in param_names:
+                old_weights = chain[:, param_names.index('old_weight')]
+            elif 'old_log_weight' in param_names:
+                old_weights = np.exp(chain[:, param_names.index('old_log_weight')])
+            # create filter:
+            nonzeromask = old_weights!=0
+            # get the IS weights:
+            isweights = chain[:, param_names.index('log_weight')]
+            # exp the filtered IS weights:
+            wexp =np.exp(isweights[nonzeromask])
+            # create the new weights:
+            weights = np.zeros(old_weights.size)
+            weights[nonzeromask] = old_weights[nonzeromask]*wexp
+        else:
+            # check for existing weights:
+            if 'weight' in param_names or 'log_weight' in param_names:
+                raise ValueError('MCMC chains should not have weights')
+            # Cosmosis does not weight samples:
+            samples, idx, weights = np.unique(samples, return_index=True, return_counts=True, axis=0)
+            loglike = loglike[idx]
         # delete the weights and likelihood from names:
         if param_labels is not None:
             param_labels.pop(param_names.index('post'))
         param_names.pop(param_names.index('post'))
-    elif sampler == 'uncorrelated':
+    elif sampler_type == 'uncorrelated':
         # get all quantities:
         indexes = [i for i in range(len(param_names))
                    if i != param_names.index('post')]
@@ -118,12 +150,10 @@ def MCSamplesFromCosmosis(chain_root, chain_min_root=None,
                 param_names[i] = param_name_dict[name]
                 if name in ranges.keys():
                     ranges[param_name_dict[name]] = ranges.pop(name)
-        #for i, name in enumerate(param_names):
-        #    if name in param_name_dict.keys():
     # initialize the samples:
     mc_samples = MCSamples(samples=samples, weights=weights,
                            loglikes=-loglike,
-                           sampler=sampler, names=param_names,
+                           sampler=sampler_type, names=param_names,
                            labels=param_labels, ranges=ranges,
                            ignore_rows=0, name_tag=name_tag,
                            settings=settings)
@@ -225,8 +255,10 @@ def get_sampler_type(info):
     sampler_dict = {
                     'polychord': 'nested',
                     'multinest': 'nested',
+                    'nautilus': 'nested',
                     'apriori': 'uncorrelated',
                     'emcee': 'mcmc',
+                    'importance': 'mcmc',
                     'pmaxlike': 'max_like',
                     'maxlike': 'max_like'
                     }
@@ -235,13 +267,13 @@ def get_sampler_type(info):
     if len(temp) > 0:
         sampler = temp[0].replace(' ', '').split('=')[1].lower()
         if sampler in sampler_dict.keys():
-            sampler = sampler_dict[sampler]
+            sampler_type = sampler_dict[sampler]
         else:
             raise ValueError('Unknown input sampler')
     else:
-        sampler = None
+        sampler_type = None
     #
-    return sampler
+    return sampler_type, sampler
 
 ###############################################################################
 
