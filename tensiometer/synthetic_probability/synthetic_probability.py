@@ -357,7 +357,7 @@ class FlowCallback(Callback):
                     temp_range = self.parameter_ranges[name]
                     center = 0.5 * (temp_range[0] + temp_range[1])
                     length = temp_range[1] - temp_range[0]
-                    eps = 0.001
+                    eps = 0.01
                     temp_ranges.append({
                         'lower': self.cast(center - 0.5 * length * (1. + eps)),
                         'upper': self.cast(center + 0.5 * length * (1. + eps)),
@@ -830,10 +830,15 @@ class FlowCallback(Callback):
         # set callbacks:
         if callbacks is None:
             callbacks = []
-            # learning rate scheduler:
-            lr_schedule = lr.LRAdaptLossSlopeEarlyStop(min_lr=self.final_learning_rate,
-                                                       **stutils.filter_kwargs(kwargs, lr.LRAdaptLossSlopeEarlyStop))
-            callbacks.append(lr_schedule)
+            # get lr_scheduler from kwargs if present
+            lr_scheduler_name = kwargs.get('lr_scheduler', 'LRAdaptLossSlopeEarlyStop')
+            if lr_scheduler_name is not None:
+                if hasattr(lr, lr_scheduler_name):
+                    lr_schedule = getattr(lr, lr_scheduler_name)(min_lr=self.final_learning_rate,
+                                                                 **stutils.filter_kwargs(kwargs, getattr(lr, lr_scheduler_name)))
+                    callbacks.append(lr_schedule)
+                else:
+                    print(f"Warning: lr_scheduler '{lr_scheduler_name}' not found in lr module.")
             # TQDM progress bar:
             if verbose == -1:
                 from tqdm.keras import TqdmCallback
@@ -1567,7 +1572,7 @@ class FlowCallback(Callback):
         """
         # plot loss lines:
         ax.plot(self.log["loss"], ls='-', lw=1., color='k', label='training')
-        ax.plot(self.log["val_loss"], ls='--', lw=1., color='k', label='testing')
+        ax.plot(self.log["val_loss"], ls='--', lw=1., color='k', label='validation')
         # plot best population loss so far (if any):
         if 'best_loss' in self.log.keys():
             ax.axhline(self.log['best_loss'], ls='--', lw=1., color='tab:blue', label='pop best')
@@ -1598,7 +1603,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_chi2_dist(self, ax, logs={}):
+    def _plot_chi2_dist(self, ax, logs={}, fast=False):
         """
         Utility function to plot chi2 distribution vs histogram.
         """
@@ -1625,9 +1630,19 @@ class FlowCallback(Callback):
             bins=bins,
             density=True,
             histtype='step',
-            label='Post-NF ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]),
+            label='Post-NF val ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]),
             lw=1.,
             ls='-')
+        if not fast:
+            train_chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.training_samples))**2, axis=1)
+            ax.hist(
+                train_chi2Z,
+                bins=bins,
+                density=True,
+                histtype='step',
+                label='Post-NF train',
+                lw=1.,
+                ls='-')
         ax.set_title(r'$\chi^2_{{{}}}$ PDF'.format(self.num_params))
         ax.set_xlabel(r'$\chi^2$')
         ax.legend()
@@ -1848,7 +1863,7 @@ class FlowCallback(Callback):
         return None
     
     @matplotlib.rc_context(plot_options)
-    def training_plot(self, logs=None, file_path=None, ipython_plotting=False, title=None):
+    def training_plot(self, logs=None, file_path=None, ipython_plotting=False, title=None, fast=False):
         """
         Method to produce training plot with training metrics
         """
@@ -1896,7 +1911,7 @@ class FlowCallback(Callback):
             self._plot_lr(axes[5], logs=_logs)
             self._plot_evidence(axes[6], logs=_logs)
             self._plot_evidence_error(axes[7], logs=_logs)
-            self._plot_chi2_dist(axes[8], logs=_logs)
+            self._plot_chi2_dist(axes[8], logs=_logs, fast=fast)
             self._plot_chi2_ks_p(axes[9], logs=_logs)
 
         # plot title:
@@ -1951,9 +1966,9 @@ class FlowCallback(Callback):
                 self._create_figure()
             else:
                 plt.clf()
-                
+
             # do the plot:
-            self.training_plot(logs=logs, ipython_plotting=ipython_plotting)
+            self.training_plot(logs=logs, ipython_plotting=ipython_plotting, fast=True)
 
             # allow time for rendering and show:
             plt.pause(0.00001)

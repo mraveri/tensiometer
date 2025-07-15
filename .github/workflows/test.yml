@@ -19,8 +19,8 @@ jobs:
       matrix:
 
         python-version: ["3.9", "3.10", "3.12"]
-        tensorflow-version: ["2.15.0", "2.16.1", "2.17.0", "2.18.0"]
-        tfp-version: ["0.23.0", "0.24.0"]
+        tensorflow-version: ["2.15.0", "2.16.1", "2.17.0", "2.18.0", "2.19.0"]
+        tfp-version: ["0.23.0", "0.24.0", "0.25.0"]
 
         exclude:
           - python-version: "3.12"
@@ -32,6 +32,8 @@ jobs:
           - tensorflow-version: "2.17.0"
             tfp-version: "0.23.0"
           - tensorflow-version: "2.18.0"
+            tfp-version: "0.23.0"
+          - tensorflow-version: "2.19.0"
             tfp-version: "0.23.0"
 
     steps:
@@ -59,6 +61,10 @@ jobs:
           fi
           # Install tf-keras for tensorflow 2.18.0
           if [ "${{ matrix.tensorflow-version }}" == "2.18.0" ]; then
+            pip install tf-keras
+          fi
+          # Install tf-keras for tensorflow 2.19.0
+          if [ "${{ matrix.tensorflow-version }}" == "2.19.0" ]; then
             pip install tf-keras
           fi
 

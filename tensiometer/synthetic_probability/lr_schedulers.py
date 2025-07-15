@@ -314,4 +314,101 @@ class LRAdaptLossSlopeEarlyStop(Callback):
                             self.last_losses = []
                         else:
                             self.model.stop_training = True
+
+###############################################################################
+# Adaptive learning rate (loss slope) with globalization and early stopping:
+
+
+class LRSeesawAdaptLossSlopeEarlyStop(Callback):
+
+    def __init__(
+            self,
+            monitor="val_loss",
+            reduction_factor=1./np.sqrt(10.),
+            increase_factor=0.003,
+            patience=25,
+            cooldown=10,
+            verbose=0,
+            min_lr=1e-5,
+            threshold=0.0,
+            **kwargs,
+    ):
+        """
+        Adaptive reduction of learning rate when likelihood improvement stalls for a given number of epochs.
+
+        :param monitor:
+        :param factor:
+        :param patience:
+        :param cooldown:
+        :param verbose:
+        :param min_lr:
+        """
+
+        super().__init__()
+
+        self.monitor = monitor
+        if reduction_factor >= 1.0:
+            raise ValueError("LRSeesawAdaptLossSlopeEarlyStop does not support a factor >= 1.0. Got {factor}")
+
+        self.reduction_factor = reduction_factor
+        self.increase_factor = increase_factor
+        self.min_lr = min_lr
+        self.patience = patience
+        self.verbose = verbose
+        self.cooldown = cooldown
+        self.threshold = threshold
+
+        self._reset()
+
+    def _reset(self):
+        self.cooldown_counter = 0
+        self.wait = 0
+        self.last_losses = []
+
+    def on_train_begin(self, logs=None):
+        """ """
+        self._reset()
+
+    def on_epoch_end(self, epoch, logs=None):
+        """ """
+        logs = logs or {}
+        logs["lr"] = tf.keras.backend.get_value(self.model.optimizer.lr)
+        current = logs.get(self.monitor)
+        if current is None:
+            logging.warning(
+                "Learning rate reduction is conditioned on metric `%s` "
+                "which is not available. Available metrics are: %s",
+                self.monitor,
+                ",".join(list(logs.keys())),
+            )
+        else:
+            # increase learning rate:
+            old_lr = tf.keras.backend.get_value(self.model.optimizer.lr)
+            new_lr = old_lr * (1.0 + self.increase_factor)
+            tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
+            # decrease learning rate:
+            if self.cooldown_counter > 0:
+                self.cooldown_counter -= 1
+                self.wait = 0
+            else:
+                self.last_losses.append(current)
+                self.wait += 1
+                if self.wait >= self.patience:
+                    a = np.polyfit(np.arange(self.patience), self.last_losses[-self.patience:], 1)[0] # fits a line to `val_loss` in the last `patience` epochs
+                    if a > self.threshold: # tests if val_loss is going up
+                        old_lr = tf.keras.backend.get_value(self.model.optimizer.lr)
+                        if old_lr > np.float32(self.min_lr):
+                            new_lr = old_lr * self.reduction_factor
+                            new_lr = max(new_lr, self.min_lr)
+                            tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
+                            if self.verbose > 0:
+                                tf.print(
+                                    f"\nEpoch {epoch +1}: "
+                                    "LRAdaptLossSlopeEarlyStop reducing "
+                                    f"learning rate to {new_lr}.")
+                            self.cooldown_counter = self.cooldown
+                            self.wait = 0
+                            self.last_losses = []
+                        else:
+                            self.model.stop_training = True
                             
