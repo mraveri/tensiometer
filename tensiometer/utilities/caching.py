@@ -11,7 +11,7 @@ from functools import wraps
 
 ###########################################################################################
 
-def cache_input(func):
+def cache_input(func, check_input=True):
     """
     A decorator to cache the input arguments of a function to a file and reuse them
     in subsequent function calls, so that one can call a function by only specifying the cache details. 
@@ -55,21 +55,22 @@ def cache_input(func):
             with open(cache_file, 'rb') as f:
                 cached_args, cached_kwargs = pickle.load(f)
             # check whether the cached arguments are the same as the current ones:
-            if args != () and args != cached_args:
-                raise ValueError(
-                    f"Cached arguments are different from current ones. "
-                    f"args: {args}, cached_args: {cached_args}. "
-                    f"Please remove the cache file and run the function again."
-                )
-            if kwargs != {}:
-                for key in kwargs:
-                    if kwargs[key] != cached_kwargs[key]:
-                        raise ValueError(
-                            f"Cached arguments are different from current ones. "
-                            f"Error in key: {key}. "
-                            f"Provided: {kwargs[key]}, Cached: {cached_kwargs[key]}. "
-                            f"Please remove the cache file and run the function again."
-                        )
+            if check_input:
+                if args != () and args != cached_args:
+                    raise ValueError(
+                        f"Cached arguments are different from current ones. "
+                        f"args: {args}, cached_args: {cached_args}. "
+                        f"Please remove the cache file and run the function again."
+                    )
+                if kwargs != {}:
+                    for key in kwargs:
+                        if kwargs[key] != cached_kwargs[key]:
+                            raise ValueError(
+                                f"Cached arguments are different from current ones. "
+                                f"Error in key: {key}. "
+                                f"Provided: {kwargs[key]}, Cached: {cached_kwargs[key]}. "
+                                f"Please remove the cache file and run the function again."
+                            )
             # if all checks pass, return the cached result:
             args = cached_args
             kwargs = cached_kwargs
