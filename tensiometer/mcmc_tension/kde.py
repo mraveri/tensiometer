@@ -19,7 +19,10 @@ gchains.print_load_details = False
 from getdist import MCSamples
 import scipy
 from scipy.linalg import sqrtm
-from scipy.integrate import simpson as simps 
+try:
+    from scipy.integrate import simpson as simps
+except ImportError:
+    from scipy.integrate import simps
 from scipy.spatial import cKDTree
 
 from ..utilities import stats_utilities as stutils
