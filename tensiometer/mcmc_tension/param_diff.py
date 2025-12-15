@@ -12,6 +12,7 @@ import numpy as np
 import getdist.chains as gchains
 gchains.print_load_details = False
 from getdist import MCSamples, WeightedSamples
+import copy
 from ..utilities import stats_utilities as stutils
 
 ###############################################################################
@@ -154,7 +155,7 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
 ###############################################################################
 
 
-def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_params=None, **kwargs):
+def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_params=None, fixed_params=None, **kwargs):
     """
     Compute the chain of the parameter differences between the two input
     chains. The parameters of the difference chain are related to the
@@ -192,6 +193,9 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
     :param periodic_params: (optional) dictionary with the names of the
         parameters that are periodic. The keys are the names and the values
         are the ranges of the parameters.
+    :param fixed_params: (optional) dictionary with the names of the fixed
+        parameters. The keys are the names and the values are the values of
+        the parameters.
     :return: :class:`~getdist.mcsamples.MCSamples` the instance with the
         parameter difference chain.
     """
@@ -207,26 +211,57 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
     # get the parameter names:
     param_names_1 = chain_1.getParamNames().list()
     param_names_2 = chain_2.getParamNames().list()
+    # check that fixed parameters are in one of the chains:
+    if fixed_params is not None:
+        fixed_params_names = list(fixed_params.keys())
+        for name in fixed_params_names:
+            if name not in param_names_1 and name not in param_names_2:
+                raise ValueError(f"Fixed parameter {name} not found in any chain")
     # get the common names:
-    _param_names = [_p for _p in param_names_1 if _p in param_names_2]
-    num_params = len(_param_names)
-    if num_params == 0:
+    _shared_param_names = [_p for _p in param_names_1 if _p in param_names_2]
+    if len(_shared_param_names) == 0 and fixed_params is None:
         raise ValueError('There are no shared parameters to difference')
-    if param_names is None:
-        param_names = _param_names
+    if fixed_params is not None:
+        fixed_params_names = list(fixed_params.keys())
+        if param_names is None:
+            param_names = _shared_param_names + fixed_params_names
+        else:
+            # check that the input names are in the common names:
+            if not all([_p in _shared_param_names + fixed_params_names for _p in param_names]):
+                raise ValueError('Not all input parameters are shared between chains nor fixed')
+            # get the parameter names:   
+            param_names = [_p for _p in param_names if _p in _shared_param_names + fixed_params_names]
+        # check that the periodic parameters are in the common names:
+        if periodic_params is not None:
+            for name in periodic_params.keys():
+                if name not in param_names:
+                    raise ValueError(f"Periodic parameter {name} not found in both chains")
     else:
-        # check that the input names are in the common names:
-        if not all([_p in _param_names for _p in param_names]):
-            raise ValueError('Not all input parameters are shared between chains')    
-        # get the parameter names:   
-        param_names = [_p for _p in param_names if _p in _param_names]
-    # get the names and labels:
+        if param_names is None:
+            param_names = _shared_param_names
+        else:
+            # check that the input names are in the common names:
+            if not all([_p in _shared_param_names for _p in param_names]):
+                raise ValueError('Not all input parameters are shared between chains')
+            # get the parameter names:   
+            param_names = [_p for _p in param_names if _p in _shared_param_names]
+        # check that the periodic parameters are in the common names:
+        if periodic_params is not None:
+            for name in periodic_params.keys():
+                if name not in param_names:
+                    raise ValueError(f"Periodic parameter {name} not found in both chains")
+    # get the new names:
     diff_param_names = ['delta_'+name for name in param_names]
-    diff_param_labels = ['\\Delta '+name.label for name in
-                         chain_1.getParamNames().parsWithNames(param_names)]
+    # get the new labels:
+    diff_param_labels = []
+    for name in param_names:
+        if name in param_names_1:
+            diff_param_labels.append(r'\Delta '+chain_1.getParamNames().parWithName(name).label)
+        else:
+            diff_param_labels.append(r'\Delta '+chain_2.getParamNames().parWithName(name).label)
     # get parameter indexes:
-    indexes_1 = [chain_1.index[name] for name in param_names]
-    indexes_2 = [chain_2.index[name] for name in param_names]
+    indexes_1 = [chain_1.index[name] for name in param_names if name in param_names_1]
+    indexes_2 = [chain_2.index[name] for name in param_names if name in param_names_2]
     # process periodic parameters:
     _periodic_params = None
     if periodic_params is not None:
@@ -270,14 +305,48 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
     chains_combinations = [[_chains_1[i], _chains_2[j]]
                            for i, j in zip(ind1, ind2)]
     # compute the parameter difference samples:
-    diff_chain_samples = [
-        parameter_diff_weighted_samples(samp1,
-                                        samp2,
-                                        boost=sample_boost, 
-                                        indexes_1=indexes_1,
-                                        indexes_2=indexes_2,
-                                        periodic_indexes=_periodic_params) 
-        for samp1, samp2 in chains_combinations]
+    diff_chain_samples = []
+    for samp1, samp2 in chains_combinations:
+        _samp1 = copy.deepcopy(samp1)
+        _samp2 = copy.deepcopy(samp2)
+        # add columns with fixed params:
+        fixed_indexes = {}
+        if fixed_params is not None:
+            for name, value in fixed_params.items():
+                # check if the fixed parameter has to be added to samples 1 and/or 2:
+                if name in param_names and name not in param_names_1:
+                    # create the column:
+                    fixed_column = np.full((_samp1.samples.shape[0], 1), value)
+                    # add the column:
+                    _samp1.samples = np.column_stack((_samp1.samples, fixed_column))
+                    # update the indexes:
+                    fixed_indexes[name] = _samp1.samples.shape[1] - 1
+                if name in param_names and name not in param_names_2:
+                    # create the column:
+                    fixed_column = np.full((_samp2.samples.shape[0], 1), value)
+                    # add the column:
+                    _samp2.samples = np.column_stack((_samp2.samples, fixed_column))
+                    # update the indexes:
+                    fixed_indexes[name] = _samp2.samples.shape[1] - 1
+            # compute the new indexes:
+            indexes_1 = []
+            indexes_2 = []
+            for param in param_names:
+                if param in param_names_1:
+                    indexes_1.append(chain_1.index[param])
+                else:
+                    indexes_1.append(fixed_indexes[param])
+                if param in param_names_2:
+                    indexes_2.append(chain_2.index[param])
+                else:
+                    indexes_2.append(fixed_indexes[param])
+        diff = parameter_diff_weighted_samples(_samp1,
+                                               _samp2,
+                                               boost=sample_boost,
+                                               indexes_1=indexes_1,
+                                               indexes_2=indexes_2,
+                                               periodic_indexes=_periodic_params)
+        diff_chain_samples.append(diff)
     # create the samples:
     diff_samples = MCSamples(names=diff_param_names, labels=diff_param_labels,
                              **stutils.filter_kwargs(kwargs, MCSamples))
@@ -298,6 +367,8 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
     _temp_paramnames = chain_1.getParamNames()
     for _nam in diff_samples.getParamNames().parsWithNames(_temp):
         _temp_name = _nam.name.replace('delta_', '', 1)
+        if _temp_paramnames.parWithName(_temp_name) is None:
+            _temp_paramnames = chain_2.getParamNames()
         _nam.isDerived = _temp_paramnames.parWithName(_temp_name).isDerived
     # update and compute everything:
     diff_samples.updateBaseStatistics()
