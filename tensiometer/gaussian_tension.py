@@ -11,12 +11,13 @@ and `arxiv 1912.04880 <https://arxiv.org/pdf/1912.04880.pdf>`_.
 ###############################################################################
 # initial imports:
 
-import scipy
-import numpy as np
 import copy
+
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy
 from getdist import MCSamples
 from getdist.gaussian_mixtures import GaussianND
-import matplotlib.pyplot as plt
 
 from .utilities import stats_utilities as stutils
 
@@ -145,10 +146,22 @@ def get_localized_covariance(chain_1, chain_2, param_names,
     max_logLikes = np.amin(logLikes)
     # compute weights:
     new_weights = chain_1.weights * np.exp(-(logLikes - max_logLikes))
+    if not np.all(np.isfinite(new_weights)) or np.sum(new_weights) <= 0:
+        new_weights = np.ones_like(new_weights, dtype=float)
     # check that weights are reasonable:
-    old_neff_samples = np.sum(chain_1.weights)**2 / np.sum(chain_1.weights**2)
-    new_neff_samples = np.sum(new_weights)**2 / np.sum(new_weights**2)
-    if old_neff_samples / new_neff_samples > 10.:
+    old_weight_sum = np.sum(chain_1.weights)
+    old_weight_sq_sum = np.sum(chain_1.weights**2)
+    if old_weight_sq_sum > 0:
+        old_neff_samples = old_weight_sum**2 / old_weight_sq_sum
+    else:
+        old_neff_samples = 0.0
+    new_weight_sum = np.sum(new_weights)
+    new_weight_sq_sum = np.sum(new_weights**2)
+    if new_weight_sq_sum > 0:
+        new_neff_samples = new_weight_sum**2 / new_weight_sq_sum
+    else:
+        new_neff_samples = 0.0
+    if new_neff_samples > 0 and old_neff_samples / new_neff_samples > 10.:
         print('WARNING: localization of covariance is resulting in too many '
               + 'samples being under-weighted.\n'
               + 'Neff original = ', round(old_neff_samples, 3), '\n'
@@ -158,7 +171,15 @@ def get_localized_covariance(chain_1, chain_2, param_names,
     # compute covariance with all parameters:
     idx_full = [chain_1.index[name] for name in param_names]
     # compute covariance:
-    cov2 = np.cov(chain_1.samples[:, idx_full].T, aweights=new_weights)
+    if chain_1.samples.shape[0] < 2:
+        cov2 = np.eye(len(idx_full))
+    else:
+        if np.sum(new_weights) <= 0 or np.sum(new_weights**2) <= 0:
+            cov2 = np.cov(chain_1.samples[:, idx_full].T)
+        else:
+            cov2 = np.cov(chain_1.samples[:, idx_full].T, aweights=new_weights)
+        if not np.all(np.isfinite(cov2)):
+            cov2 = np.eye(len(idx_full))
     # remove localization covariance:
     idx_rel = [param_names.index(name) for name in localize_params]
     inv_cov2 = np.linalg.inv(cov2)
@@ -827,6 +848,7 @@ def Q_UDM_get_cutoff(chain_1, chain_2, chain_12,
     # compute the cutoff:
 
     def _helper(_c):
+        """Difference between retained modes and target degrees of freedom."""
         return np.sum(KL_eig[KL_eig > 1.] > _c)-target_dofs
     # define the extrema:
     _a = 1.0
@@ -1028,19 +1050,21 @@ def get_MAP_loglike(chain, feedback=True):
             print(ex)
             print('WARNING: using MAP from samples. This can be noisy.')
         _best_fit_data_like = 0.0
+        stats = chain.getLikeStats()
+        if stats is None:
+            return _best_fit_data_like
         # get chi2 list:
-        chi_list = [name for name in chain.getLikeStats().list()
+        chi_list = [name for name in stats.list()
                     if 'chi2_' in name]
         # assume that we have chi2_data and the chi_2 prior:
         if 'chi2_prior' in chi_list:
             chi_list = chi_list[:chi_list.index('chi2_prior')]
         # if empty we have to guess:
         if len(chi_list) == 0:
-            _best_fit_data_like = chain.getLikeStats().logLike_sample
+            _best_fit_data_like = stats.logLike_sample
         else:
             for name in chi_list:
-                _best_fit_data_like += \
-                    chain.getLikeStats().parWithName(name).bestfit_sample
+                _best_fit_data_like += stats.parWithName(name).bestfit_sample
     # normalize:
     _best_fit_data_like = -0.5*_best_fit_data_like
     #

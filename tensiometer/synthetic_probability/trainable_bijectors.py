@@ -73,6 +73,7 @@ def min_var_permutations(d, n, min_number=10000):
 
 
 class TrainableTransformation(object):
+    """Base interface for trainable bijectors used in normalizing flows."""
 
     def save(self, path):
         """
@@ -92,6 +93,7 @@ class TrainableTransformation(object):
 # class to build a scaling, rotation and shift bijector:
 
 class ScaleRotoShift(tfb.Bijector):
+    """Affine bijector combining shift, diagonal scaling, and rotation."""
 
     def __init__(
             self,
@@ -156,13 +158,20 @@ class ScaleRotoShift(tfb.Bijector):
 
     @property
     def shift(self):
+        """Shift component of the affine transformation."""
         return self._shift
 
     @classmethod
     def _is_increasing(cls):
+        """Report monotonicity of the bijector transformation."""
         return True
 
     def _getaff_invaff(self, x):
+        """
+        Build affine and inverse-affine matrices for the current parameters.
+
+        :param x: input tensor used to evaluate variable parameters.
+        """
         L = tf.zeros((self.dimension, self.dimension), dtype=self.dtype)
         L = tf.tensor_scatter_nd_update(L, np.array(np.tril_indices(self.dimension, -1)).T, self._rotvec(x))
         Lambda2 = tf.linalg.diag(tf.math.exp(self._scalevec(x)))
@@ -176,24 +185,29 @@ class ScaleRotoShift(tfb.Bijector):
         self.logdet = valdet / self.dimension
 
     def _forward(self, x):
+        """Apply the affine transform to ``x``."""
         self._getaff_invaff(x)
         _aff = self.aff
         return tf.transpose(tf.linalg.matmul(_aff, tf.transpose(x))) + self._shift(x)[None, :]
 
     def _inverse(self, y):
+        """Apply the inverse affine transform to ``y``."""
         self._getaff_invaff(y)
         _invaff = self.invaff
         return tf.transpose(tf.linalg.matmul(_invaff, tf.transpose(y - self._shift(y)[None, :])))
 
     def _forward_log_det_jacobian(self, x):
+        """Return log determinant of the forward Jacobian."""
         self._getaff_invaff(x)
         return self.logdet
 
     def _inverse_log_det_jacobian(self, y):
+        """Return log determinant of the inverse Jacobian."""
         return -self._forward_log_det_jacobian(self._inverse(y))
 
     @classmethod
     def _parameter_properties(cls, dtype):
+        """Expose parameter metadata for TensorFlow Probability."""
         return {'shift': parameter_properties.ParameterProperties()}
 
 ###############################################################################
@@ -241,6 +255,7 @@ class CircularRationalQuadraticSpline(tfb.RationalQuadraticSpline):
 
     @property
     def range_max(self):
+        """Upper bound of the spline domain."""
         return self._range_max
 
     def _compute_shared(self, x=None, y=None):
@@ -296,6 +311,13 @@ class CircularRationalQuadraticSpline(tfb.RationalQuadraticSpline):
                 out_type=tf.int64) - 1)
 
         def gather_squeeze(params, indices):
+            """
+            Gather parameters at ``indices`` along the last axis and squeeze.
+
+            :param params: tensor containing spline parameters.
+            :param indices: indices selecting parameter bins.
+            :returns: gathered parameter tensor with the last axis squeezed.
+            """
             rank = tensorshape_util.rank(indices.shape)
             if rank is None:
                 raise ValueError('`indices` must have statically known rank.')
@@ -383,6 +405,7 @@ class CircularRationalQuadraticSpline(tfb.RationalQuadraticSpline):
 
 
 class SplineHelper(tfb.MaskedAutoregressiveFlow):
+    """Autoregressive spline bijector helper used to build spline flows."""
 
     def __init__(
         self,
@@ -406,6 +429,26 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
         dtype=tf.float32,
         ):
         """
+        Initialize the spline autoregressive flow helper.
+
+        :param shift_and_log_scale_fn: callable producing spline parameters.
+        :param bijector_fn: optional custom bijector factory.
+        :param is_constant_jacobian: whether the Jacobian is constant.
+        :param validate_args: enable TensorFlow validation.
+        :param unroll_loop: unroll autoregressive loop for speed.
+        :param event_ndims: event dimensionality.
+        :param name: optional name of the bijector.
+        :param spline_knots: number of knots in the spline.
+        :param range_max: maximum value of the spline domain.
+        :param range_min: minimum value of the spline domain.
+        :param equispaced_x_knots: whether x knots are evenly spaced.
+        :param equispaced_y_knots: whether y knots are evenly spaced.
+        :param slope_min: minimum slope at boundaries.
+        :param min_bin_width: minimum bin width for spline segments.
+        :param min_bin_height: minimum bin height for spline segments.
+        :param slope_std: optional standard deviation for slope init.
+        :param softplus_alpha: softplus scaling for parameterization.
+        :param dtype: dtype for parameters.
         """
         parameters = dict(locals())
         name = name or 'spline_flow'
@@ -431,8 +474,22 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
             if shift_and_log_scale_fn:
 
                 def _bijector_fn(x, **condition_kwargs):
+                    """
+                    Build the spline bijector conditioned on autoregressive inputs.
+
+                    :param x: input tensor.
+                    :param condition_kwargs: additional conditioning arguments.
+                    :returns: ``tfb.RationalQuadraticSpline`` instance.
+                    """
 
                     def reshape(params):
+                        
+                        """
+                        Map autoregressive parameters into spline widths, heights, and slopes.
+
+                        :param params: tensor of spline parameters per dimension.
+                        :returns: tuple of bin widths, heights, and knot slopes.
+                        """
                         
                         factor = tf.cast(interval_width, dtype=dtype)
 
@@ -504,6 +561,7 @@ class SplineHelper(tfb.MaskedAutoregressiveFlow):
 
 
 class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
+    """Autoregressive spline helper enforcing circular boundary conditions."""
 
     def __init__(
         self,
@@ -527,6 +585,26 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
         dtype=tf.float32,
         ):
         """
+        Initialize the circular spline autoregressive flow helper.
+
+        :param shift_and_log_scale_fn: callable producing spline parameters.
+        :param bijector_fn: optional custom bijector factory.
+        :param is_constant_jacobian: whether the Jacobian is constant.
+        :param validate_args: enable TensorFlow validation.
+        :param unroll_loop: unroll autoregressive loop for speed.
+        :param event_ndims: event dimensionality.
+        :param name: optional name of the bijector.
+        :param spline_knots: number of knots in the spline.
+        :param range_max: maximum value of the spline domain.
+        :param range_min: minimum value of the spline domain.
+        :param equispaced_x_knots: whether x knots are evenly spaced.
+        :param equispaced_y_knots: whether y knots are evenly spaced.
+        :param slope_min: minimum slope at boundaries.
+        :param min_bin_width: minimum bin width for spline segments.
+        :param min_bin_height: minimum bin height for spline segments.
+        :param slope_std: optional standard deviation for slope init.
+        :param softplus_alpha: softplus scaling for parameterization.
+        :param dtype: dtype for parameters.
         """
         parameters = dict(locals())
         name = name or 'circular_spline_flow'
@@ -552,8 +630,22 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
             if shift_and_log_scale_fn:
 
                 def _bijector_fn(x, **condition_kwargs):
+                    """
+                    Build the circular spline bijector conditioned on inputs.
+
+                    :param x: input tensor.
+                    :param condition_kwargs: additional conditioning arguments.
+                    :returns: circular ``tfb.RationalQuadraticSpline`` instance.
+                    """
 
                     def reshape(params):
+                        
+                        """
+                        Map autoregressive parameters into circular spline widths, heights, and slopes.
+
+                        :param params: tensor of spline parameters per dimension.
+                        :returns: tuple of bin widths, heights, and knot slopes.
+                        """
                         
                         factor = tf.cast(interval_width, dtype=dtype)
 
@@ -632,11 +724,22 @@ class CircularSplineHelper(tfb.MaskedAutoregressiveFlow):
 # Make separate NNs for each dimension:
 
 def build_nn(dim_in, dim_out, hidden_units, activation=tf.math.asinh, **kwargs):
+    """
+    Construct a simple feed-forward network for autoregressive parameters.
+
+    :param dim_in: input dimensionality.
+    :param dim_out: output dimensionality.
+    :param hidden_units: list of hidden layer sizes.
+    :param activation: activation function for hidden layers.
+    :param kwargs: additional keyword arguments passed to ``Dense`` layers.
+    :returns: ``tf.keras.Sequential`` network.
+    """
     if len(hidden_units) == 0 or dim_in == 0:
-        model = Sequential(Dense(dim_out, activation=None, input_shape=(dim_in,)))
+        model = Sequential([Input(shape=(dim_in,)), Dense(dim_out, activation=None)])
     else:
         model = Sequential()
-        model.add(Dense(hidden_units[0], activation=activation, input_shape=(dim_in,), **kwargs))
+        model.add(Input(shape=(dim_in,)))
+        model.add(Dense(hidden_units[0], activation=activation, **kwargs))
         for n in hidden_units[1:]:
             model.add(Dense(n, activation=activation, **kwargs))
         model.add(Dense(dim_out, activation=None, **kwargs))
@@ -644,13 +747,31 @@ def build_nn(dim_in, dim_out, hidden_units, activation=tf.math.asinh, **kwargs):
 
 @tf.function
 def const_zeros(tensor, dim):
+    """
+    Create a batch-aligned tensor of zeros.
+
+    :param tensor: reference tensor for batch dimension.
+    :param dim: number of features to generate.
+    :returns: zero tensor broadcast to match the batch size.
+    """
     batch_size = tf.shape(tensor)[0]
     constant = tf.zeros(dim)
     constant = tf.expand_dims(constant, axis=0)
     return tf.broadcast_to(constant, shape=(batch_size, dim))
 
 def build_AR_model(num_params, transf_params, hidden_units=[], scale_with_dim=True, identity_dims=None, **kwargs):
-    x = Input(num_params)
+    """
+    Build an autoregressive network producing bijector parameters per dimension.
+
+    :param num_params: total number of parameters.
+    :param transf_params: number of parameters emitted per dimension.
+    :param hidden_units: hidden layer sizes for the per-dimension networks.
+    :param scale_with_dim: whether to scale hidden sizes with dimension index.
+    :param identity_dims: optional iterable of dimensions left as identity.
+    :param kwargs: additional kwargs forwarded to ``Dense`` layers.
+    :returns: ``tf.keras.Model`` mapping inputs to stacked parameters.
+    """
+    x = Input(shape=(num_params,))
     params = []
     for dim in range(num_params):
         if identity_dims is not None and dim in identity_dims:
@@ -953,5 +1074,3 @@ class BijectorLayer(tf.keras.layers.Layer):
         Applies the forward transformation of the bijector to the inputs.
         """
         return self.bijector.forward(inputs)
-
-

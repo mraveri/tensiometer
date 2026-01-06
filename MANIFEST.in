@@ -1,2 +1,16 @@
 include README.rst
-include *.py
+include LICENSE
+include pyproject.toml
+include requirements.txt
+include pytest.ini
+include Makefile
+include AGENTS.md
+
+recursive-include tensiometer *.py
+recursive-include tensiometer/tests *.py
+
+prune build
+prune dist
+prune tensiometer.egg-info
+
+global-exclude *.py[cod] __pycache__ .DS_Store

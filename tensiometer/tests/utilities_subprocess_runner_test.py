@@ -1,76 +1,262 @@
-###############################################################################
-# initial imports:
+"""Tests for subprocess runner utilities."""
 
-import unittest
-from multiprocessing import ProcessError
+#########################################################################################################
+# Imports
+
 import time
+import unittest
+from unittest.mock import patch
 
-from tensiometer.utilities.subprocess_runner import run_in_process, default_settings
+from tensiometer.utilities import subprocess_runner as spr
 
-###############################################################################
+#########################################################################################################
+# Helper fakes
 
-class TestRunInProcess(unittest.TestCase):
 
-    def test_basic_function_execution(self):
-        @run_in_process()
+class _FakeMemoryInfo:
+    """Fake Memory Info test suite."""
+    def __init__(self, rss):
+        """Init."""
+        self.rss = rss
+
+
+class _FakePsutilProcess:
+    """Fake Psutil Process test suite."""
+    def __init__(self, pid):
+        """Init."""
+        self.pid = pid
+
+    def memory_info(self):
+        """Memory info."""
+        return _FakeMemoryInfo(rss=1024 * 1024)
+
+
+class _FakePipeConn:
+    """Fake Pipe Conn test suite."""
+    def __init__(self, shared):
+        """Init."""
+        self._shared = shared
+        self.closed = False
+
+    def send(self, obj):
+        """Send."""
+        self._shared.append(obj)
+
+    def recv(self):
+        """Recv."""
+        return self._shared.pop(0)
+
+    def poll(self):
+        """Poll."""
+        return bool(self._shared)
+
+    def close(self):
+        """Close."""
+        self.closed = True
+
+
+class _FakeProcess:
+    """Fake Process test suite."""
+    def __init__(self, target, args=(), kwargs=None, keep_alive=True, exitcode=0):
+        """Init."""
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+        self._alive = keep_alive
+        self.exitcode = exitcode
+        self.pid = 12345
+
+    def start(self):
+        """Start."""
+        self._target(*self._args, **self._kwargs)
+
+    def is_alive(self):
+        """Is alive."""
+        return self._alive
+
+    def join(self):
+        """Join."""
+        self._alive = False
+
+    def terminate(self):
+        """Terminate."""
+        self._alive = False
+
+
+class _NonZeroExitProcess(_FakeProcess):
+    """Non Zero Exit Process test suite."""
+    def __init__(self, target, args=(), kwargs=None):
+        """Init."""
+        super().__init__(target, args, kwargs, keep_alive=False, exitcode=2)
+
+    def start(self):
+        """Start."""
+        self._alive = False
+
+
+class _FakeContext:
+    """Fake Context test suite."""
+    def __init__(self, process_factory=_FakeProcess):
+        """Init."""
+        self._process_factory = process_factory
+
+    def Pipe(self):
+        """Pipe."""
+        shared = []
+        return _FakePipeConn(shared), _FakePipeConn(shared)
+
+    def Process(self, target, args=(), kwargs=None):
+        """Process."""
+        return self._process_factory(target=target, args=args, kwargs=kwargs or {})
+
+#########################################################################################################
+# Runner tests
+
+
+class TestSubprocessRunner(unittest.TestCase):
+    """Subprocess runner test suite."""
+    def test_fake_process_terminate(self):
+        """Test Fake process terminate branch."""
+        proc = _FakeProcess(target=lambda: None)
+        proc.terminate()
+        self.assertFalse(proc.is_alive())
+
+    def test_validation_errors(self):
+        """Test Validation errors."""
+        with self.assertRaises(ValueError):
+            spr.run_in_process(subprocess="yes")
+        with self.assertRaises(ValueError):
+            spr.run_in_process(feedback_level="loud")
+        with self.assertRaises(ValueError):
+            spr.run_in_process(context="invalid")
+        with self.assertRaises(ValueError):
+            spr.run_in_process(monitoring="nope")
+        with self.assertRaises(ValueError):
+            spr.run_in_process(monitoring_frequency=1.5)
+        with self.assertRaises(ValueError):
+            spr.run_in_process(timeout="soon")
+
+    def test_passthrough_no_subprocess(self):
+        """Test passthrough path when subprocess execution is disabled."""
+
+        @spr.run_in_process(subprocess=False)
         def add(a, b):
+            """Add."""
             return a + b
 
-        result = add(2, 3)
-        self.assertEqual(result, 5, "Function should return the correct result when running in a subprocess")
+        self.assertEqual(add(2, 3), 5)
 
-    def test_feedback_level(self):
-        @run_in_process(feedback_level=0)
-        def echo(value):
-            return value
+    def test_exception_propagates(self):
+        """Ensure exceptions raised in subprocess propagate to caller."""
 
-        result = echo("test")
-        self.assertEqual(result, "test", "Function should return the input value even with minimal feedback")
+        @spr.run_in_process(subprocess=True, monitoring=False, feedback_level=0)
+        def boom():
+            """Boom."""
+            raise ValueError("boom")
 
-    def test_timeout(self):
-        @run_in_process(timeout=1)
-        def long_running_task():
-            time.sleep(2)
-            return "Completed"
+        with self.assertRaises(ValueError):
+            boom()
 
-        with self.assertRaises(TimeoutError, msg="Function should raise TimeoutError when exceeding the timeout"):
-            long_running_task()
+    def test_timeout_enforced(self):
+        """Confirm timeouts enforce process termination."""
 
-    def test_invalid_feedback_level(self):
-        with self.assertRaises(ValueError, msg="Should raise ValueError for invalid feedback_level"):
-            @run_in_process(feedback_level=4)
-            def dummy():
-                pass
+        @spr.run_in_process(subprocess=True, monitoring=True, monitoring_frequency=0, timeout=1)
+        def sleepy():
+            """Sleepy."""
+            time.sleep(2.0)
+            return "done"
 
-    def test_context_validation(self):
-        with self.assertRaises(ValueError, msg="Should raise ValueError for invalid context"):
-            @run_in_process(context="invalid_context")
-            def dummy():
-                pass
+        with self.assertRaises(TimeoutError):
+            sleepy()
 
-    def test_no_subprocess_execution(self):
-        @run_in_process(subprocess=False)
-        def multiply(a, b):
-            return a * b
+        with patch("tensiometer.tests.utilities_subprocess_runner_test.time.sleep") as mock_sleep:
+            result = sleepy.__wrapped__()
+            self.assertEqual(result, "done")
+            mock_sleep.assert_called_once()
 
-        result = multiply(3, 4)
-        self.assertEqual(result, 12, "Function should execute directly without a subprocess")
+    def test_monitoring_feedback_flow(self):
+        """Verify monitoring feedback path."""
 
-    def test_monitoring_enabled(self):
-        @run_in_process(monitoring=True, monitoring_frequency=1)
-        def quick_task():
-            return "Quick task completed"
+        @spr.run_in_process(subprocess=True, monitoring=True, monitoring_frequency=0, feedback_level=3)
+        def echo(x):
+            """Echo."""
+            return x * 2
 
-        result = quick_task()
-        self.assertEqual(result, "Quick task completed", "Function should execute successfully with monitoring enabled")
+        self.assertEqual(echo(4), 8)
+        self.assertEqual(echo.__wrapped__(4), 8)
 
-    def test_exception_handling(self):
-        @run_in_process()
-        def faulty_function():
-            raise ValueError("This is an intentional error")
+    def test_extra_kwargs_are_ignored(self):
+        """Ensure unknown kwargs are ignored by decorator."""
 
-        with self.assertRaises(ValueError, msg="Function should propagate exceptions raised in the subprocess"):
-            faulty_function()
+        @spr.run_in_process(subprocess=False, unknown_key=True)
+        def identity(val):
+            """Identity."""
+            return val
 
-if __name__ == '__main__':
-    unittest.main()
+        self.assertEqual(identity("ok"), "ok")
+
+    def test_feedback_level_range_error(self):
+        """Test Feedback level range error."""
+        with self.assertRaises(ValueError):
+            spr.run_in_process(feedback_level=5)
+
+    @patch("tensiometer.utilities.subprocess_runner.psutil.Process", _FakePsutilProcess)
+    @patch("tensiometer.utilities.subprocess_runner.mp.get_context")
+    def test_inline_process_success_with_monitoring(self, mock_get_context):
+        """Test Inline process success with monitoring."""
+        mock_get_context.return_value = _FakeContext()
+
+        @spr.run_in_process(subprocess=True, monitoring=True, monitoring_frequency=0, feedback_level=1)
+        def add(a, b):
+            """Add."""
+            return a + b
+
+        self.assertEqual(add(1, 2), 3)
+
+    @patch("tensiometer.utilities.subprocess_runner.psutil.Process", _FakePsutilProcess)
+    @patch("tensiometer.utilities.subprocess_runner.mp.get_context")
+    def test_inline_process_exception_reraised_after_monitoring(self, mock_get_context):
+        """Test Inline process exception reraised after monitoring."""
+        mock_get_context.return_value = _FakeContext()
+
+        @spr.run_in_process(subprocess=True, monitoring=True, monitoring_frequency=0, feedback_level=1)
+        def explode():
+            """Explode."""
+            raise RuntimeError("kaboom")
+
+        with self.assertRaises(RuntimeError):
+            explode()
+
+    @patch("tensiometer.utilities.subprocess_runner.psutil.Process", _FakePsutilProcess)
+    @patch("tensiometer.utilities.subprocess_runner.mp.get_context")
+    def test_monitoring_without_feedback_prints(self, mock_get_context):
+        """Test Monitoring without feedback prints."""
+        mock_get_context.return_value = _FakeContext()
+
+        @spr.run_in_process(subprocess=True, monitoring=True, monitoring_frequency=0, feedback_level=0)
+        def identity(val):
+            """Identity."""
+            return val
+
+        self.assertEqual(identity("silent"), "silent")
+
+    @patch("tensiometer.utilities.subprocess_runner.mp.get_context")
+    def test_nonzero_exitcode_raises(self, mock_get_context):
+        """Test Nonzero exitcode raises."""
+        mock_get_context.return_value = _FakeContext(process_factory=_NonZeroExitProcess)
+
+        @spr.run_in_process(subprocess=True, monitoring=False, feedback_level=3)
+        def noop():
+            """Noop."""
+            return None
+
+        with self.assertRaises(Exception):
+            noop()
+        self.assertIsNone(noop.__wrapped__())
+
+#########################################################################################################
+# Script entry point
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main(verbosity=2)

@@ -113,23 +113,24 @@ def color_linear_interpolation(rgb_1, rgb_2, alpha):
 
 def nice_colors(num, colormap='the_gold_standard', interpolation_method='linear', output_format='RGB_255'):
     """
-    This function returns a color from a colormap defined above, according to the number entered.
+    Return a color from a named colormap.
 
-    :param num: input number. Can be an integer or float.
-        If the number is integer the function returns one of the colors in the
-        colormap. If the number is a float returns the shade combining the two
-        neighbouring colors.
-    :param colormap: a string containing the name of the colormap.
-    :param interpolation_method: the method to interpolate between colors.
-        Legal choices are:
-            interpolation_method='linear', linear interpolation;
-        Further interpolation methods will be added in the future.
+    :param num: input number. If integer, returns one of the colors in the
+        colormap. If float, returns a shade combining two neighboring colors.
+    :param colormap: name of the colormap.
+    :param interpolation_method: method used to interpolate between colors.
+        Supported values:
+
+        - ``linear``: linear interpolation.
     :param output_format: output format of the color.
-        Legal choices are:
-            output_format='HEX'
-            output_format='RGB'
-            output_format='RGB_255' (default)
-    :return: string with HEX color or tuple with RGB coordinates
+        Supported values:
+
+        - ``HEX``
+        - ``RGB``
+        - ``RGB_255`` (default)
+    :returns: string with HEX color or tuple with RGB coordinates.
+    :raises ValueError: if the colormap, interpolation_method, or output_format
+        is invalid.
     """
     # get the colormap:
     try:
@@ -174,7 +175,7 @@ BASH_ENDC      = '\033[0m'  #: ANSI code to restore the bash default.
 
 def bash_purple(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_PURPLE` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_PURPLE`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.
@@ -185,7 +186,7 @@ def bash_purple(string):
 
 def bash_blue(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_BLUE` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_BLUE`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.
@@ -196,7 +197,7 @@ def bash_blue(string):
 
 def bash_green(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_GREEN` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_GREEN`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.
@@ -207,7 +208,7 @@ def bash_green(string):
 
 def bash_yellow(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_YELLOW` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_YELLOW`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.
@@ -218,7 +219,7 @@ def bash_yellow(string):
 
 def bash_red(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_RED` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_RED`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.
@@ -229,7 +230,7 @@ def bash_red(string):
 
 def bash_bold(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_BOLD` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_BOLD`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.
@@ -240,7 +241,7 @@ def bash_bold(string):
 
 def bash_underline(string):
     """
-    Function that returns a string that can be printed to bash in :class:`tensiometer.utilities.color_utilities.bash_colors.BASH_UNDERLINE` color.
+    Return a string that can be printed to bash in :data:`tensiometer.utilities.color_utilities.BASH_UNDERLINE`.
 
     :param string: input string.
     :return: the input string with the relevant ANSI code at the beginning and at the end.

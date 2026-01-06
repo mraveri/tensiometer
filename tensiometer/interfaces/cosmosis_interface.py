@@ -5,18 +5,18 @@ File with tools to interface Cosmosis chains with GetDist.
 ###############################################################################
 # initial imports:
 
-import os
-import numpy as np
 import functools
-import types
+import os
 import re
+import types
 
+import numpy as np
 from scipy.special import logsumexp
 
 from getdist.chains import loadNumpyTxt
 from getdist.mcsamples import MCSamples
-from getdist.types import BestFit
 from getdist.paramnames import ParamInfo
+from getdist.types import BestFit
 
 ############################################################################### 
 
@@ -260,7 +260,8 @@ def get_sampler_type(info):
                     'emcee': 'mcmc',
                     'importance': 'mcmc',
                     'pmaxlike': 'max_like',
-                    'maxlike': 'max_like'
+                    'maxlike': 'max_like',
+                    'max_like': 'max_like'
                     }
     # find the sampler in the parameters:
     temp = list(filter(lambda x: 'sampler' in x, info))
@@ -269,7 +270,7 @@ def get_sampler_type(info):
         if sampler in sampler_dict.keys():
             sampler_type = sampler_dict[sampler]
         else:
-            raise ValueError('Unknown input sampler')
+            raise ValueError('Unknown input sampler', sampler)
     else:
         sampler_type = None
     #
@@ -389,10 +390,10 @@ def get_maximum_likelihood(dummy, max_posterior, chain_min_root,
     # get the info:
     info = get_cosmosis_info(minimum_file)
     # check the sampler:
-    sampler = get_sampler_type(info)
-    if sampler != 'max_like':
+    sampler_type, sampler = get_sampler_type(info)
+    if sampler_type != 'max_like':
         raise ValueError('Minimum file appears to have a strange sampler:',
-                         sampler)
+                         sampler_type)
     # get the parameter names:
     param_names = get_param_names(info)
     # get the parameter labels from the user provided dictionary:

@@ -25,7 +25,14 @@ from ..utilities import stats_utilities as stutils
 
 
 class tf_prob_wrapper():
+    """Thin wrapper around TensorFlow Probability distributions for flow usage."""
     def __init__(self, dist, prec=tf.float32):
+        """
+        Initialize the wrapper.
+
+        :param dist: TensorFlow Probability distribution instance.
+        :param prec: dtype used for casting inputs.
+        """
         self.dist = dist
         self.label = dist.name
         num_params = dist.event_shape.as_list()[0]
@@ -33,9 +40,21 @@ class tf_prob_wrapper():
         self.prec = prec
 
     def log_pdf(self, coord):
+        """
+        Evaluate the log density.
+
+        :param coord: coordinate tensor.
+        :returns: log probability of ``coord``.
+        """
         return self.dist.log_prob(tf.cast(coord, self.prec))
 
     def sim(self, N):
+        """
+        Draw samples from the wrapped distribution.
+
+        :param N: number of samples.
+        :returns: sampled points.
+        """
         return self.dist.sample(N)
     
 ###############################################################################
@@ -43,6 +62,7 @@ class tf_prob_wrapper():
 
 
 class analytic_flow():
+    """Analytic flow backed by a user-provided distribution with sampling and log-density methods."""
     
     def __init__(self, dist, name_tag=None, param_names=None, param_labels=None, lims=None):
         """
@@ -106,9 +126,16 @@ class analytic_flow():
         return None
 
     def cast(self, v):
+        """Cast values to the flow precision dtype."""
         return tf.cast(v, dtype=sp.prec)
     
     def sample(self, num_samples):
+        """
+        Draw samples from the analytic distribution.
+
+        :param num_samples: number of samples to generate.
+        :returns: sampled points as a TensorFlow tensor.
+        """
         return self.cast(self._dist.sim(num_samples))
 
     def MCSamples(self, size, logLikes=True, **kwargs):
@@ -130,12 +157,18 @@ class analytic_flow():
             labels=self.param_labels,
             ranges=self.parameter_ranges,
             name_tag=self.name_tag,
-            **stutilsfilter_kwargs(kwargs, MCSamples)
+            **stutils.filter_kwargs(kwargs, MCSamples)
             )
         #
         return mc_samples
     
     def log_probability(self, coord):
+        """
+        Evaluate the log probability of coordinates under the analytic distribution.
+
+        :param coord: coordinates to evaluate.
+        :returns: log probability tensor.
+        """
         # digest input:
         if tf.is_tensor(coord):
             _coord = coord.numpy()
@@ -148,6 +181,12 @@ class analytic_flow():
             return self.cast(np.log(self._dist.pdf(_coord)))
     
     def log_probability_jacobian(self, coord):
+        """
+        Compute the Jacobian of the log probability at given coordinates.
+
+        :param coord: coordinates to evaluate.
+        :returns: Jacobian of the log density.
+        """
         # digest input:
         if tf.is_tensor(coord):
             _coord = coord.numpy()
@@ -166,6 +205,12 @@ class analytic_flow():
                 return self.cast(scipy.optimize.approx_fprime(_coord, lambda x: np.log(self._dist.pdf(x))))
         
     def log_probability_hessian(self, coord):
+        """
+        Compute the Hessian of the log probability at given coordinates.
+
+        :param coord: coordinates to evaluate.
+        :returns: Hessian of the log density.
+        """
         # digest input:
         if tf.is_tensor(coord):
             _coord = coord.numpy()
@@ -178,4 +223,5 @@ class analytic_flow():
             return self.cast(self._hessian_logP(_coord))
 
     def reset_tensorflow_caches(self):
+        """Placeholder to mirror API; no caches to reset for analytic flow."""
         return None

@@ -20,6 +20,14 @@ from .utilities import tensor_eigenvalues as teig
 
 
 def _helper_chains_to_chainlist(chains):
+    """
+    Normalize chain inputs to a list of ``MCSamples`` instances.
+
+    :param chains: single ``MCSamples`` or list of ``MCSamples``.
+    :returns: list of chains suitable for convergence diagnostics.
+    :raises TypeError: if any element is not an ``MCSamples``.
+    :raises ValueError: if fewer than two chains are provided.
+    """
     if isinstance(chains, list):
         for ch in chains:
             if not isinstance(ch, MCSamples):
@@ -211,6 +219,15 @@ def GRn_test_1D_samples(samples, weights, n, theta0=None):
 
 
 def _helper_1(wh, samps, n, temp_EQ):
+    """
+    Compute the weighted expectation tensor for a given moment order.
+
+    :param wh: iterable of sample weights for each chain.
+    :param samps: iterable of sample arrays per chain.
+    :param n: order of the moment.
+    :param temp_EQ: accumulator tensor for the expectation.
+    :returns: normalized expectation tensor.
+    """
     for w, s in zip(wh, samps):
         res = s
         for rk in range(n-1):
@@ -220,6 +237,16 @@ def _helper_1(wh, samps, n, temp_EQ):
 
 
 def _helper_2(wh, samps, n, temp_VQ, temp_EQ):
+    """
+    Compute the weighted covariance tensor for a given moment order.
+
+    :param wh: iterable of sample weights for each chain.
+    :param samps: iterable of sample arrays per chain.
+    :param n: order of the moment.
+    :param temp_VQ: accumulator tensor for the covariance.
+    :param temp_EQ: expectation tensor used for centering.
+    :returns: normalized covariance tensor.
+    """
     for w, s in zip(wh, samps):
         res = s
         for rk in range(n-1):

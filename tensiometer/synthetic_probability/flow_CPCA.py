@@ -22,25 +22,45 @@ def tf_CPC_decomposition(matrix_a, matrix_b):
     """
     Covariant Principal Components decomposition impolemented in tensorflow.
 
-    Args:
-        matrix_a (tf.Tensor): Input matrix A.
-        matrix_b (tf.Tensor): Input matrix B.
-
-    Returns:
-        tf.Tensor: Eigenvalues of A_prime.
-        tf.Tensor: Eigenvectors of A_prime.
+    :param matrix_a: input matrix ``A``.
+    :param matrix_b: input matrix ``B``.
+    :returns: eigenvalues and eigenvectors of the transformed matrix.
     """
     # compute the eigenvalues of b, lambda_b:
     _lambda_b, _phi_b = tf.linalg.eigh(matrix_b)
     _sqrt_lambda_b = tf.linalg.diag(1./tf.math.sqrt(_lambda_b))
     _phib_prime = tf.matmul(_phi_b, _sqrt_lambda_b)
     #
-    trailing_axes = [-1, -2]
-    leading = tf.range(tf.rank(_phib_prime) - len(trailing_axes))
-    trailing = trailing_axes + tf.rank(_phib_prime)
-    new_order = tf.concat([leading, trailing], axis=0)
-    _phib_prime_T = tf.transpose(_phib_prime, new_order)
+    rank = tf.rank(_phib_prime)
+    new_order = tf.concat([tf.range(rank - 2), [rank - 1, rank - 2]], axis=0)
+    _phib_prime_T = tf.transpose(_phib_prime, perm=new_order)
     #
+    _a_prime = tf.matmul(tf.matmul(_phib_prime_T, matrix_a), _phib_prime)
+    _lambda, _phi_a = tf.linalg.eigh(_a_prime)
+    _phi = tf.matmul(tf.matmul(_phi_b, _sqrt_lambda_b), _phi_a)
+    #
+    return _lambda, _phi
+
+###############################################################################
+# TensorFlow KL decomposition helper:
+
+
+def tf_KL_decomposition(matrix_a, matrix_b):
+    """
+    TensorFlow implementation of the KL decomposition used within flow-based
+    utilities. Mirrors :func:`tensiometer.utilities.stats_utilities.KL_decomposition`.
+
+    :param matrix_a: first matrix ``A``.
+    :param matrix_b: second matrix ``B`` (assumed positive definite).
+    :returns: eigenvalues and eigenvectors of the generalized problem.
+    """
+    # compute the eigenvalues of b, lambda_b:
+    _lambda_b, _phi_b = tf.linalg.eigh(matrix_b)
+    _sqrt_lambda_b = tf.linalg.diag(1./tf.math.sqrt(_lambda_b))
+    _phib_prime = tf.matmul(_phi_b, _sqrt_lambda_b)
+    rank = tf.rank(_phib_prime)
+    new_order = tf.concat([tf.range(rank - 2), [rank - 1, rank - 2]], axis=0)
+    _phib_prime_T = tf.transpose(_phib_prime, perm=new_order)
     _a_prime = tf.matmul(tf.matmul(_phib_prime_T, matrix_a), _phib_prime)
     _lambda, _phi_a = tf.linalg.eigh(_a_prime)
     _phi = tf.matmul(tf.matmul(_phi_b, _sqrt_lambda_b), _phi_a)
@@ -59,6 +79,12 @@ def tf_CPC_decomposition(matrix_a, matrix_b):
 def _naive_eigenvalue_ode_abs(flow, t, y, reference):
     """
     Solve naively the dynamical equation for eigenvalues in abstract space.
+
+    :param flow: flow object providing Jacobians.
+    :param t: integration time.
+    :param y: current position in abstract space.
+    :param reference: reference eigenvector used to select the branch.
+    :returns: eigenvector direction at the current step.
     """
     # preprocess:
     x = flow.cast([y])
@@ -79,13 +105,21 @@ def _naive_eigenvalue_ode_abs(flow, t, y, reference):
 
 def solve_eigenvalue_ode_abs(self, y0, n, length=1.5, side='both', integrator_options=None, num_points=100, **kwargs):
     """
-    Solve eigenvalue problem in abstract space
-    side = '+', '-', 'both'
+    Solve eigenvalue ODE in abstract space.
+
+    :param y0: starting point in abstract coordinates.
+    :param n: index of the eigenvector to follow.
+    :param length: integration length for each direction.
+    :param side: which direction to integrate; ``'+'``, ``'-'`` or ``'both'``.
+    :param integrator_options: optional options forwarded to ``scipy.integrate.ode``.
+    :param num_points: number of output points per direction.
+    :returns: solution times, trajectory, and velocity along the path.
     """
+    y0_np = np.asarray(y0, dtype=np.float64)
     # define solution points:
     solution_times = tf.linspace(0., length, num_points)
     # compute initial PCA:
-    x_abs = tf.convert_to_tensor([y0])
+    x_abs = self.cast([y0_np])
     x_par = self.map_to_original_coord(x_abs)
     jac = self.inverse_jacobian(x_par)[0]
     jac_T = tf.transpose(jac)
@@ -101,9 +135,9 @@ def solve_eigenvalue_ode_abs(self, y0, n, length=1.5, side='both', integrator_op
         solver = scipy.integrate.ode(self._naive_eigenvalue_ode_abs)
         if integrator_options is not None:
             solver.set_integrator(**integrator_options)
-        solver.set_initial_value(y0, 0.)
+        solver.set_initial_value(y0_np, 0.)
         reference = eigv[:, n]
-        yt = y0.numpy()
+        yt = y0_np.copy()
         yprime = reference
         # do the time steps:
         for ind, t in enumerate(solution_times[1:]):
@@ -134,9 +168,9 @@ def solve_eigenvalue_ode_abs(self, y0, n, length=1.5, side='both', integrator_op
         solver = scipy.integrate.ode(self._naive_eigenvalue_ode_abs)
         if integrator_options is not None:
             solver.set_integrator(**integrator_options)
-        solver.set_initial_value(y0, 0.)
+        solver.set_initial_value(y0_np, 0.)
         reference = - eigv[:, n]
-        yt = y0.numpy()
+        yt = y0_np.copy()
         yprime = reference
         for ind, t in enumerate(solution_times[1:]):
             # set the reference:
@@ -166,7 +200,11 @@ def solve_eigenvalue_ode_abs(self, y0, n, length=1.5, side='both', integrator_op
 
 def solve_eigenvalue_ode_par(self, y0, n, **kwargs):
     """
-    Solve eigenvalue ODE in parameter space
+    Solve the eigenvalue ODE in parameter space.
+
+    :param y0: starting point in parameter coordinates.
+    :param n: index of the eigenvector to follow.
+    :returns: times and mapped trajectory in parameter space.
     """
     # go to abstract space:
     x_abs = self.map_to_abstract_coord(self.cast([y0]))[0]
@@ -188,11 +226,13 @@ def eigenvalue_ode_abs_temp_3(self, t, y):
     x_par = self.map_to_original_coord(x)
     # precompute Jacobian and its derivative:
     jac = self.inverse_jacobian(x_par)[0]
-    #djac = coord_jacobian_derivative(x_par)[0]
+    # derivative of the Jacobian is not implemented; use zeros as a placeholder
+    djac = tf.zeros((self.num_params, self.num_params, self.num_params),
+                    dtype=jac.dtype)
     jacm1 = self.direct_jacobian(x_par)[0]
     jac_T = tf.transpose(jac)
     jac_jac_T = tf.matmul(jac, jac_T)
-    Id = tf.eye(self.num_params)
+    Id = tf.eye(self.num_params, dtype=jac_jac_T.dtype)
     # select the eigenvector that we want to follow based on the solution to the continuity equation:
     eig, eigv = tf.linalg.eigh(jac_jac_T)
     idx = tf.math.argmax(tf.abs(tf.matmul(tf.transpose(eigv), tf.transpose(w))))[0]
@@ -237,6 +277,13 @@ def eigenvalue_ode_abs_temp_3(self, t, y):
 def _naive_KL_ode(t, y, reference, flow, prior_flow):
     """
     Solve naively the dynamical equation for KL decomposition in abstract space.
+
+    :param t: integration time.
+    :param y: current position in abstract space.
+    :param reference: reference eigenvector used to select the branch.
+    :param flow: flow defining the target metric.
+    :param prior_flow: flow defining the prior metric.
+    :returns: normalized direction for the KL mode at the current step.
     """
     # preprocess:
     x = flow.cast([y])
@@ -262,16 +309,23 @@ def _naive_KL_ode(t, y, reference, flow, prior_flow):
 
 def solve_KL_ode(flow, prior_flow, y0, n, length=1.5, side='both', integrator_options=None, num_points=100, **kwargs):
     """
-    Solve eigenvalue problem in abstract space
-    side = '+', '-', 'both'
-    length = 1.5
-    num_points = 100
-    n=0
+    Solve the KL eigenmode ODE in abstract space.
+
+    :param flow: flow representing the target distribution.
+    :param prior_flow: flow representing the prior distribution.
+    :param y0: starting point in abstract coordinates.
+    :param n: index of the KL eigenmode to track.
+    :param length: integration length for each direction.
+    :param side: which direction to integrate; ``'+'``, ``'-'`` or ``'both'``.
+    :param integrator_options: optional options forwarded to ``scipy.integrate.ode``.
+    :param num_points: number of output points per direction.
+    :returns: solution times, trajectory, and velocity along the path.
     """
+    y0_np = np.asarray(y0, dtype=np.float64)
     # define solution points:
     solution_times = tf.linspace(0., length, num_points)
     # compute initial KL decomposition:
-    x = flow.cast([y0])
+    x = flow.cast([y0_np])
     metric = flow.metric(x)[0]
     prior_metric = prior_flow.metric(x)[0]
     # compute KL decomposition:
@@ -285,10 +339,10 @@ def solve_KL_ode(flow, prior_flow, y0, n, length=1.5, side='both', integrator_op
         solver = scipy.integrate.ode(_naive_KL_ode)
         if integrator_options is not None:
             solver.set_integrator(**integrator_options)
-        solver.set_initial_value(y0, 0.)
+        solver.set_initial_value(y0_np, 0.)
         #reference = eigv[:, n] / tf.norm(eigv[:, n])
         reference = eigv[:, n]
-        yt = y0.numpy()
+        yt = y0_np.copy()
         yprime = eigv[:, n]
         # do the time steps:
         for ind, t in enumerate(solution_times[1:]):
@@ -320,10 +374,10 @@ def solve_KL_ode(flow, prior_flow, y0, n, length=1.5, side='both', integrator_op
         solver = scipy.integrate.ode(_naive_KL_ode)
         if integrator_options is not None:
             solver.set_integrator(**integrator_options)
-        solver.set_initial_value(y0, 0.)
+        solver.set_initial_value(y0_np, 0.)
         # reference = - eigv[:, n] / tf.norm(eigv[:, n])
         reference = - eigv[:, n]
-        yt = y0.numpy()
+        yt = y0_np.copy()
         yprime = reference
         for ind, t in enumerate(solution_times[1:]):
             # set the reference:

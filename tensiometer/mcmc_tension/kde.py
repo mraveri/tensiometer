@@ -305,6 +305,8 @@ def UCV_bandwidth(weights, white_samples, alpha0=None, feedback=0, mode='full', 
                                       x0=alpha0, bounds=bounds, **kwargs)
         res = stutils.vector_to_PDM(opt.x)
         res = np.dot(res, res)
+    else:
+        raise ValueError('Unrecognized mode for UCV_bandwidth')
     # check for success and final feedback:
     if not opt.success or feedback > 2:
         print(opt)
@@ -356,6 +358,12 @@ def UCV_SP_bandwidth(white_samples, weights, feedback=0, near=1, near_max=20):
     # define helper for minimization:
     @jit(nopython=True)
     def _helper(gamma):
+        """
+        Unbiased cross-validation objective for a given bandwidth ``gamma``.
+
+        :param gamma: bandwidth parameter.
+        :returns: UCV score.
+        """
         # compute the i != j sum:
         temp = weight_term*(R2sd*gamma**(-d/2)*np.exp(-0.5*R21/gamma) - 2.*alpha_temp/Rd/gamma**d*np.exp(-0.5*R22/gamma))
         # sum:
@@ -485,9 +493,13 @@ def _brute_force_kde_param_shift(white_samples, weights, zero_prob,
     # get feedback:
     if feedback > 1:
         from tqdm import tqdm
-        def feedback_helper(x): return tqdm(x, ascii=True)
+        def feedback_helper(x):
+            """Wrap an iterable with tqdm feedback when verbose mode is on."""
+            return tqdm(x, ascii=True)
     else:
-        def feedback_helper(x): return x
+        def feedback_helper(x):
+            """Pass-through iterable when feedback is disabled."""
+            return x
     # prepare:
     if distance_weights is not None:
         if len(distance_weights.shape) == 1:
@@ -522,9 +534,13 @@ def _neighbor_parameter_shift(white_samples, weights, zero_prob, num_samples,
     # import specific for this function:
     if feedback > 1:
         from tqdm import tqdm
-        def feedback_helper(x): return tqdm(x, ascii=True)
+        def feedback_helper(x):
+            """Wrap an iterable with tqdm feedback when verbose mode is on."""
+            return tqdm(x, ascii=True)
     else:
-        def feedback_helper(x): return x
+        def feedback_helper(x):
+            """Pass-through iterable when feedback is disabled."""
+            return x
     # get options:
     stable_cycle = kwargs.get('stable_cycle', 2)
     chunk_size = kwargs.get('chunk_size', 40)
@@ -823,13 +839,18 @@ def kde_parameter_shift_2D_fft(diff_chain,
     # get density of zero:
     prob_zero = density.spl([0.], [0.])[0][0]
     if prior_diff_chain is not None:
-        prob_zero = prob_zero / prior_density.spl([0.], [0.])[0][0]
+        prior_zero = prior_density.spl([0.], [0.])[0][0]
+        if prior_zero > 0:
+            prob_zero = prob_zero / prior_zero
+        else:
+            prob_zero = np.inf
     # do the MC integral:
     probs = density.spl.ev(diff_chain.samples[:, ind[0]],
                            diff_chain.samples[:, ind[1]])
     if prior_diff_chain is not None:
-        probs = probs / prior_density.spl.ev(diff_chain.samples[:, ind[0]],
-                                             diff_chain.samples[:, ind[1]])
+        prior_vals = prior_density.spl.ev(diff_chain.samples[:, ind[0]],
+                                          diff_chain.samples[:, ind[1]])
+        probs = np.divide(probs, prior_vals, out=np.zeros_like(probs), where=prior_vals != 0)
     # filter:
     _filter = probs > prob_zero
     # if there are samples above zero then use MC:
@@ -943,6 +964,9 @@ def kde_parameter_shift(diff_chain, param_names=None,
     :return: probability value and error estimate from binomial.
     :reference: `Raveri, Zacharegkas and Hu 19 <https://arxiv.org/pdf/1912.04880.pdf>`_
     """
+    # extract optional overrides to avoid double-passing via kwargs
+    zero_prob_override = kwargs.pop('zero_prob', None)
+    num_samples_override = kwargs.pop('num_samples', None)
     # initialize param names:
     if param_names is None:
         param_names = diff_chain.getParamNames().getRunningNames()
@@ -956,6 +980,8 @@ def kde_parameter_shift(diff_chain, param_names=None,
     ind = [diff_chain.index[name] for name in param_names]
     # some initial calculations:
     _num_samples = np.sum(diff_chain.weights)
+    if num_samples_override is not None:
+        _num_samples = num_samples_override
     _num_params = len(ind)
     # number of effective samples:
     _num_samples_eff = np.sum(diff_chain.weights)**2 / \
@@ -1029,6 +1055,8 @@ def kde_parameter_shift(diff_chain, param_names=None,
         _args = _white_samples, weights_norm, distance_weights
     # probability of zero:
     _kde_prob_zero = _log_pdf(np.zeros(_num_params), *_args)
+    if zero_prob_override is not None:
+        _kde_prob_zero = zero_prob_override
     # compute the KDE:
     t0 = time.time()
     if method == 'brute_force':
@@ -1042,9 +1070,9 @@ def kde_parameter_shift(diff_chain, param_names=None,
     elif method == 'neighbor_elimination':
         _num_filtered = _neighbor_parameter_shift(_white_samples,
                                                   diff_chain.weights,
-                                                  _kde_prob_zero,
-                                                  _num_samples,
-                                                  feedback,
+                                                  zero_prob=_kde_prob_zero,
+                                                  num_samples=_num_samples,
+                                                  feedback=feedback,
                                                   weights_norm=weights_norm,
                                                   distance_weights=distance_weights,
                                                   **kwargs)

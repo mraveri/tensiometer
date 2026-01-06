@@ -25,47 +25,40 @@ np_prec = np.float32
 
 def uniform_prior(a, b, prec=np_prec):
     """
-    Returns bijector that Gaussianize the 1D uniform distribution in [a, b].
+    Return a bijector that Gaussianizes the 1D uniform distribution on
+    ``[a, b]``.
 
-    Parameters:
-    a (float): The lower bound of the uniform distribution.
-    b (float): The upper bound of the uniform distribution.
-    prec (function, optional): The precision function used for numerical stability. Defaults to np_prec.
-
-    Returns:
-    tfb.Chain: The bijector Gaussianizing the uniform distribution.
+    :param a: lower bound of the uniform distribution.
+    :param b: upper bound of the uniform distribution.
+    :param prec: precision type used for the bijector parameters.
+    :returns: ``tfb.Chain`` mapping the uniform distribution to a Gaussian.
     """
     return tfb.Chain([tfb.Shift(prec((a+b)/2)), tfb.Scale(prec(b-a)), tfb.Shift(-0.5), tfb.NormalCDF()])
 
 
 def normal(mean, sigma, prec=np_prec):
     """
-    Returns bijector that Gaussianize the 1D normal distribution with mean and variance sigma.
-    This ammounts to a shift and rescaling since the normal distribution is already Gaussian.
+    Return a bijector that normalizes a 1D normal distribution.
 
-    Parameters:
-    mean (float): The mean of the normal distribution.
-    sigma (float): The standard deviation of the normal distribution.
-    prec (float, optional): The precision parameter. Defaults to np_prec.
+    The bijector shifts and rescales the distribution even though it is
+    already Gaussian to ensure consistent downstream handling.
 
-    Returns:
-    tfb.Chain: The bijector for the normal distribution.
+    :param mean: mean of the normal distribution.
+    :param sigma: standard deviation of the normal distribution.
+    :param prec: precision parameter used for TensorFlow constants.
+    :returns: ``tfb.Chain`` normalizing the 1D normal distribution.
     """
     return tfb.Chain([tfb.Shift(prec(mean)), tfb.Scale(prec(sigma))])
 
 
 def multivariate_normal(mean, covariance, prec=np_prec):
     """
-    Returns bijector to Gaussianize the ND normal distribution with mean mu and given covariance.
-    This ammounts to a shift and rescaling since the normal distribution is already Gaussian.
+    Return a bijector that normalizes an ``N``-D normal distribution.
 
-    Parameters:
-    mean (array-like): Mean of the normal distribution.
-    covariance (array-like): Covariance matrix of the normal distribution.
-    prec (dtype, optional): Precision type for numerical computations. Defaults to np_prec.
-
-    Returns:
-    tfb.Bijector: Bijector for the multivariate normal distribution.
+    :param mean: mean of the normal distribution.
+    :param covariance: covariance matrix of the distribution.
+    :param prec: precision type used for TensorFlow tensors.
+    :returns: ``tfb.Bijector`` normalizing the multivariate normal.
     """
     return tfd.MultivariateNormalTriL(mean=mean.astype(prec), scale_tril=tf.linalg.cholesky(covariance.astype(prec))).bijector
 
@@ -76,23 +69,19 @@ def multivariate_normal(mean, covariance, prec=np_prec):
 
 def prior_bijector_helper(prior_dict_list=None, name=None, loc=None, cov=None, **kwargs):
     """
-    Example usage
+    Build a composite bijector from a list of simple prior definitions.
 
-    # prior_dict_list should contain a mode keyword. If mode is 'uniform', then
-    # the prior is uniform on the interval [lower, upper]. If mode is 'gaussian',
-    # then the prior is gaussian with mean and scale.
-    
-    # uniform on x
-    a = -1
-    b = 3
+    Each element of ``prior_dict_list`` describes a one-dimensional prior with
+    ``mode`` set to ``'uniform'`` or ``'gaussian'`` and the corresponding
+    bounds or moments. Any ``None`` entry falls back to the identity bijector.
 
-    # gaussian on y
-    mu = 0.5
-    sig = 3.
-
-    prior = prior_bijector_helper([{'lower':a, 'upper':b}, {'mean':mu, 'scale':sig}])
-    diff = FlowCallback(chain, trainable_bijector=prior, Y2X_is_identity=True)
-
+    :param prior_dict_list: list of dictionaries describing the prior for each
+        parameter.
+    :param name: optional name assigned to the resulting bijector.
+    :param loc: unused placeholder maintained for backward compatibility.
+    :param cov: unused placeholder maintained for backward compatibility.
+    :returns: ``tfb.Chain`` mapping the concatenated priors to a Gaussian
+        base space.
     """
     if prior_dict_list is not None:  # Mix of uniform and gaussian one-dimensional priors
 
@@ -132,16 +121,15 @@ class Mod1D(tfb.Bijector):
     """
     A bijector that performs modulus operation on a 1D input.
 
-    This bijector maps an input `x` to `x - floor((x - minval) / delta) * delta`,
-    where `minval` is the lower bound of the modulus and `delta` is the difference
-    between the upper and lower bounds.
+    This bijector maps an input ``x`` to
+    ``x - floor((x - minval) / delta) * delta`` where ``delta`` is the distance
+    between ``maxval`` and ``minval``.
 
-    Args:
-        minval (float): The lower bound of the modulus. Default is 0.0.
-        maxval (float): The upper bound of the modulus. Default is 1.0.
-        validate_args (bool): Whether to validate input arguments. Default is False.
-        name (str): The name of the bijector. Default is 'mod'.
-        dtype (tf.DType): The data type of the input. Default is np_prec.
+    :param minval: lower bound of the modulus.
+    :param maxval: upper bound of the modulus.
+    :param validate_args: whether to validate input arguments.
+    :param name: name of the bijector.
+    :param dtype: data type of the input.
 
     """
 
@@ -155,12 +143,11 @@ class Mod1D(tfb.Bijector):
         """
         Initializes the Mod1D bijector.
 
-        Args:
-            minval (float): The lower bound of the modulus.
-            maxval (float): The upper bound of the modulus.
-            validate_args (bool): Whether to validate input arguments.
-            name (str): The name of the bijector.
-            dtype (tf.DType): The data type of the input.
+        :param minval: lower bound of the modulus.
+        :param maxval: upper bound of the modulus.
+        :param validate_args: whether to validate input arguments.
+        :param name: name of the bijector.
+        :param dtype: data type of the input.
         """
 
         parameters = dict(locals())
@@ -181,17 +168,22 @@ class Mod1D(tfb.Bijector):
 
     @classmethod
     def _is_increasing(cls):
+        """Signal that the bijector is monotonic."""
         return True
 
     def _forward(self, x):
+        """Apply the modulus operation."""
         return x - tf.math.floor((x-self.minval)/self.delta)*self.delta
 
     def _inverse(self, y):
+        """Inverse of the modulus operation (same as forward)."""
         return y - tf.math.floor((y-self.minval)/self.delta)*self.delta
     
     def _forward_log_det_jacobian(self, x):
+        """Jacobian log determinant for the forward transform."""
         return tf.zeros(tf.shape(x))
 
     def _inverse_log_det_jacobian(self, y):
+        """Jacobian log determinant for the inverse transform."""
         return tf.zeros(tf.shape(y))
     

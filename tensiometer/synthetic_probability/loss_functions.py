@@ -11,15 +11,66 @@ import numpy as np
 
 # tensorflow imports:
 import tensorflow as tf
-from tensorflow.python.keras.utils import tf_utils
-from tensorflow.python.keras import backend
-from tensorflow.python.keras.utils import losses_utils
+
+###############################################################################
+# helpers:
+
+def _broadcast_sample_weight(sample_weight, losses):
+    """
+    Broadcast sample weights to match loss tensor shape.
+
+    :param sample_weight: weights to apply.
+    :param losses: loss tensor.
+    :returns: broadcasted weights matching ``losses``.
+    """
+    if sample_weight is None:
+        return None
+    sample_weight = tf.cast(sample_weight, losses.dtype)
+    if sample_weight.shape.rank == 0:
+        return tf.ones_like(losses) * sample_weight
+    if losses.shape.rank is None or sample_weight.shape.rank is None:
+        losses_rank = tf.rank(losses)
+        weight_rank = tf.rank(sample_weight)
+        rank_diff = losses_rank - weight_rank
+        new_shape = tf.concat([tf.shape(sample_weight), tf.ones(rank_diff, tf.int32)], axis=0)
+        sample_weight = tf.reshape(sample_weight, new_shape)
+        return tf.broadcast_to(sample_weight, tf.shape(losses))
+    if sample_weight.shape.rank < losses.shape.rank:
+        new_shape = sample_weight.shape.as_list() + [1] * (losses.shape.rank - sample_weight.shape.rank)
+        sample_weight = tf.reshape(sample_weight, new_shape)
+    return tf.broadcast_to(sample_weight, tf.shape(losses))
+
+
+def _reduce_weighted_loss(losses, sample_weight, reduction):
+    """
+    Reduce weighted losses according to Keras reduction rules.
+
+    :param losses: per-sample losses.
+    :param sample_weight: sample weights for each loss.
+    :param reduction: Keras reduction enum.
+    :returns: reduced loss tensor.
+    """
+    weights = _broadcast_sample_weight(sample_weight, losses)
+    if weights is not None:
+        losses = losses * weights
+    if reduction == tf.keras.losses.Reduction.NONE:
+        return losses
+    total_loss = tf.reduce_sum(losses)
+    if reduction == tf.keras.losses.Reduction.SUM:
+        return total_loss
+    if weights is None:
+        denom = tf.cast(tf.size(losses), losses.dtype)
+    else:
+        denom = tf.reduce_sum(weights)
+    denom = tf.where(denom == 0, tf.constant(1.0, dtype=losses.dtype), denom)
+    return total_loss / denom
 
 ###############################################################################
 # standard normalizing flow loss function:
 
 
 class standard_loss(tf.keras.losses.Loss):
+    """KL-based density loss for normalizing flow training."""
 
     def __init__(self):
         """
@@ -32,7 +83,12 @@ class standard_loss(tf.keras.losses.Loss):
 
     def compute_loss_components(self, y_true, y_pred, sample_weight):
         """
-        Compute different components of the loss function
+        Compute the signed log-probability contribution.
+
+        :param y_true: target log density (unused).
+        :param y_pred: predicted log density.
+        :param sample_weight: sample weights.
+        :returns: negative predicted log density.
         """
         return -y_pred
 
@@ -44,15 +100,11 @@ class standard_loss(tf.keras.losses.Loss):
         return -y_pred
     
     def print_feedback(self, padding=''):
-        """
-        Print feedback to screen
-        """
+        """Print the configured loss details."""
         print(padding+'using standard loss function')
 
     def reset(self):
-        """
-        Reset loss functions hyper parameters
-        """
+        """Reset loss hyperparameters (no-op for standard loss)."""
         pass
 
 
@@ -61,10 +113,14 @@ class standard_loss(tf.keras.losses.Loss):
 
 
 class constant_weight_loss(tf.keras.losses.Loss):
+    """Combined density and evidence-error loss with fixed weights."""
 
     def __init__(self, alpha=1.0, beta=0.0):
         """
-        Initialize loss function
+        Initialize the fixed-weight loss.
+
+        :param alpha: weight for the density component.
+        :param beta: additive offset applied to predicted log density.
         """
         # initialize:
         super(constant_weight_loss, self).__init__()
@@ -76,7 +132,12 @@ class constant_weight_loss(tf.keras.losses.Loss):
 
     def compute_loss_components(self, y_true, y_pred, sample_weight):
         """
-        Compute different components of the loss function
+        Compute density and evidence-error components.
+
+        :param y_true: target log density.
+        :param y_pred: predicted log density.
+        :param sample_weight: weights for each sample.
+        :returns: tuple of density loss and variance of residuals.
         """
         # compute difference between true and predicted posterior values:
         diffs = (y_true - y_pred)
@@ -93,7 +154,12 @@ class constant_weight_loss(tf.keras.losses.Loss):
 
     def compute_loss(self, y_true, y_pred, sample_weight):
         """
-        Combine density and evidence-error loss
+        Combine density and evidence-error loss.
+
+        :param y_true: target log density.
+        :param y_pred: predicted log density.
+        :param sample_weight: weights for each sample.
+        :returns: weighted sum of loss components.
         """
         # get components:
         loss_1, loss_2 = self.compute_loss_components(y_true, y_pred, sample_weight)
@@ -102,32 +168,29 @@ class constant_weight_loss(tf.keras.losses.Loss):
 
     def __call__(self, y_true, y_pred, sample_weight=None):
         """
-        This function overrides the standard tensorflow one to pass along weights.
+        Override ``Loss.__call__`` to support explicit ``sample_weight``.
+
+        :param y_true: target log density.
+        :param y_pred: predicted log density.
+        :param sample_weight: weights for each sample.
+        :returns: weighted loss tensor respecting reduction mode.
         """
-        graph_ctx = tf_utils.graph_context_for_symbolic_tensors(
-            y_true, y_pred, sample_weight
-            )
-        with backend.name_scope(self._name_scope), graph_ctx:
-            if tf.executing_eagerly():
-                call_fn = self.compute_loss
-            else:
-                call_fn = tf.__internal__.autograph.tf_convert(self.compute_loss, tf.__internal__.autograph.control_status_ctx())
-            losses = call_fn(y_true, y_pred, sample_weight)
-            return losses_utils.compute_weighted_loss(
-                losses, sample_weight, reduction=self._get_reduction()
-                )
+        if sample_weight is None:
+            sample_weight = tf.ones_like(y_pred, dtype=y_pred.dtype)
+        name_scope = getattr(self, "_name_scope", None)
+        if not name_scope:
+            name_scope = getattr(self, "name", self.__class__.__name__)
+        with tf.name_scope(name_scope):
+            losses = self.compute_loss(y_true, y_pred, sample_weight)
+            return _reduce_weighted_loss(losses, sample_weight, self.reduction)
 
     def print_feedback(self, padding=''):
-        """
-        Print feedback to screen
-        """
+        """Print the configured fixed-weight loss settings."""
         print(padding+'using combined density and evidence-error loss function')
         print(padding+'weight of density loss: %.3g, weight of evidence-error-loss: %.3g' % (self.alpha, 1.-self.alpha))
 
     def reset(self):
-        """
-        Reset loss functions hyper parameters
-        """
+        """Reset loss hyperparameters (no-op for constant weights)."""
         pass
 
 ###############################################################################
@@ -135,10 +198,15 @@ class constant_weight_loss(tf.keras.losses.Loss):
 
 
 class variable_weight_loss(tf.keras.losses.Loss):
+    """Combined loss with trainable weights updated during training."""
 
     def __init__(self, lambda_1=1.0, lambda_2=0.0, beta=0.0):
         """
-        Initialize loss function
+        Initialize the variable-weight loss.
+
+        :param lambda_1: initial weight for the density term.
+        :param lambda_2: initial weight for the evidence-error term.
+        :param beta: additive offset applied to predicted log density.
         """
         # initialize:
         super(variable_weight_loss, self).__init__()
@@ -157,6 +225,10 @@ class variable_weight_loss(tf.keras.losses.Loss):
         """
         Update values of lambda at epoch start. Takes in every kwargs to not
         crowd the interface...
+
+        :param epoch: current epoch index.
+        :param kwargs: unused passthrough arguments for compatibility.
+        :raises NotImplementedError: expected to be overridden in subclasses.
         """
         # base class is empty...
         # use the following sintax:
@@ -165,7 +237,14 @@ class variable_weight_loss(tf.keras.losses.Loss):
 
     def compute_loss_components(self, y_true, y_pred, sample_weight, lambda_1=None, lambda_2=None):
         """
-        Compute different components of the loss function
+        Compute density and evidence-error components with configurable weights.
+
+        :param y_true: target log density.
+        :param y_pred: predicted log density.
+        :param sample_weight: weights for each sample.
+        :param lambda_1: optional override for density weight.
+        :param lambda_2: optional override for evidence-error weight.
+        :returns: tuple of density loss, variance of residuals, and active weights.
         """
         # compute difference between true and predicted posterior values:
         diffs = (y_true - y_pred)
@@ -187,7 +266,12 @@ class variable_weight_loss(tf.keras.losses.Loss):
 
     def compute_loss(self, y_true, y_pred, sample_weight):
         """
-        Combine density and evidence-error loss
+        Combine density and evidence-error loss using current weights.
+
+        :param y_true: target log density.
+        :param y_pred: predicted log density.
+        :param sample_weight: weights for each sample.
+        :returns: weighted loss value.
         """
         # get components:
         loss_1, loss_2, lambda_1,lambda_2 = self.compute_loss_components(y_true, y_pred, sample_weight, self.lambda_1, self.lambda_2)
@@ -196,20 +280,21 @@ class variable_weight_loss(tf.keras.losses.Loss):
 
     def __call__(self, y_true, y_pred, sample_weight=None):
         """
-        This function overrides the standard tensorflow one to pass along weights.
+        Override ``Loss.__call__`` to support explicit ``sample_weight``.
+
+        :param y_true: target log density.
+        :param y_pred: predicted log density.
+        :param sample_weight: weights for each sample.
+        :returns: weighted loss tensor respecting reduction mode.
         """
-        graph_ctx = tf_utils.graph_context_for_symbolic_tensors(
-            y_true, y_pred, sample_weight
-            )
-        with backend.name_scope(self._name_scope), graph_ctx:
-            if tf.executing_eagerly():
-                call_fn = self.compute_loss
-            else:
-                call_fn = tf.__internal__.autograph.tf_convert(self.compute_loss, tf.__internal__.autograph.control_status_ctx())
-            losses = call_fn(y_true, y_pred, sample_weight)
-            return losses_utils.compute_weighted_loss(
-                losses, sample_weight, reduction=self._get_reduction()
-                )
+        if sample_weight is None:
+            sample_weight = tf.ones_like(y_pred, dtype=y_pred.dtype)
+        name_scope = getattr(self, "_name_scope", None)
+        if not name_scope:
+            name_scope = getattr(self, "name", self.__class__.__name__)
+        with tf.name_scope(name_scope):
+            losses = self.compute_loss(y_true, y_pred, sample_weight)
+            return _reduce_weighted_loss(losses, sample_weight, self.reduction)
         
     def print_feedback(self, padding=''):
         """

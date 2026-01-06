@@ -11,7 +11,8 @@ Tensiometer
 :References: `2105.03324 <https://arxiv.org/abs/2105.03324>`_ (non-Gaussian tension metrics), 
              `1806.04649 <https://arxiv.org/abs/1806.04649>`_ and 
              `1912.04880 <https://arxiv.org/abs/1912.04880>`_ (Gaussian tension metrics),
-             `2112.05737 <https://arxiv.org/abs/2112.05737>`_ (measured parameters).
+             `2112.05737 <https://arxiv.org/abs/2112.05737>`_ (measured parameters),
+             `2409.09101 <https://arxiv.org/abs/2409.09101>`_ (synthetic probability and posterior profiles)
 
 .. image:: https://github.com/mraveri/tensiometer/actions/workflows/test.yml/badge.svg
     :target: https://github.com/mraveri/tensiometer/actions/workflows/test.yml
@@ -25,7 +26,7 @@ Tensiometer
 Description
 ============
 
-The tensiometer package is a collection of tools to help understanding the structure of high 
+Tensiometer is a collection of tools to help understand the structure of high
 dimensional posterior distributions. 
 In particular it implements a number of metrics to quantify the level of agreement/disagreement
 between different distributions.
@@ -77,7 +78,7 @@ Testing the code
 ================
 
 Tensiometer has a suite of unit tests to make sure everything is properly installed. 
-This is especially useful considering that tensiometer relies on a number of external libraries.
+This is especially useful considering that Tensiometer relies on a number of external libraries.
 
 To run all tests give the command::
 
@@ -104,9 +105,18 @@ Then you can issue the command::
 
   make documentation
 
+Documentation build
+====================
+
+To refresh the example notebook HTML outputs before building the docs, run::
+
+  make prepare_examples
+
+Then build the documentation locally with::
+
+  make documentation
+
 Acknowledgements
 ================
 
 We thank Samuel Goldstein, Shivam Pandey for help developing the code.
-
-****************

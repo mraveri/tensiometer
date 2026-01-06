@@ -13,25 +13,18 @@ from functools import wraps
 
 def cache_input(func, check_input=True):
     """
-    A decorator to cache the input arguments of a function to a file and reuse them
-    in subsequent function calls, so that one can call a function by only specifying the cache details. 
+    Cache a function's positional and keyword arguments on disk.
 
-    The decorator expects the function to be called with two specific keyword arguments:
-    `cache_dir` (the directory to store the cache file) and `root_name` (the base name for the cache file).
+    The decorator expects ``cache_dir`` and ``root_name`` keyword arguments on
+    the wrapped function. It persists the arguments to
+    ``<cache_dir>/<root_name>_function_cache.plk`` and reloads them on
+    subsequent calls, optionally validating they match the current inputs.
 
-    Behavior:
-        - If `cache_dir` or `root_name` is not provided in the function's keyword arguments, 
-          the decorator raises a `ValueError`.
-        - If the specified `cache_dir` does not exist, it is created.
-        - The cache file is saved with the name `<root_name>_function_cache.plk` in the specified `cache_dir`.
-        - If the cache file exists, the function's input arguments are loaded from the cache instead
-          of using the provided arguments.
-
-    Parameters:
-        func (function): The function to decorate.
-
-    Returns:
-        function: The decorated function with caching capability.
+    :param func: function to decorate.
+    :param check_input: whether to verify cached inputs match current values.
+    :returns: wrapped function that reuses cached arguments when available.
+    :raises ValueError: if required cache kwargs are missing or inputs differ
+        from the cached values when ``check_input`` is True.
     """
     @wraps(func)
     def wrapper(*args, **kwargs):

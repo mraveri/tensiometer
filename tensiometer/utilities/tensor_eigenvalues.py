@@ -212,7 +212,7 @@ def tRq_nder(x, A, n):
     # do the products:
     res = tensor_contraction(A, x, m-n)
     # get the prefactor:
-    fac = np.prod([(m - j) for j in range(n)]).astype(np.float)
+    fac = np.prod([(m - j) for j in range(n)]).astype(float)
     #
     return fac*res
 

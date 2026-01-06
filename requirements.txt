@@ -1,19 +1,37 @@
-# basic packages:
-tqdm
+# core runtime:
+GetDist
+IPython
+autograd
+gast==0.4.0
 joblib
-coverage
 matplotlib
+mpi4py
+numba>=0.53.0
+numdifftools
+numpy
 psutil
+pymanopt==0.2.5
+scipy
+tensorflow>=2.16.0
+tensorflow_probability>=0.24.0
+tqdm
+
 # documentation:
 sphinx
 sphinxcontrib-jquery
 sphinx-rtd-theme
-# core packages:
-GetDist
-autograd
-pymanopt==0.2.5
-gast==0.4.0
-numba>=0.53.0
-# tensorflow:
-tensorflow>=2.15.0
-tensorflow_probability>=0.23.0
+
+# testing/coverage:
+coverage
+pytest
+pytest-cov
+
+# cli helpers:
+build
+twine
+
+# example notebooks (optional):
+camb
+cobaya
+nbconvert
+seaborn

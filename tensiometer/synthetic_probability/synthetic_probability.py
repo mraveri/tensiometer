@@ -18,7 +18,6 @@ from collections.abc import Iterable
 import pickle
 import time
 import joblib
-import sys
 import gc
 
 # plotting:
@@ -38,37 +37,177 @@ gchains.print_load_details = False
 
 # tensorflow imports:
 
-# here we check the compatibility of tensorflow and tensorflow_probability:
-if 'tensorflow' in sys.modules:
-    # get the version of tensorflow:
-    _tf_version = sys.modules['tensorflow'].__version__ 
-    if _tf_version > '2.16':
-        # check tf version compatibility:
-        _rant = 'To ensure the compatibility of tensorflow and tensorflow_probability, the environment variable TF_USE_LEGACY_KERAS should be set to 1.'
-        if 'TF_USE_LEGACY_KERAS' in os.environ.keys():
-            if os.environ['TF_USE_LEGACY_KERAS'] != "1":
-                print(_rant, flush=True)
-                raise ValueError('TF_USE_LEGACY_KERAS is set to an invalid value, it should be set to 1 and is set to:', os.environ['TF_USE_LEGACY_KERAS'])
-        else:
-            print(_rant, flush=True)
-            raise ValueError('TF_USE_LEGACY_KERAS is not set, it should be set to 1')
-else:
-    # tfp and keras 3 compatibility:
-    os.environ['TF_USE_LEGACY_KERAS'] = "1"
-    
-# import tensorflow:
 import tensorflow as tf
-import tensorflow_probability as tfp
+
+try:
+    import tensorflow_probability as tfp
+except Exception as exc:
+    raise ImportError(
+        "Failed to import tensorflow_probability. Please install a version compatible "
+        "with your TensorFlow/Keras installation (e.g. tensorflow_probability>=0.24 for "
+        "TensorFlow>=2.16)."
+    ) from exc
+
+
+def _parse_version(version):
+    """
+    Parse a version string into a tuple of integers.
+
+    :param version: version string to parse.
+    :returns: tuple of integers suitable for comparisons.
+    """
+    parts = []
+    for chunk in str(version).split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if digits == "":
+            break
+        parts.append(int(digits))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def _ensure_tfp_compat(tf_version, tfp_version):
+    """
+    Validate TensorFlow and TensorFlow Probability version compatibility.
+
+    :param tf_version: TensorFlow version tuple.
+    :param tfp_version: TensorFlow Probability version tuple.
+    :raises ValueError: when the versions are known to be incompatible.
+    """
+    if tf_version >= (2, 16, 0) and tfp_version < (0, 24, 0):
+        raise ValueError(
+            "TensorFlow >= 2.16 requires tensorflow_probability >= 0.24 for "
+            "Keras 3 compatibility."
+        )
+    if tf_version < (2, 16, 0) and tfp_version >= (0, 24, 0):
+        raise ValueError(
+            "tensorflow_probability >= 0.24 requires TensorFlow >= 2.16. "
+            "Please downgrade tensorflow_probability or upgrade TensorFlow."
+        )
+
+
+_ensure_tfp_compat(_parse_version(tf.__version__), _parse_version(tfp.__version__))
+
+
+def _is_tf_function(func):
+    """Return True if ``func`` is a TensorFlow function wrapper."""
+    return isinstance(func, tf.types.experimental.GenericFunction)
+
+
+def _rebuild_tf_function(target, func_name):
+    """
+    Rebuild a ``tf.function`` wrapper to clear cached traces.
+
+    :param target: object that owns the function.
+    :param func_name: attribute name of the TensorFlow function.
+    """
+    func = getattr(target, func_name)
+    python_fn = getattr(func, "python_function", None)
+    if python_fn is None:
+        return
+    bound_fn = python_fn.__get__(target, type(target))
+    input_signature = getattr(func, "input_signature", None)
+    try:
+        setattr(target, func_name, tf.function(bound_fn, input_signature=input_signature))
+    except TypeError:
+        try:
+            setattr(target, func_name, tf.function(bound_fn))
+        except TypeError:
+            return
+
+
+def _clear_tf_function_cache(func):
+    """
+    Clear the cached concrete functions if present.
+
+    :param func: TensorFlow function wrapper.
+    """
+    cache = getattr(func, "_function_cache", None)
+    if cache is not None:
+        cache.clear()
+
+
+def _iter_callable_names(obj):
+    """
+    Collect callable attribute names, skipping properties that raise.
+
+    :param obj: object to inspect.
+    :returns: list of unique callable attribute names.
+    """
+    names = []
+    for name in dir(obj):
+        try:
+            attr = getattr(obj, name)
+        except Exception:
+            continue
+        if callable(attr):
+            names.append(name)
+    for name, attr in obj.__dict__.items():
+        if callable(attr):
+            names.append(name)
+    return list(set(names))
+
+
+def _normalize_weights(weights):
+    """
+    Normalize weights to sum to the sample count.
+
+    :param weights: array of weights.
+    :returns: normalized weights array.
+    """
+    weights = np.array(weights, dtype=float, copy=True)
+    if len(weights) == 0:
+        return weights
+    total = np.sum(weights)
+    if not np.isfinite(total) or total <= 0:
+        weights = np.ones_like(weights, dtype=float)
+        total = np.sum(weights)
+    weights *= len(weights) / total
+    return weights
+
+
 tfb = tfp.bijectors
 tfd = tfp.distributions
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input
 from tensorflow.keras.callbacks import Callback
 import tensorflow.keras.callbacks as keras_callbacks
-import tensorflow.python.eager.def_function as tf_defun
 # tensorflow precision:
 prec = tf.float32
 np_prec = np.float32
+
+###############################################################################
+# Keras helpers:
+
+class LogProbLayer(tf.keras.layers.Layer):
+    """Keras layer that evaluates distribution log-probability."""
+
+    def __init__(self, distribution, **kwargs):
+        """
+        Initialize the log-probability layer.
+
+        :param distribution: TensorFlow Probability distribution instance.
+        :param kwargs: additional keyword arguments passed to ``Layer``.
+        """
+        super().__init__(**kwargs)
+        self.distribution = distribution
+
+    def build(self, input_shape):
+        """Build the layer and initialize distribution variables."""
+        if input_shape[-1] is not None:
+            dummy = tf.zeros((1, int(input_shape[-1])), dtype=self.dtype or prec)
+            _ = self.distribution.log_prob(dummy)
+        super().build(input_shape)
+
+    def call(self, inputs):
+        """Compute log-probability for the inputs."""
+        return self.distribution.log_prob(inputs)
 
 # plotting global settings:
 matplotlib_backend = matplotlib.get_backend()
@@ -331,7 +470,16 @@ class FlowCallback(Callback):
         Initializes samples in a tree for nearest neighbour searches. Takes a while in high dimensions...
         """
         # cache nearest neighbours indexes, in whitened coordinates:
-        temp_cov = np.cov(self.chain_samples.T, aweights=self.chain_weights)
+        if self.chain_samples.shape[0] < 2:
+            temp_cov = np.eye(self.num_params)
+        else:
+            _weight_sum = np.sum(self.chain_weights)
+            if not np.isfinite(_weight_sum) or _weight_sum <= 0:
+                temp_cov = np.cov(self.chain_samples.T)
+            else:
+                temp_cov = np.cov(self.chain_samples.T, aweights=self.chain_weights)
+            if not np.all(np.isfinite(temp_cov)):
+                temp_cov = np.eye(self.num_params)
         white_samples = np.dot(scipy.linalg.sqrtm(np.linalg.inv(temp_cov)), self.chain_samples.T).T
         data_tree = cKDTree(white_samples, balanced_tree=True)
         r2, idx = data_tree.query(white_samples, (2), workers=-1)
@@ -549,9 +697,7 @@ class FlowCallback(Callback):
                 self.chain_samples[self.training_idx, :], event_ndims=1)
             self.training_logP_preabs = -1. * self.chain_loglikes[self.training_idx] - _jac_true_preabs
 
-        self.training_weights = self.chain_weights[self.training_idx]
-        self.training_weights *= len(self.training_weights) / np.sum(
-            self.training_weights)  # weights normalized to number of training samples
+        self.training_weights = _normalize_weights(self.chain_weights[self.training_idx])
         self.has_weights = np.any(self.training_weights != self.training_weights[0])
 
         # test samples:
@@ -563,9 +709,7 @@ class FlowCallback(Callback):
                 self.chain_samples[self.test_idx, :], event_ndims=1)
             self.test_logP_preabs = -1. * self.chain_loglikes[self.test_idx] - _jac_true_test_preabs
 
-        self.test_weights = self.chain_weights[self.test_idx]
-        self.test_weights *= len(self.test_weights) / np.sum(
-            self.test_weights)  # weights normalized to number of validation samples
+        self.test_weights = _normalize_weights(self.chain_weights[self.test_idx])
 
         # initialize tensorflow sample generator:
         if self.has_loglikes:
@@ -652,12 +796,19 @@ class FlowCallback(Callback):
             loss=self.loss,
             weighted_metrics=[])
         # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
-        _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
+        _self_functions = _iter_callable_names(self)
         # get the methods that are tensorflow functions:
-        _tf_functions = [func for func in _self_functions if isinstance(getattr(self, func), tf_defun.Function)]
-        # rebuild them (with cloning). I can see this causing memory leaks but I am blaming it on tf
+        _tf_functions = []
+        for func in _self_functions:
+            try:
+                attr = getattr(self, func)
+            except Exception:
+                continue
+            if _is_tf_function(attr):
+                _tf_functions.append(func)
+        # clear function caches to avoid stale traces
         for func in _tf_functions:
-            setattr(self, func, getattr(self, func)._clone(None))
+            _clear_tf_function_cache(getattr(self, func))
         # feedback:
         if self.feedback > 0:
             print('    - time taken: {0:.4f} seconds'.format(time.time() - _time))
@@ -727,7 +878,9 @@ class FlowCallback(Callback):
         # build model:
         self._model_initialied = False
         x_ = Input(shape=(self.num_params,), dtype=prec)
-        self.model = Model(x_, self.trained_distribution.log_prob(x_))
+        log_prob = LogProbLayer(self.trained_distribution, name="log_prob")(x_)
+        model = Model(x_, log_prob)
+        self.set_model(model)
         # compile model:
         self._compile_model()
         num_model_params = self.model.count_params()
@@ -755,14 +908,19 @@ class FlowCallback(Callback):
         When tf functions are run they build deep caches and can consume a lot of memory.
         """
         # get all methods:        
-        _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
-        _self_functions = _self_functions + [func for func in self.__dict__.keys() if callable(self.__dict__[func])]
-        _self_functions = list(set(_self_functions))
+        _self_functions = _iter_callable_names(self)
         # get the methods that are tensorflow functions:
-        _tf_functions = [func for func in _self_functions if isinstance(getattr(self, func), tf_defun.Function)]
+        _tf_functions = []
+        for func in _self_functions:
+            try:
+                attr = getattr(self, func)
+            except Exception:
+                continue
+            if _is_tf_function(attr):
+                _tf_functions.append(func)
         # clean temp graph:
         for _f in _tf_functions:
-            getattr(self, _f)._function_cache.clear()
+            _clear_tf_function_cache(getattr(self, _f))
         # bijectors need to be cleared manually:
         self.distribution.bijector._cache.clear()
         self.prior_bijector._cache.clear()
@@ -892,7 +1050,17 @@ class FlowCallback(Callback):
 
             # build the random weights:
             for layer in self.model.layers:
-                layer.build(layer.input_shape)
+                if getattr(layer, "built", False):
+                    continue
+                input_shape = getattr(layer, "input_shape", None)
+                if input_shape is None:
+                    input_shape = getattr(layer, "batch_input_shape", None)
+                if input_shape is None:
+                    continue
+                try:
+                    layer.build(input_shape)
+                except Exception:
+                    continue
 
             # re-compile model:
             self._compile_model()
@@ -1447,14 +1615,35 @@ class FlowCallback(Callback):
         self.log = {_k: [] for _k in self.training_metrics}
 
         # compute initial chi2:
+        if self.num_test_samples < 1:
+            self.chi2Y = np.array([])
+            self.chi2Y_ks, self.chi2Y_ks_p = 0.0, 0.0
+            return None
+
         _temp_mean = np.average(self.test_samples, axis=0, weights=self.test_weights)
-        _temp_invcov = np.linalg.inv(scipy.linalg.sqrtm(np.cov(self.test_samples.T, aweights=self.test_weights)))
+        if self.num_test_samples < 2:
+            _temp_invcov = np.eye(self.num_params)
+        else:
+            try:
+                _temp_cov = np.cov(self.test_samples.T, aweights=self.test_weights)
+                if not np.all(np.isfinite(_temp_cov)):
+                    raise ValueError('Non-finite covariance for chi2 statistics')
+                _temp_invcov = np.linalg.inv(scipy.linalg.sqrtm(_temp_cov))
+            except Exception:
+                _temp_invcov = np.eye(self.num_params)
         _temp = np.dot(_temp_invcov, (self.test_samples - _temp_mean).T)
         self.chi2Y = np.sum((_temp)**2, axis=0)
-        if self.has_weights:
-            self.chi2Y = np.random.choice(
-                self.chi2Y, size=len(self.chi2Y), replace=True, p=self.test_weights / np.sum(self.test_weights))
-        self.chi2Y_ks, self.chi2Y_ks_p = scipy.stats.kstest(self.chi2Y, 'chi2', args=(self.num_params,))
+        if len(self.chi2Y) > 0 and self.has_weights:
+            _weight_sum = np.sum(self.test_weights)
+            if np.isfinite(_weight_sum) and _weight_sum > 0:
+                self.chi2Y = np.random.choice(
+                    self.chi2Y, size=len(self.chi2Y), replace=True, p=self.test_weights / _weight_sum)
+            else:
+                self.chi2Y = np.random.choice(self.chi2Y, size=len(self.chi2Y), replace=True)
+        if len(self.chi2Y) > 0:
+            self.chi2Y_ks, self.chi2Y_ks_p = scipy.stats.kstest(self.chi2Y, 'chi2', args=(self.num_params,))
+        else:
+            self.chi2Y_ks, self.chi2Y_ks_p = 0.0, 0.0
         #
         return None
 
@@ -1480,13 +1669,24 @@ class FlowCallback(Callback):
                 # Note that scipy.stats.kstest does not handle weights yet so we need to resample.
                 _s = np.isfinite(self.chi2Z)
                 self.chi2Z = self.chi2Z[_s]
-                if self.has_weights:
-                    self.chi2Z = np.random.choice(
-                        self.chi2Z,
-                        size=len(self.chi2Z),
-                        replace=True,
-                        p=self.test_weights[_s] / np.sum(self.test_weights[_s]))
-                chi2Z_ks, chi2Z_ks_p = scipy.stats.kstest(self.chi2Z, 'chi2', args=(self.num_params,))
+                if len(self.chi2Z) == 0:
+                    chi2Z_ks, chi2Z_ks_p = 0.0, 0.0
+                else:
+                    if self.has_weights:
+                        _weights = self.test_weights[_s]
+                        _weight_sum = np.sum(_weights)
+                        if np.isfinite(_weight_sum) and _weight_sum > 0:
+                            self.chi2Z = np.random.choice(
+                                self.chi2Z,
+                                size=len(self.chi2Z),
+                                replace=True,
+                                p=_weights / _weight_sum)
+                        else:
+                            self.chi2Z = np.random.choice(
+                                self.chi2Z,
+                                size=len(self.chi2Z),
+                                replace=True)
+                    chi2Z_ks, chi2Z_ks_p = scipy.stats.kstest(self.chi2Z, 'chi2', args=(self.num_params,))
             except:
                 chi2Z_ks, chi2Z_ks_p = 0., 0.
             self.log["chi2Z_ks"].append(chi2Z_ks)
@@ -1616,33 +1816,45 @@ class FlowCallback(Callback):
             c='k',
             lw=1.,
             ls='-')
-        ax.hist(
-            self.chi2Y,
-            bins=bins,
-            density=True,
-            histtype='step',
-            weights=self.test_weights,
-            label='Pre-NF ($D_n$={:.3f})'.format(self.chi2Y_ks),
-            lw=1.,
-            ls='-')
-        ax.hist(
-            self.chi2Z,
-            bins=bins,
-            density=True,
-            histtype='step',
-            label='Post-NF val ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]),
-            lw=1.,
-            ls='-')
-        if not fast:
-            train_chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.training_samples))**2, axis=1)
+        chi2y_vals = np.asarray(self.chi2Y)
+        chi2y_mask = np.isfinite(chi2y_vals)
+        chi2y_vals = chi2y_vals[chi2y_mask]
+        chi2y_weights = None
+        if chi2y_mask.size == self.test_weights.size:
+            chi2y_weights = self.test_weights[chi2y_mask]
+        if len(chi2y_vals) > 0:
             ax.hist(
-                train_chi2Z,
+                chi2y_vals,
                 bins=bins,
                 density=True,
                 histtype='step',
-                label='Post-NF train',
+                weights=chi2y_weights,
+                label='Pre-NF ($D_n$={:.3f})'.format(self.chi2Y_ks),
                 lw=1.,
                 ls='-')
+        chi2z_vals = np.asarray(self.chi2Z)
+        chi2z_vals = chi2z_vals[np.isfinite(chi2z_vals)]
+        if len(chi2z_vals) > 0:
+            ax.hist(
+                chi2z_vals,
+                bins=bins,
+                density=True,
+                histtype='step',
+                label='Post-NF val ($D_n$={:.3f})'.format(self.log["chi2Z_ks"][-1]),
+                lw=1.,
+                ls='-')
+        if not fast:
+            train_chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.training_samples))**2, axis=1)
+            train_chi2Z = train_chi2Z[np.isfinite(train_chi2Z)]
+            if len(train_chi2Z) > 0:
+                ax.hist(
+                    train_chi2Z,
+                    bins=bins,
+                    density=True,
+                    histtype='step',
+                    label='Post-NF train',
+                    lw=1.,
+                    ls='-')
         ax.set_title(r'$\chi^2_{{{}}}$ PDF'.format(self.num_params))
         ax.set_xlabel(r'$\chi^2$')
         ax.legend()
@@ -1939,7 +2151,7 @@ class FlowCallback(Callback):
 
         # update log:
         try:
-            logs['lr'] = tf.keras.backend.get_value(self.model.optimizer.lr)
+            logs['lr'] = lr._get_optimizer_lr(self.model.optimizer)
         except AttributeError:
             logs['lr'] = 0.0
 
@@ -1971,8 +2183,10 @@ class FlowCallback(Callback):
             self.training_plot(logs=logs, ipython_plotting=ipython_plotting, fast=True)
 
             # allow time for rendering and show:
-            plt.pause(0.00001)
-            plt.show()
+            backend = matplotlib.get_backend().lower()
+            if "agg" not in backend:
+                plt.pause(0.00001)
+                plt.show()
         #
         return None
     
@@ -1997,8 +2211,18 @@ class FlowCallback(Callback):
 
 
 class DerivedParamsBijector(tb.AutoregressiveFlow):
+    """Autoregressive bijector transforming between two parameterizations."""
 
     def __init__(self, chain, param_names_in, param_names_out, permutations=False, feedback=0, **kwargs):
+        """
+        Initialize the bijector.
+
+        :param chain: reference chain providing parameter statistics.
+        :param param_names_in: list of input parameter names.
+        :param param_names_out: list of output parameter names.
+        :param permutations: enable permutation of autoregressive order.
+        :param feedback: verbosity level.
+        """
         self.num_params = len(param_names_in)
         assert len(param_names_out) == self.num_params
         self.param_names_in = param_names_in
@@ -2078,7 +2302,16 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
 
 
 class AnalyticalDerivedParamsBijector:
+    """Wrapper exposing a bijector that maps to analytically defined parameters."""
     def __init__(self, param_names_in, param_names_out, param_labels_out, **kwargs):
+        """
+        Initialize the analytical bijector wrapper.
+
+        :param param_names_in: input parameter names.
+        :param param_names_out: output parameter names.
+        :param param_labels_out: labels for the derived parameters.
+        :param kwargs: additional arguments forwarded to ``tfp.bijectors.Inline``.
+        """
         self.num_params = len(param_names_in)
         assert len(param_names_out) == self.num_params
         self.param_names_in = param_names_in
@@ -2090,6 +2323,7 @@ class AnalyticalDerivedParamsBijector:
         
         
 class TransformedFlowCallback(FlowCallback):
+    """Callback that applies a transformation bijector to a base flow during training."""
 
     def __init__(self, flow, transformation, transform_posterior=True):
         """
@@ -2448,14 +2682,19 @@ class average_flow(FlowCallback):
     
     def reset_tensorflow_caches(self):
         # clean own tf functions first:
-        _self_functions = [func for func in dir(self) if callable(getattr(self, func))]
-        _self_functions = _self_functions + [func for func in self.__dict__.keys() if callable(self.__dict__[func])]
-        _self_functions = list(set(_self_functions))
+        _self_functions = _iter_callable_names(self)
         # get the methods that are tensorflow functions:
-        _tf_functions = [func for func in _self_functions if isinstance(getattr(self, func), tf_defun.Function)]
+        _tf_functions = []
+        for func in _self_functions:
+            try:
+                attr = getattr(self, func)
+            except Exception:
+                continue
+            if _is_tf_function(attr):
+                _tf_functions.append(func)
         # clean temp graph:
         for _f in _tf_functions:
-            getattr(self, _f)._function_cache.clear()
+            _clear_tf_function_cache(getattr(self, _f))
         # bijectors need to be cleared manually:
         self.prior_bijector._cache.clear()
         self.fixed_bijector._cache.clear()

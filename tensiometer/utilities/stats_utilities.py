@@ -123,7 +123,10 @@ def KL_decomposition(matrix_a, matrix_b):
     if np.any(_lambda_b < 0.):
         raise ValueError('B is not positive definite\n',
                          'eigenvalues are ', _lambda_b)
-    _sqrt_lambda_b = np.diag(1./np.sqrt(_lambda_b))
+    sqrt_lambda_b = np.zeros_like(_lambda_b)
+    mask = _lambda_b > 0.0
+    sqrt_lambda_b[mask] = 1.0 / np.sqrt(_lambda_b[mask])
+    _sqrt_lambda_b = np.diag(sqrt_lambda_b)
     _phib_prime = np.dot(_phi_b, _sqrt_lambda_b)
     _a_prime = np.dot(np.dot(_phib_prime.T, matrix_a), _phib_prime)
     _lambda, _phi_a = np.linalg.eigh(_a_prime)
@@ -402,6 +405,8 @@ def is_outlier(points, thresh=3.5):
     diff = np.sum((points - median)**2, axis=-1)
     diff = np.sqrt(diff)
     med_abs_deviation = np.median(diff)
+    if med_abs_deviation == 0:
+        return np.zeros(diff.shape, dtype=bool)
 
     modified_z_score = 0.6745 * diff / med_abs_deviation
 

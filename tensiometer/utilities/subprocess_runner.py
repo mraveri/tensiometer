@@ -7,12 +7,13 @@ When the subprocess is finished the memory is fully released, which is useful to
 ###########################################################################################
 # Initial imports:
 
-import multiprocessing as mp
-from functools import wraps
-import psutil
-import datetime
-import time
 import copy
+import datetime
+import multiprocessing as mp
+import time
+from functools import wraps
+
+import psutil
 
 ###########################################################################################
 # Default Settings:
@@ -47,20 +48,17 @@ feedback_separator = '**********************************************************
 
 def run_in_process(**kwargs):
     """
-    Decorator to run a function in a subprocess with optional feedback, monitoring, 
-    and timeout capabilities.
+    Decorator to run a function in a subprocess with optional feedback,
+    monitoring, and timeout capabilities.
 
-    Parameters:
-        kwargs (dict): Overrides for default settings. Valid keys are:
-            - 'subprocess' (bool): Whether to run the function in a subprocess.
-            - 'feedback_level' (int): Feedback verbosity level (0 to 3).
-            - 'context' (str): Multiprocessing context ('fork', 'spawn', 'forkserver').
-            - 'monitoring' (bool): Enable/disable monitoring.
-            - 'monitoring_frequency' (int): Monitoring update frequency in seconds.
-            - 'timeout' (int or None): Maximum allowed runtime in seconds.
-
-    Returns:
-        function: A wrapped version of the input function with subprocess capabilities.
+    :param subprocess: whether to execute in a subprocess.
+    :param feedback_level: verbosity level from 0 to 3.
+    :param context: multiprocessing context (``fork``, ``spawn`` or ``forkserver``).
+    :param monitoring: enable monitoring of the subprocess.
+    :param monitoring_frequency: interval, in seconds, for monitoring updates.
+    :param timeout: maximum runtime in seconds; enables monitoring when set.
+    :returns: wrapped function with subprocess capabilities.
+    :raises ValueError: if supplied configuration values are invalid.
     """
     # Update settings with the provided overrides.
     settings = copy.deepcopy(default_settings)
@@ -100,11 +98,8 @@ def run_in_process(**kwargs):
         """
         Inner decorator to wrap the target function.
 
-        Parameters:
-            func (function): The target function to decorate.
-
-        Returns:
-            function: The wrapped function.
+        :param func: target function to decorate.
+        :returns: wrapped function respecting the configured subprocess options.
         """
         if not subprocess:
             # If not running in a subprocess, return the original function.
@@ -115,12 +110,9 @@ def run_in_process(**kwargs):
             """
             Wrapper function to run the target function in a subprocess.
 
-            Parameters:
-                args: Positional arguments for the target function.
-                kwargs: Keyword arguments for the target function.
-
-            Returns:
-                Any: The result of the target function.
+            :param args: positional arguments for the target function.
+            :param kwargs: keyword arguments for the target function.
+            :returns: result of the target function.
             """
             # Record the start time of the process.
             global_start_time = datetime.datetime.now()
@@ -148,10 +140,9 @@ def run_in_process(**kwargs):
                 """
                 Execute the target function in a subprocess and send the result back.
 
-                Parameters:
-                    pipe_conn: Pipe connection for inter-process communication.
-                    args: Positional arguments for the target function.
-                    kwargs: Keyword arguments for the target function.
+                :param pipe_conn: pipe connection for inter-process communication.
+                :param args: positional arguments for the target function.
+                :param kwargs: keyword arguments for the target function.
                 """
                 try:
                     # Execute the function and send the result through the pipe.

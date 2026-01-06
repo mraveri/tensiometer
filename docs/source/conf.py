@@ -12,8 +12,8 @@
 # All configuration values have a default; values that are commented out
 # serve to show the default.
 
-import sys
 import os
+import sys
 
 autoclass_content = 'both'
 
@@ -25,45 +25,61 @@ nitpick_ignore = [('py:class', 'optional')]
 def on_missing_reference(app, env, node, contnode):
     if node['reftype'] == 'obj':
         return contnode
-    else:
-        return None
+    return None
 
 
 def setup(app):
     app.connect('missing-reference', on_missing_reference)
 
 
+# -- Path setup ------------------------------------------------------------
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 sys.path.insert(0, os.path.abspath('exts'))
 here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.abspath(here+'/../../'))
+project_root = os.path.abspath(os.path.join(here, os.pardir, os.pardir))
+sys.path.insert(0, project_root)
 import tensiometer
 
 # -- General configuration ------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = '1.3'
+needs_sphinx = '4.0'
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.autodoc', 
-    'sphinx.ext.intersphinx', 
-    'sphinx.ext.viewcode', 
+    'sphinx.ext.autodoc',
+    'sphinx.ext.intersphinx',
+    'sphinx.ext.viewcode',
     'sphinx.ext.autosummary',
-    'matplotlib.sphinxext.plot_directive'
 ]
 
-intersphinx_mapping = {'python': ('https://docs.python.org/3', None),
-                       'numpy': ('https://docs.scipy.org/doc/numpy/', None),
-                       'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
-                       'matplotlib': ('https://matplotlib.org/', None),
-                       'getdist': ('https://getdist.readthedocs.io/en/latest/', None),
-                       "tensorflow": ("https://www.tensorflow.org/api_docs/python", "https://github.com/GPflow/tensorflow-intersphinx/raw/master/tf2_py_objects.inv"),
-                       "tensorflow_probability": ("https://www.tensorflow.org/probability/api_docs/python", "https://github.com/GPflow/tensorflow-intersphinx/raw/master/tfp_py_objects.inv")}
+try:
+    import matplotlib  # noqa: F401
+except ImportError:
+    matplotlib = None
+
+if matplotlib is not None:
+    extensions.append('matplotlib.sphinxext.plot_directive')
+
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3/', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
+    'scipy': ('https://docs.scipy.org/doc/scipy/', None),
+    'matplotlib': ('https://matplotlib.org/stable/', None),
+    'getdist': ('https://getdist.readthedocs.io/en/latest/', None),
+    'tensorflow': (
+        'https://www.tensorflow.org/api_docs/python',
+        'https://raw.githubusercontent.com/GPflow/tensorflow-intersphinx/master/tf2_py_objects.inv',
+    ),
+    'tensorflow_probability': (
+        'https://www.tensorflow.org/probability/api_docs/python',
+        'https://raw.githubusercontent.com/GPflow/tensorflow-intersphinx/master/tfp_py_objects.inv',
+    ),
+}
 
 # plot_formats = [('png', 80)]
 plot_html_show_formats = False
@@ -84,9 +100,9 @@ source_encoding = 'utf-8-sig'
 master_doc = 'index'
 
 # General information about the project.
-project = u'tensiometer'
-copyright = u'Marco Raveri'
-author = u'Marco Raveri'
+project = 'tensiometer'
+copyright = 'Marco Raveri'
+author = 'Marco Raveri'
 
 version = tensiometer.__version__
 release = tensiometer.__version__
@@ -125,7 +141,7 @@ html_theme = 'sphinx_rtd_theme'
 # documentation.
 html_theme_options = {
     'collapse_navigation': True,
-    }
+}
 # Add any paths that contain custom themes here, relative to this directory.
 # html_theme_path = []
 
@@ -211,7 +227,7 @@ html_extra_path = ['../example_notebooks']
 # html_search_scorer = 'scorer.js'
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'TensionToolsDoc'
+htmlhelp_basename = 'TensiometerDoc'
 
 # -- Options for LaTeX output ---------------------------------------------
 
@@ -233,8 +249,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'TensionTools.tex', u'TensionTools Documentation',
-     author, 'manual'),
+    (master_doc, 'tensiometer.tex', 'Tensiometer Documentation', author, 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of
@@ -263,8 +278,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    (master_doc, 'TensionTools', u'TensionTools Documentation',
-     [author], 1)
+    (master_doc, 'tensiometer', 'Tensiometer Documentation', [author], 1),
 ]
 
 # If true, show URL addresses after external links.
@@ -277,8 +291,8 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, 'TensionTools', u'TensionTools Documentation',
-     author, 'TensionTools', 'Concordance and discordance analysis.',
+    (master_doc, 'tensiometer', 'Tensiometer Documentation',
+     author, 'tensiometer', 'Concordance and discordance analysis.',
      'Miscellaneous'),
 ]
 

@@ -323,6 +323,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         Initialize the profile posterior plotter.
         Pass a flow and the number of samples to use for base MCSamples.
         """
+        # copy default options so per-instance updates do not leak
+        self.options = copy.deepcopy(self.options)
         # initialize settings:
         self.feedback = feedback
         # initialize internal variables:
@@ -1854,4 +1856,3 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _profiler = pickle.load(input)
             _profiler.flow = flow
         return _profiler
-

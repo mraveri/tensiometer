@@ -13,7 +13,17 @@ from getdist import MCSamples
 # get samples at each intermediate space:
 
 def get_samples_bijectors(flow, feedback=False, extra_samples=None):
-    
+    """
+    Extract samples at each stage of a flow transformation.
+
+    :param flow: trained flow object exposing samples, weights, and bijectors.
+    :param feedback: whether to print bijector names during traversal.
+    :param extra_samples: optional additional samples to propagate through the
+        bijectors.
+    :returns: training and validation ``MCSamples`` lists, and optionally
+        transformed ``extra_samples`` when provided.
+    """
+
     # initialize the flow:
     _flow = flow
     # initialize lists to store samples:
@@ -83,15 +93,11 @@ def KL_divergence(flow_1, flow_2, num_samples=1000, num_batches=100):
     
     D_KL(flow_1 || flow_2) = E_{x ~ flow_1} [log(flow_1(x)) - log(flow_2(x))]
 
-    Parameters:
-    flow_1 (Flow): The flow for the sampling distribution.
-    flow_2 (Flow): The second flow distribution.
-    num_samples (int): The number of samples to draw from the flows, per batch. Default is 1000.
-    num_batches (int): The number of batches to run. Default is 100.
-
-    Returns:
-    mean (float): The mean KL divergence.
-    std (float): The standard deviation of the KL divergence.
+    :param flow_1: flow used as the sampling distribution.
+    :param flow_2: flow compared against ``flow_1``.
+    :param num_samples: number of samples drawn per batch.
+    :param num_batches: number of batches used to estimate the statistics.
+    :returns: mean and standard deviation of the estimated KL divergence.
     """
     _log_prob_diff = []
     for _ in range(num_batches):
