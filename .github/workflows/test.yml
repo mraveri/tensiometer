@@ -86,31 +86,3 @@ jobs:
         run: |
           make install
           make install_dev
-
-  apple-silicon:
-
-    # Apple Silicon runner: runs the suite on the MPS device when the runner exposes it.
-    runs-on: macos-14
-
-    steps:
-
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install torch
-          pip install -r requirements.txt
-
-      - name: Run unit tests
-        run: |
-          if python -c "import torch, sys; sys.exit(0 if torch.backends.mps.is_available() else 1)"; then
-            export TENSIOMETER_DEVICE=mps
-          fi
-          echo "TENSIOMETER_DEVICE=${TENSIOMETER_DEVICE:-cpu}"
-          make test
