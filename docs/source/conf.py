@@ -71,14 +71,7 @@ intersphinx_mapping = {
     'scipy': ('https://docs.scipy.org/doc/scipy/', None),
     'matplotlib': ('https://matplotlib.org/stable/', None),
     'getdist': ('https://getdist.readthedocs.io/en/latest/', None),
-    'tensorflow': (
-        'https://www.tensorflow.org/api_docs/python',
-        'https://raw.githubusercontent.com/GPflow/tensorflow-intersphinx/master/tf2_py_objects.inv',
-    ),
-    'tensorflow_probability': (
-        'https://www.tensorflow.org/probability/api_docs/python',
-        'https://raw.githubusercontent.com/GPflow/tensorflow-intersphinx/master/tfp_py_objects.inv',
-    ),
+    'torch': ('https://pytorch.org/docs/stable/', None),
 }
 
 # plot_formats = [('png', 80)]

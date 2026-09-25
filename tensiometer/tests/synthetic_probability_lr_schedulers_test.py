@@ -1,4 +1,4 @@
-"""Tests for learning rate schedulers."""
+"""Tests for the learning rate schedulers of the flow training (PyTorch implementation)."""
 
 #########################################################################################################
 # Imports
@@ -6,228 +6,419 @@
 import unittest
 from unittest.mock import patch
 
-import tensorflow as tf
+import numpy as np
 
 from tensiometer.synthetic_probability import lr_schedulers as lrs
+from tensiometer.synthetic_probability import training
 
 #########################################################################################################
 # Helper stubs
 
 
 class DummyOptimizer:
-    """Dummy Optimizer test suite."""
+    """Minimal stand-in for a ``torch.optim`` optimizer."""
+
+    def __init__(self, lr=0.01, num_groups=1):
+        """Create ``num_groups`` parameter groups with learning rate ``lr``."""
+        self.param_groups = [{'lr': lr} for _ in range(num_groups)]
+
+
+class DummyTrainer:
+    """Minimal stand-in for :class:`~tensiometer.synthetic_probability.training.Trainer`."""
+
     def __init__(self, lr=0.01):
-        """Init."""
-        self.lr = tf.Variable(lr, dtype=tf.float32)
-        self.learning_rate = self.lr
-
-
-class DummyModel:
-    """Dummy Model test suite."""
-    def __init__(self):
-        """Init."""
-        self.optimizer = DummyOptimizer()
+        """Hold a dummy optimizer and the stop flag."""
+        self.optimizer = DummyOptimizer(lr)
         self.stop_training = False
 
+
+class NoOptimizerTrainer:
+    """Trainer stub without an optimizer attribute."""
+
+
+def _lr(trainer):
+    """Learning rate of the first parameter group of a trainer."""
+    return trainer.optimizer.param_groups[0]['lr']
+
+
+def _run_epochs(callback, values, monitor='val_loss', start_epoch=0):
+    """Call ``on_epoch_end`` with one monitored value per epoch and return the logs."""
+    all_logs = []
+    for index, value in enumerate(values):
+        logs = {monitor: value}
+        callback.on_epoch_end(start_epoch + index, logs=logs)
+        all_logs.append(logs)
+    return all_logs
+
 #########################################################################################################
-# Scheduler tests
+# Optimizer helpers
 
 
-class TestLrSchedulers(unittest.TestCase):
-    """Learning-rate schedulers test suite."""
-    def test_set_optimizer_lr_fallback(self):
-        """Test optimizer lr fallback setter."""
-        class LegacyOptimizer:
-            """Legacy optimizer with only lr attribute."""
-            def __init__(self, lr=0.1):
-                """Init."""
-                self.lr = tf.Variable(lr, dtype=tf.float32)
+class TestOptimizerHelpers(unittest.TestCase):
+    """Tests of the optimizer learning rate helpers."""
 
-        opt = LegacyOptimizer()
-        lrs._set_optimizer_lr(opt, 0.05)
-        self.assertAlmostEqual(float(lrs._get_optimizer_lr(opt)), 0.05)
+    def test_get_and_set_lr(self):
+        """The helpers read and write ``param_groups[*]['lr']``."""
+        optimizer = DummyOptimizer(0.1, num_groups=3)
+        self.assertEqual(lrs._get_optimizer_lr(optimizer), 0.1)
+        lrs._set_optimizer_lr(optimizer, 0.05)
+        self.assertEqual([group['lr'] for group in optimizer.param_groups], [0.05, 0.05, 0.05])
+        self.assertIsInstance(lrs._get_optimizer_lr(optimizer), float)
 
-    def test_annealers(self):
-        """Test Annealers."""
-        exp = lrs.ExponentialDecayAnnealer(start=0.1, end=0.01, roll_off_step=1, steps=5)
-        val1 = exp.step()
-        self.assertLess(val1, 0.1)
-        pl = lrs.PowerLawDecayAnnealer(start=0.1, end=0.01, power=2, steps=5)
-        val2 = pl.step()
-        val3 = pl.step()
-        self.assertGreater(val2, 0.0)
-        self.assertGreater(val3, 0.0)
-        step = lrs.StepDecayAnnealer(start=0.1, change_every=1, steps=4, steps_per_epoch=1)
-        self.assertLessEqual(step.step(), 0.1)
+    def test_set_lr_converts_to_float(self):
+        """Learning rates are stored as python floats."""
+        optimizer = DummyOptimizer()
+        lrs._set_optimizer_lr(optimizer, np.float32(0.25))
+        self.assertIs(type(optimizer.param_groups[0]['lr']), float)
+
+    def test_missing_optimizer_raises_attribute_error(self):
+        """A missing optimizer raises AttributeError (tolerated by the schedulers)."""
+        with self.assertRaises(AttributeError):
+            lrs._get_optimizer_lr(None)
+        with self.assertRaises(AttributeError):
+            lrs._set_optimizer_lr(None, 0.1)
+
+    def test_schedulers_are_callbacks(self):
+        """All schedulers are training callbacks attached with ``set_trainer``."""
+        callbacks = [
+            lrs.ExponentialDecayScheduler(0.1, 0.01, 1, 10),
+            lrs.PowerLawDecayScheduler(0.1, 0.01, 2, 10),
+            lrs.StepDecayScheduler(boundaries=[1], values=[0.1]),
+            lrs.LRAdaptLossSlopeEarlyStop(),
+            lrs.LRSeesawAdaptLossSlopeEarlyStop(),
+        ]
+        trainer = DummyTrainer()
+        for callback in callbacks:
+            self.assertIsInstance(callback, training.Callback)
+            self.assertIsNone(callback.trainer)
+            callback.set_trainer(trainer)
+            self.assertIs(callback.trainer, trainer)
+
+#########################################################################################################
+# Annealers
+
+
+class TestAnnealers(unittest.TestCase):
+    """Tests of the learning rate annealers."""
+
+    def test_exponential_annealer(self):
+        """Exponential decay reaches half the start at ``roll_off_step`` and ``end`` at ``steps``."""
+        annealer = lrs.ExponentialDecayAnnealer(start=0.1, end=0.01, roll_off_step=2, steps=5)
+        values = [annealer.step() for _ in range(5)]
+        self.assertAlmostEqual(values[1], 0.05)
+        self.assertAlmostEqual(values[-1], 0.01)
+        self.assertTrue(np.all(np.diff(values) < 0.0))
+        self.assertEqual(annealer.n, 5)
+
+    def test_power_law_annealer(self):
+        """Power law decay reaches ``end`` at ``steps``."""
+        annealer = lrs.PowerLawDecayAnnealer(start=0.1, end=0.01, power=2, steps=5)
+        values = [annealer.step() for _ in range(5)]
+        self.assertTrue(np.all(np.array(values) > 0.0))
+        self.assertTrue(np.all(np.diff(values) < 0.0))
+        self.assertAlmostEqual(values[-1], 0.01)
+
+    def test_step_annealer_change_every(self):
+        """Step decay divides the learning rate by ten at each boundary."""
+        annealer = lrs.StepDecayAnnealer(start=0.1, change_every=1, steps=4, steps_per_epoch=1)
+        self.assertEqual(annealer.boundaries, [1, 2, 3])
+        np.testing.assert_allclose(annealer.values, [0.1, 0.01, 0.001, 0.0001])
+        values = [annealer.step() for _ in range(4)]
+        np.testing.assert_allclose(values, [0.01, 0.001, 0.0001, 0.0001])
+
+    def test_step_annealer_boundaries(self):
+        """Explicit boundaries are counted in epochs of ``steps_per_epoch`` steps."""
+        annealer = lrs.StepDecayAnnealer(steps_per_epoch=2, boundaries=[1, 2], values=[0.3, 0.1])
+        self.assertEqual(annealer.start, 0.3)
+        values = [annealer.step() for _ in range(5)]
+        self.assertEqual(values, [0.3, 0.1, 0.1, 0.1, 0.1])
+        annealer = lrs.StepDecayAnnealer(start=0.5, boundaries=[1], values=[0.4])
+        self.assertEqual(annealer.start, 0.5)
+        self.assertEqual(annealer.steps_per_epoch, 1)
+
+#########################################################################################################
+# Per-batch schedulers
+
+
+class TestBatchSchedulers(unittest.TestCase):
+    """Tests of the schedulers acting on every batch."""
+
+    def _check_batch_scheduler(self, callback, annealer_copy, num_steps=4):
+        """Drive the per-batch hooks and compare with the annealer sequence."""
+        trainer = DummyTrainer(lr=123.0)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        self.assertEqual(callback.step, 0)
+        self.assertEqual(_lr(trainer), annealer_copy.start)
+        expected = [annealer_copy.start]
+        for batch in range(num_steps):
+            callback.on_train_batch_begin(batch)
+            callback.on_train_batch_end(batch)
+            expected.append(annealer_copy.step())
+            self.assertAlmostEqual(_lr(trainer), expected[-1])
+        self.assertEqual(callback.step, num_steps)
+        np.testing.assert_allclose(callback.lrs, expected[:-1])
+        self.assertEqual(callback.get_lr(), _lr(trainer))
+
+    def _check_missing_optimizer(self, callback):
+        """Hooks do nothing without an optimizer."""
+        self.assertIsNone(callback.get_lr())
+        callback.set_trainer(NoOptimizerTrainer())
+        callback.on_train_begin()
+        callback.on_train_batch_begin(0)
+        callback.on_train_batch_end(0)
+        self.assertIsNone(callback.get_lr())
+        self.assertEqual(callback.lrs, [None])
+        callback.set_lr(0.05)
 
     def test_exponential_scheduler(self):
-        """Test Exponential scheduler."""
-        model = DummyModel()
-        cb = lrs.ExponentialDecayScheduler(lr_max=0.1, lr_min=0.01, roll_off_step=1, steps=10)
-        cb.set_model(model)
-        cb.on_train_begin()
-        cb.on_train_batch_begin(batch=0)
-        cb.on_train_batch_end(batch=0)
-        self.assertTrue(lrs._get_optimizer_lr(model.optimizer) <= 0.1)
-        # missing optimizer branch
-        cb_no_opt = lrs.ExponentialDecayScheduler(lr_max=0.1, lr_min=0.01, roll_off_step=1, steps=10)
-        cb_no_opt.set_model(type("NoOpt", (), {})())
-        self.assertIsNone(cb_no_opt.get_lr())
-        cb_no_opt.set_lr(0.05)
+        """Exponential decay scheduler follows its annealer."""
+        callback = lrs.ExponentialDecayScheduler(lr_max=0.1, lr_min=0.01, roll_off_step=2, steps=10)
+        self._check_batch_scheduler(callback, lrs.ExponentialDecayAnnealer(0.1, 0.01, 2, 10))
+        self._check_missing_optimizer(lrs.ExponentialDecayScheduler(0.1, 0.01, 2, 10))
 
-    def test_powerlaw_scheduler(self):
-        """Test Powerlaw scheduler."""
-        model = DummyModel()
-        cb = lrs.PowerLawDecayScheduler(lr_max=0.1, lr_min=0.01, power=2, steps=10)
-        cb.set_model(model)
-        cb.on_train_begin()
-        cb.on_train_batch_begin(batch=0)
-        initial_lr = lrs._get_optimizer_lr(model.optimizer)
-        for _ in range(5):
-            cb.on_train_batch_end(batch=0)
-        self.assertLess(lrs._get_optimizer_lr(model.optimizer), initial_lr)
-        # missing optimizer branch
-        cb_no_opt = lrs.PowerLawDecayScheduler(lr_max=0.1, lr_min=0.01, power=2, steps=10)
-        cb_no_opt.set_model(type("NoOpt", (), {})())
-        self.assertIsNone(cb_no_opt.get_lr())
-        cb_no_opt.set_lr(0.05)
+    def test_power_law_scheduler(self):
+        """Power law decay scheduler follows its annealer."""
+        callback = lrs.PowerLawDecayScheduler(lr_max=0.1, lr_min=0.01, power=2, steps=10)
+        self._check_batch_scheduler(callback, lrs.PowerLawDecayAnnealer(0.1, 0.01, 2, 10))
+        self._check_missing_optimizer(lrs.PowerLawDecayScheduler(0.1, 0.01, 2, 10))
 
     def test_step_scheduler(self):
-        """Test Step scheduler."""
-        model = DummyModel()
-        cb = lrs.StepDecayScheduler(lr_max=0.1, change_every=1, steps=5, steps_per_epoch=1)
-        cb.set_model(model)
-        cb.on_train_begin()
-        cb.on_train_batch_end(batch=0)
-        self.assertTrue(lrs._get_optimizer_lr(model.optimizer) <= 0.1)
-        # boundaries/values override
-        cb = lrs.StepDecayScheduler(boundaries=[1, 2], values=[0.1, 0.05])
-        cb.set_model(model)
-        cb.on_train_begin()
-        cb.on_train_batch_end(batch=0)
-        self.assertTrue(lrs._get_optimizer_lr(model.optimizer) <= 0.1)
-        # start inferred from values branch
-        ann = lrs.StepDecayAnnealer(start=None, change_every=None, steps=None, steps_per_epoch=1, boundaries=[1], values=[0.2])
-        self.assertEqual(ann.start, 0.2)
-        # missing optimizer branch
-        cb_no_opt = lrs.StepDecayScheduler(boundaries=[1], values=[0.1])
-        cb_no_opt.set_model(type("NoOpt", (), {})())
-        cb_no_opt.on_train_begin()
-        cb_no_opt.on_train_batch_begin(batch=0)
-        cb_no_opt.on_train_batch_end(batch=0)
-        self.assertIsNone(cb_no_opt.get_lr())
-        cb_no_opt.set_lr(0.05)
-        # step decay init paths
-        ann2 = lrs.StepDecayAnnealer(start=None, change_every=None, steps=None, steps_per_epoch=2, boundaries=[1, 2], values=[0.3, 0.1])
-        self.assertEqual(ann2.start, 0.3)
-        ann2.step()
-        ann2.step()
-        ann2.step()
-        ann3 = lrs.StepDecayAnnealer(start=0.5, change_every=None, steps=None, steps_per_epoch=1, boundaries=[1], values=[0.4])
-        self.assertEqual(ann3.start, 0.5)
+        """Step decay scheduler follows its annealer, with both constructors."""
+        callback = lrs.StepDecayScheduler(lr_max=0.1, change_every=2, steps=6, steps_per_epoch=1)
+        self._check_batch_scheduler(callback, lrs.StepDecayAnnealer(0.1, 2, 6, 1))
+        callback = lrs.StepDecayScheduler(boundaries=[1, 2], values=[0.1, 0.05])
+        self._check_batch_scheduler(callback, lrs.StepDecayAnnealer(boundaries=[1, 2], values=[0.1, 0.05]))
+        self._check_missing_optimizer(lrs.StepDecayScheduler(boundaries=[1], values=[0.1]))
 
-    def test_adapt_loss_schedulers(self):
-        """Test Adapt loss schedulers."""
-        model = DummyModel()
-        cb1 = lrs.LRAdaptLossSlopeEarlyStop(monitor="val_loss", factor=0.5, patience=2, cooldown=1, min_lr=1e-6, verbose=0, threshold=-1e-3)
-        cb1.set_model(model)
-        cb1.on_train_begin()
-        cb1.cooldown_counter = 1
-        cb1.on_epoch_end(epoch=0, logs={"val_loss": 1.0})
-        cb1.on_epoch_end(epoch=0, logs={"other": 1.0})
-        cb1.on_epoch_end(epoch=1, logs={"val_loss": 1.1})
-        # slope decreasing branch (no lr change)
-        cb1.on_epoch_end(epoch=2, logs={"val_loss": 0.9})
-        # min_lr stop_training branch
-        low_lr_model = DummyModel()
-        low_lr_model.optimizer.learning_rate.assign(1e-6)
-        cb_stop = lrs.LRAdaptLossSlopeEarlyStop(monitor="val_loss", factor=0.5, patience=2, cooldown=0, min_lr=1e-6, verbose=0, threshold=-1e-6)
-        cb_stop.set_model(low_lr_model)
-        cb_stop.on_train_begin()
-        cb_stop.on_epoch_end(epoch=0, logs={"val_loss": 2.0})
-        cb_stop.on_epoch_end(epoch=1, logs={"val_loss": 3.0})
-        self.assertTrue(low_lr_model.stop_training)
-        # factor >= 1 error
+    def test_train_begin_resets_step(self):
+        """A new training restarts the step counter and the learning rate."""
+        trainer = DummyTrainer()
+        callback = lrs.PowerLawDecayScheduler(lr_max=0.1, lr_min=0.01, power=1, steps=10)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        callback.on_train_batch_end(0)
+        self.assertLess(_lr(trainer), 0.1)
+        callback.on_train_begin()
+        self.assertEqual(callback.step, 0)
+        self.assertEqual(_lr(trainer), 0.1)
+
+#########################################################################################################
+# Adaptive schedulers
+
+
+class TestLRAdaptLossSlopeEarlyStop(unittest.TestCase):
+    """Tests of :class:`LRAdaptLossSlopeEarlyStop`."""
+
+    def test_factor_validation(self):
+        """A factor >= 1 raises ValueError."""
+        with self.assertRaises(ValueError):
+            lrs.LRAdaptLossSlopeEarlyStop(factor=1.0)
         with self.assertRaises(ValueError):
             lrs.LRAdaptLossSlopeEarlyStop(factor=1.1)
 
-        cb2 = lrs.LRSeesawAdaptLossSlopeEarlyStop(monitor="val_loss", reduction_factor=0.5, increase_factor=0.001,
-                                                  patience=2, cooldown=1, min_lr=1e-6, verbose=0)
-        cb2.set_model(model)
-        cb2.on_train_begin()
-        cb2.cooldown_counter = 1
-        cb2.on_epoch_end(epoch=0, logs={"val_loss": 1.0})
-        cb2.on_epoch_end(epoch=1, logs={"val_loss": 1.1})
-        cb2.on_epoch_end(epoch=2, logs={"val_loss": 1.2})
-        # missing metric branch
-        cb2.on_epoch_end(epoch=3, logs={"other": 1.0})
-        # reduction_factor validation
+    def test_defaults_and_extra_kwargs(self):
+        """Defaults, and unknown keyword arguments are accepted."""
+        callback = lrs.LRAdaptLossSlopeEarlyStop(some_other_option=3)
+        self.assertEqual(callback.monitor, 'val_loss')
+        self.assertAlmostEqual(callback.factor, 1. / np.sqrt(10.))
+        self.assertEqual((callback.patience, callback.cooldown), (25, 10))
+        self.assertEqual(callback.min_lr, 1e-5)
+
+    def test_reduction_on_increasing_loss(self):
+        """An increasing monitored loss reduces the learning rate after ``patience`` epochs."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, min_lr=1e-6)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        logs = _run_epochs(callback, [1.0])
+        self.assertEqual(_lr(trainer), 0.01)
+        self.assertEqual(logs[0]['lr'], 0.01)
+        _run_epochs(callback, [2.0], start_epoch=1)
+        self.assertAlmostEqual(_lr(trainer), 0.005)
+        self.assertEqual(callback.wait, 0)
+        self.assertEqual(callback.last_losses, [])
+        self.assertFalse(trainer.stop_training)
+
+    def test_no_reduction_on_decreasing_loss(self):
+        """A decreasing monitored loss keeps the learning rate."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, min_lr=1e-6)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        _run_epochs(callback, [2.0, 1.5, 1.4, 1.0])
+        self.assertEqual(_lr(trainer), 0.01)
+        self.assertEqual(callback.wait, 4)
+
+    def test_threshold(self):
+        """Only slopes above ``threshold`` trigger a reduction."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, threshold=1.0)
+        callback.set_trainer(trainer)
+        _run_epochs(callback, [1.0, 1.5])
+        self.assertEqual(_lr(trainer), 0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, threshold=-1.0)
+        callback.set_trainer(trainer)
+        _run_epochs(callback, [2.0, 1.5])
+        self.assertAlmostEqual(_lr(trainer), 0.005)
+
+    def test_reduction_clipped_at_min_lr(self):
+        """The reduced learning rate never goes below ``min_lr``."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.1, patience=2, cooldown=0, min_lr=0.004)
+        callback.set_trainer(trainer)
+        _run_epochs(callback, [1.0, 2.0])
+        self.assertAlmostEqual(_lr(trainer), 0.004)
+
+    def test_stop_training_at_min_lr(self):
+        """At ``min_lr`` a stalled loss stops the training."""
+        trainer = DummyTrainer(lr=1e-6)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, min_lr=1e-6)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        _run_epochs(callback, [2.0, 3.0])
+        self.assertTrue(trainer.stop_training)
+        self.assertEqual(_lr(trainer), 1e-6)
+
+    def test_cooldown(self):
+        """After a reduction the loss is not monitored for ``cooldown`` epochs."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=2, min_lr=1e-6)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        _run_epochs(callback, [1.0, 2.0])
+        self.assertAlmostEqual(_lr(trainer), 0.005)
+        self.assertEqual(callback.cooldown_counter, 2)
+        _run_epochs(callback, [3.0, 4.0], start_epoch=2)
+        self.assertEqual(callback.cooldown_counter, 0)
+        self.assertEqual(callback.last_losses, [])
+        self.assertAlmostEqual(_lr(trainer), 0.005)
+        _run_epochs(callback, [5.0, 6.0], start_epoch=4)
+        self.assertAlmostEqual(_lr(trainer), 0.0025)
+
+    def test_train_begin_resets_state(self):
+        """``on_train_begin`` resets counters and loss history."""
+        callback = lrs.LRAdaptLossSlopeEarlyStop(patience=5)
+        callback.set_trainer(DummyTrainer())
+        _run_epochs(callback, [1.0, 2.0])
+        callback.cooldown_counter = 3
+        callback.on_train_begin()
+        self.assertEqual((callback.cooldown_counter, callback.wait, callback.last_losses), (0, 0, []))
+
+    def test_missing_monitor_warning(self):
+        """A missing monitored metric logs a warning and changes nothing."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(monitor='val_loss', patience=1)
+        callback.set_trainer(trainer)
+        logs = {'loss': 1.0}
+        with self.assertLogs(level='WARNING') as captured:
+            callback.on_epoch_end(0, logs=logs)
+        self.assertIn('val_loss', captured.output[0])
+        self.assertEqual(logs['lr'], 0.01)
+        self.assertEqual(callback.wait, 0)
+
+    def test_custom_monitor(self):
+        """The monitored key can be changed."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(monitor='loss', factor=0.5, patience=2, cooldown=0)
+        callback.set_trainer(trainer)
+        _run_epochs(callback, [1.0, 2.0], monitor='loss')
+        self.assertAlmostEqual(_lr(trainer), 0.005)
+
+    def test_verbose_message(self):
+        """With ``verbose > 0`` the reduction is printed."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, verbose=1)
+        callback.set_trainer(trainer)
+        with patch('builtins.print') as mock_print:
+            _run_epochs(callback, [1.0, 2.0])
+        self.assertEqual(mock_print.call_count, 1)
+        message = mock_print.call_args[0][0]
+        self.assertIn('Epoch 2', message)
+        self.assertIn('reducing learning rate to 0.005', message)
+
+    def test_silent_reduction(self):
+        """With ``verbose=0`` nothing is printed."""
+        callback = lrs.LRAdaptLossSlopeEarlyStop(factor=0.5, patience=2, cooldown=0, verbose=0)
+        callback.set_trainer(DummyTrainer())
+        with patch('builtins.print') as mock_print:
+            _run_epochs(callback, [1.0, 2.0])
+        mock_print.assert_not_called()
+
+
+class TestLRSeesawAdaptLossSlopeEarlyStop(unittest.TestCase):
+    """Tests of :class:`LRSeesawAdaptLossSlopeEarlyStop`."""
+
+    def test_factor_validation(self):
+        """A reduction factor >= 1 raises ValueError."""
+        with self.assertRaises(ValueError):
+            lrs.LRSeesawAdaptLossSlopeEarlyStop(reduction_factor=1.0)
         with self.assertRaises(ValueError):
             lrs.LRSeesawAdaptLossSlopeEarlyStop(reduction_factor=1.1)
-        # stop_training when at min_lr
-        min_model = DummyModel()
-        min_model.optimizer.learning_rate.assign(1e-6)
-        cb_stop2 = lrs.LRSeesawAdaptLossSlopeEarlyStop(monitor="val_loss", reduction_factor=0.5, increase_factor=0.0,
-                                                       patience=2, cooldown=0, min_lr=1e-6, verbose=0)
-        cb_stop2.set_model(min_model)
-        cb_stop2.on_train_begin()
-        cb_stop2.on_epoch_end(epoch=0, logs={"val_loss": 2.0})
-        cb_stop2.on_epoch_end(epoch=1, logs={"val_loss": 3.0})
-        self.assertTrue(min_model.stop_training)
 
-    def test_adapt_loss_reduction_verbose_and_no_reduction_branch(self):
-        """Test Adapt loss reduction verbose and no reduction branch."""
-        model = DummyModel()
-        # explicit reduction path with verbose
-        cb = lrs.LRAdaptLossSlopeEarlyStop(monitor="val_loss", factor=0.5, patience=2, cooldown=0, min_lr=1e-6, verbose=1, threshold=-1e-6)
-        cb.set_model(model)
-        cb.on_train_begin()
-        cb.on_epoch_end(epoch=0, logs={"val_loss": 1.0})
-        cb.on_epoch_end(epoch=1, logs={"val_loss": 2.0})
-        cb.on_epoch_end(epoch=2, logs={"val_loss": 2.5})
-        # branch where slope does not trigger reduction
-        cb_no_reduce = lrs.LRAdaptLossSlopeEarlyStop(monitor="val_loss", factor=0.5, patience=2, cooldown=0, min_lr=1e-6, verbose=0, threshold=1.0)
-        cb_no_reduce.set_model(model)
-        cb_no_reduce.on_train_begin()
-        cb_no_reduce.on_epoch_end(epoch=0, logs={"val_loss": 2.0})
-        cb_no_reduce.on_epoch_end(epoch=1, logs={"val_loss": 1.5})
-        cb_no_reduce.on_epoch_end(epoch=2, logs={"val_loss": 1.4})
+    def test_increase_on_improvement(self):
+        """Every monitored epoch increases the learning rate by ``1 + increase_factor``."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRSeesawAdaptLossSlopeEarlyStop(increase_factor=0.1, patience=10)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        logs = _run_epochs(callback, [3.0, 2.0, 1.0])
+        self.assertAlmostEqual(_lr(trainer), 0.01 * 1.1**3)
+        self.assertAlmostEqual(logs[1]['lr'], 0.01 * 1.1)
 
-        silent_model = DummyModel()
-        cb_silent_reduce = lrs.LRAdaptLossSlopeEarlyStop(monitor="val_loss", factor=0.5, patience=2, cooldown=0, min_lr=1e-6, verbose=0, threshold=-1.0)
-        cb_silent_reduce.set_model(silent_model)
-        cb_silent_reduce.on_train_begin()
-        cb_silent_reduce.on_epoch_end(epoch=0, logs={"val_loss": 1.0})
-        cb_silent_reduce.on_epoch_end(epoch=1, logs={"val_loss": 2.0})
-        cb_silent_reduce.on_epoch_end(epoch=2, logs={"val_loss": 3.0})
+    def test_reduction_on_increasing_loss(self):
+        """An increasing loss reduces the (increased) learning rate."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRSeesawAdaptLossSlopeEarlyStop(reduction_factor=0.5, increase_factor=0.1,
+                                                       patience=2, cooldown=1, min_lr=1e-6)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        _run_epochs(callback, [1.0, 2.0])
+        self.assertAlmostEqual(_lr(trainer), 0.01 * 1.1**2 * 0.5)
+        self.assertEqual(callback.cooldown_counter, 1)
+        _run_epochs(callback, [3.0], start_epoch=2)
+        self.assertEqual(callback.cooldown_counter, 0)
+        self.assertEqual(callback.last_losses, [])
 
-        # Seesaw: cover no reduction due to low slope and verbose print path
-        model2 = DummyModel()
-        cb_seesaw = lrs.LRSeesawAdaptLossSlopeEarlyStop(monitor="val_loss", reduction_factor=0.5, increase_factor=0.0,
-                                                        patience=2, cooldown=0, min_lr=1e-6, verbose=1, threshold=1.0)
-        cb_seesaw.set_model(model2)
-        cb_seesaw.on_train_begin()
-        cb_seesaw.on_epoch_end(epoch=0, logs={"val_loss": 2.0})
-        cb_seesaw.on_epoch_end(epoch=1, logs={"val_loss": 1.5})
-        cb_seesaw.on_epoch_end(epoch=2, logs={"val_loss": 1.4})
-        # reduction with verbose
-        cb_seesaw_reduce = lrs.LRSeesawAdaptLossSlopeEarlyStop(monitor="val_loss", reduction_factor=0.5, increase_factor=0.0,
-                                                               patience=2, cooldown=0, min_lr=1e-6, verbose=1, threshold=-1.0)
-        cb_seesaw_reduce.set_model(model2)
-        cb_seesaw_reduce.on_train_begin()
-        cb_seesaw_reduce.on_epoch_end(epoch=0, logs={"val_loss": 1.0})
-        cb_seesaw_reduce.on_epoch_end(epoch=1, logs={"val_loss": 2.0})
-        cb_seesaw_reduce.on_epoch_end(epoch=2, logs={"val_loss": 2.5})
-        # additional verbose reduction coverage
-        verbose_model = DummyModel()
-        verbose_cb = lrs.LRAdaptLossSlopeEarlyStop(monitor="val_loss", factor=0.5, patience=2, cooldown=0, min_lr=1e-6, verbose=2, threshold=-1.0)
-        verbose_cb.set_model(verbose_model)
-        verbose_cb.on_train_begin()
-        with patch("tensorflow.print", lambda *args, **kwargs: None):
-            verbose_cb.on_epoch_end(epoch=0, logs={"val_loss": 1.0})
-            verbose_cb.on_epoch_end(epoch=1, logs={"val_loss": 2.0})
-            verbose_cb.on_epoch_end(epoch=2, logs={"val_loss": 3.0})
-        self.assertLess(lrs._get_optimizer_lr(verbose_model.optimizer), 0.01)
+    def test_no_reduction_with_threshold(self):
+        """Slopes below ``threshold`` only increase the learning rate."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRSeesawAdaptLossSlopeEarlyStop(reduction_factor=0.5, increase_factor=0.0,
+                                                       patience=2, cooldown=0, threshold=1.0)
+        callback.set_trainer(trainer)
+        _run_epochs(callback, [2.0, 1.5, 1.4])
+        self.assertEqual(_lr(trainer), 0.01)
+
+    def test_stop_training_at_min_lr(self):
+        """At ``min_lr`` a stalled loss stops the training."""
+        trainer = DummyTrainer(lr=1e-6)
+        callback = lrs.LRSeesawAdaptLossSlopeEarlyStop(reduction_factor=0.5, increase_factor=0.0,
+                                                       patience=2, cooldown=0, min_lr=1e-6)
+        callback.set_trainer(trainer)
+        callback.on_train_begin()
+        _run_epochs(callback, [2.0, 3.0])
+        self.assertTrue(trainer.stop_training)
+
+    def test_missing_monitor_warning(self):
+        """A missing monitored metric logs a warning and leaves the learning rate unchanged."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRSeesawAdaptLossSlopeEarlyStop(increase_factor=0.5)
+        callback.set_trainer(trainer)
+        with self.assertLogs(level='WARNING'):
+            callback.on_epoch_end(0, logs={'other': 1.0})
+        self.assertEqual(_lr(trainer), 0.01)
+
+    def test_verbose_message(self):
+        """With ``verbose > 0`` the reduction is printed."""
+        trainer = DummyTrainer(lr=0.01)
+        callback = lrs.LRSeesawAdaptLossSlopeEarlyStop(reduction_factor=0.5, increase_factor=0.0,
+                                                       patience=2, cooldown=0, verbose=2)
+        callback.set_trainer(trainer)
+        with patch('builtins.print') as mock_print:
+            _run_epochs(callback, [1.0, 2.0])
+        self.assertEqual(mock_print.call_count, 1)
+        self.assertIn('reducing learning rate', mock_print.call_args[0][0])
+        self.assertAlmostEqual(_lr(trainer), 0.005)
 
 #########################################################################################################
 # Script entry point

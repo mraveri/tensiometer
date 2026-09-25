@@ -1,139 +1,222 @@
-"""Additional tests for fixed bijectors."""
+"""Additional numerical tests for the fixed (prior) bijectors."""
 
 #########################################################################################################
 # Imports
 
+import math
 import unittest
 
 import numpy as np
-import tensorflow as tf
-import tensorflow_probability as tfp
+import torch
+from scipy import stats
 
+from tensiometer.synthetic_probability import bijectors as bj
 from tensiometer.synthetic_probability import fixed_bijectors as fb
+from tensiometer.synthetic_probability import tensor_utilities as tu
 
 #########################################################################################################
-# TensorFlow Probability aliases
+# Helper functions
 
-tfb = tfp.bijectors
+
+def _tolerance():
+    """Absolute and relative tolerance for the active precision.
+
+    :returns: 1e-10 in float64, 1e-5 in float32.
+    """
+    if tu.get_precision() == torch.float64:
+        return 1e-10
+    return 1e-5
+
+
+def _assert_close(actual, expected, tolerance=None):
+    """Compare two tensors or arrays on the host.
+
+    :param actual: computed value.
+    :param expected: reference value.
+    :param tolerance: absolute and relative tolerance, defaults to :func:`_tolerance`.
+    """
+    if tolerance is None:
+        tolerance = _tolerance()
+    np.testing.assert_allclose(tu.to_numpy(actual), tu.to_numpy(expected), rtol=tolerance, atol=tolerance)
 
 #########################################################################################################
-# Test cases
+# One dimensional priors
 
 
-class TestFixedBijectorsAdditional(unittest.TestCase):
-    """Fixed bijectors additional test suite."""
-    def test_uniform_prior_chain(self):
-        """Test uniform prior bijector."""
-        bij = fb.uniform_prior(0.0, 1.0)
-        x = tf.constant([0.25, 0.75])
-        y = bij.forward(x)
-        self.assertEqual(y.shape, x.shape)
-        self.assertTrue(tf.reduce_all(tf.math.is_finite(bij.forward_log_det_jacobian(x, event_ndims=0))))
+class TestOneDimensionalPriors(unittest.TestCase):
+    """Uniform and normal prior bijectors."""
 
-    def test_normal_bijector(self):
-        """Test normal bijector construction."""
-        bij = fb.normal(mean=2.0, sigma=0.5)
-        x = tf.constant([0.0, 1.0])
-        y = bij.forward(x)
-        self.assertEqual(y.shape, x.shape)
+    def test_uniform_prior_maps_normal_samples_to_uniform(self):
+        """Test that uniform_prior maps N(0, 1) samples into [a, b] with a uniform distribution."""
+        lower, upper = -1.5, 4.
+        bijector = fb.uniform_prior(lower, upper)
+        self.assertIsInstance(bijector, bj.Chain)
+        torch.manual_seed(0)
+        samples = torch.randn(5000, 1, dtype=tu.get_precision())
+        mapped = bijector.forward(samples)
+        self.assertEqual(mapped.dtype, tu.get_precision())
+        mapped = tu.to_numpy(mapped)[:, 0]
+        self.assertTrue(np.all(mapped >= lower))
+        self.assertTrue(np.all(mapped <= upper))
+        result = stats.kstest(mapped, stats.uniform(loc=lower, scale=upper - lower).cdf)
+        self.assertGreater(result.pvalue, 0.01)
 
-    def test_multivariate_normal_bijector(self):
-        """Test multivariate normal bijector."""
-        mean = np.zeros(2, dtype=np.float32)
-        cov = np.eye(2, dtype=np.float32)
-        dist = tfp.distributions.MultivariateNormalTriL(
-            loc=mean, scale_tril=tf.linalg.cholesky(cov)
-        )
-        bij = dist.bijector
-        x = tf.constant([[0.0, 1.0]], dtype=tf.float32)
-        y = bij.forward(x)
-        self.assertEqual(y.shape, x.shape)
+    def test_uniform_prior_values_and_log_det(self):
+        """Test uniform_prior against the normal CDF and its round trip."""
+        lower, upper = 0., 2.
+        bijector = fb.uniform_prior(lower, upper)
+        x = np.linspace(-2., 2., 9)[:, None]
+        expected = lower + (upper - lower) * stats.norm.cdf(x)
+        _assert_close(bijector.forward(x), expected)
+        _assert_close(bijector.inverse(expected), x, tolerance=max(_tolerance(), 1e-4))
+        _assert_close(bijector.forward_log_det_jacobian(x, event_ndims=0),
+                      np.log(upper - lower) + stats.norm.logpdf(x))
+        _assert_close(bijector.forward_log_det_jacobian(x, event_ndims=1),
+                      np.log(upper - lower) + stats.norm.logpdf(x[:, 0]))
 
-    def test_prior_bijector_helper_uniform_and_gaussian(self):
-        """Test prior bijector helper with uniform and gaussian specs."""
+    def test_normal(self):
+        """Test that normal(mean, sigma) is the affine map mean + sigma x."""
+        bijector = fb.normal(mean=2., sigma=0.5)
+        x = np.linspace(-3., 3., 7)[:, None]
+        _assert_close(bijector.forward(x), 2. + 0.5 * x)
+        _assert_close(bijector.inverse(2. + 0.5 * x), x)
+        _assert_close(bijector.forward_log_det_jacobian(x), np.full(7, math.log(0.5)))
+
+    def test_normal_accepts_tensors(self):
+        """Test that normal and uniform_prior accept tensor arguments."""
+        x = np.array([[0.3]])
+        _assert_close(fb.normal(torch.tensor(1.), torch.tensor(2.)).forward(x), fb.normal(1., 2.).forward(x))
+        _assert_close(fb.uniform_prior(torch.tensor(0.), torch.tensor(1.)).forward(x),
+                      fb.uniform_prior(0., 1.).forward(x))
+
+#########################################################################################################
+# Multivariate normal
+
+
+class TestMultivariateNormal(unittest.TestCase):
+    """Multivariate normal bijector."""
+
+    def setUp(self):
+        """Mean and covariance of a correlated Gaussian."""
+        self.mean = np.array([0.5, -1., 2.])
+        self.covariance = np.array([[1., 0.4, -0.2], [0.4, 2., 0.3], [-0.2, 0.3, 0.5]])
+        self.bijector = fb.multivariate_normal(self.mean, self.covariance)
+
+    def test_type_and_dtype(self):
+        """Test the bijector type and the dtype of its buffers."""
+        self.assertIsInstance(self.bijector, bj.AffineTriL)
+        self.assertEqual(self.bijector.scale_tril.dtype, tu.get_precision())
+        self.assertEqual(self.bijector.shift.dtype, tu.get_precision())
+
+    def test_forward_of_zero_is_mean(self):
+        """Test that the origin maps to the mean."""
+        _assert_close(self.bijector.forward(np.zeros((1, 3))), self.mean[None, :])
+
+    def test_forward_matches_cholesky(self):
+        """Test the forward map against the numpy Cholesky factor."""
+        cholesky = np.linalg.cholesky(self.covariance)
+        x = np.random.default_rng(0).standard_normal((5, 3))
+        _assert_close(self.bijector.forward(x), x @ cholesky.T + self.mean)
+
+    def test_inverse_whitens_samples(self):
+        """Test that the inverse maps samples of the Gaussian to unit covariance."""
+        random_state = np.random.default_rng(1)
+        samples = random_state.multivariate_normal(self.mean, self.covariance, size=20000)
+        whitened = tu.to_numpy(self.bijector.inverse(samples))
+        np.testing.assert_allclose(whitened.mean(axis=0), np.zeros(3), atol=0.03)
+        np.testing.assert_allclose(np.cov(whitened.T), np.eye(3), atol=0.04)
+
+    def test_log_det_is_sum_log_diag_cholesky(self):
+        """Test fldj == sum log diag chol and ildj == -fldj."""
+        expected = np.sum(np.log(np.diag(np.linalg.cholesky(self.covariance))))
+        x = np.random.default_rng(2).standard_normal((4, 3))
+        _assert_close(self.bijector.forward_log_det_jacobian(x), np.full(4, expected))
+        _assert_close(self.bijector.inverse_log_det_jacobian(self.bijector.forward(x)), np.full(4, -expected))
+        _assert_close(expected, 0.5 * np.linalg.slogdet(self.covariance)[1])
+
+#########################################################################################################
+# Prior helper
+
+
+class TestPriorBijectorHelper(unittest.TestCase):
+    """Composite prior bijector helper."""
+
+    def test_mixed_entries(self):
+        """Test a list of uniform, Gaussian and None entries."""
         priors = [
-            {"mode": "uniform", "lower": 0.0, "upper": 1.0},
-            {"mode": "gaussian", "mean": 0.0, "scale": 1.0},
+            {'mode': 'uniform', 'lower': 0., 'upper': 1.},
+            {'mode': 'gaussian', 'mean': 1., 'scale': 2.},
             None,
         ]
-        bij = fb.prior_bijector_helper(prior_dict_list=priors, name="combo")
-        x = tf.constant([[0.1, 0.2, 0.3]], dtype=tf.float32)
-        y = bij.forward(x)
-        self.assertEqual(y.shape, x.shape)
-        self.assertEqual(bij.name, "combo")
+        bijector = fb.prior_bijector_helper(prior_dict_list=priors, name='combo')
+        self.assertIsInstance(bijector, bj.Blockwise)
+        self.assertEqual(bijector.name, 'combo')
+        self.assertEqual(bijector.block_sizes, [1, 1, 1])
+        self.assertIsInstance(bijector.bijectors[2], bj.Identity)
+        x = np.random.default_rng(3).standard_normal((6, 3))
+        expected = np.stack([stats.norm.cdf(x[:, 0]), 1. + 2. * x[:, 1], x[:, 2]], axis=-1)
+        _assert_close(bijector.forward(x), expected)
+        _assert_close(bijector.inverse(expected), x, tolerance=max(_tolerance(), 1e-4))
+        expected_log_det = stats.norm.logpdf(x[:, 0]) + math.log(2.)
+        _assert_close(bijector.forward_log_det_jacobian(x), expected_log_det)
 
-    def test_prior_bijector_helper_multivariate(self):
-        """Test prior bijector helper with multivariate inputs."""
-        loc = np.zeros(2, dtype=np.float32)
-        cov = np.eye(2, dtype=np.float32)
-        # Monkeypatch helper to return a known bijector
-        orig = fb.multivariate_normal
-        fb.multivariate_normal = lambda mean, covariance: tfp.distributions.MultivariateNormalTriL(
-            loc=mean, scale_tril=tf.linalg.cholesky(covariance)
-        ).bijector
-        bij = fb.prior_bijector_helper(loc=loc, cov=cov)
-        x = tf.constant([[0.0, 0.0]], dtype=tf.float32)
-        y = bij.forward(x)
-        self.assertEqual(y.shape, x.shape)
-        fb.multivariate_normal = orig
+    def test_all_none_entries(self):
+        """Test that None entries give the identity."""
+        bijector = fb.prior_bijector_helper(prior_dict_list=[None, None])
+        x = np.array([[0.3, -0.4]])
+        _assert_close(bijector.forward(x), x)
+        _assert_close(bijector.forward_log_det_jacobian(x), np.zeros(1), tolerance=0.)
 
-    def test_prior_bijector_helper_errors(self):
-        """Test prior bijector helper error handling."""
+    def test_multivariate(self):
+        """Test the multivariate Gaussian branch."""
+        loc = np.array([1., 2.])
+        cov = np.array([[2., 0.5], [0.5, 1.]])
+        bijector = fb.prior_bijector_helper(loc=loc, cov=cov)
+        self.assertIsInstance(bijector, bj.AffineTriL)
+        _assert_close(bijector.forward(np.zeros((1, 2))), loc[None, :])
+
+    def test_errors(self):
+        """Test prior_bijector_helper error handling."""
         with self.assertRaises(ValueError):
-            fb.prior_bijector_helper(prior_dict_list=[{"mode": "unknown"}])
+            fb.prior_bijector_helper(prior_dict_list=[{'mode': 'unknown'}])
+        with self.assertRaises(ValueError):
+            fb.prior_bijector_helper(prior_dict_list=[{'lower': 0., 'upper': 1.}])
         with self.assertRaises(ValueError):
             fb.prior_bijector_helper()
-        with self.assertRaises(AssertionError):
-            fb.prior_bijector_helper(loc=np.zeros(1, dtype=np.float32))
+        with self.assertRaises(ValueError):
+            fb.prior_bijector_helper(loc=np.zeros(2))
 
-    def test_prior_bijector_helper_missing_mode_entry(self):
-        """Test prior bijector helper with missing mode entry."""
-        priors = [{"lower": 0.0, "upper": 1.0}]
-        with self.assertRaises(Exception):
-            fb.prior_bijector_helper(prior_dict_list=priors)
+#########################################################################################################
+# Modulus bijector
 
-    def test_mod1d_properties(self):
-        """Test Mod1D bijector properties."""
-        bij = fb.Mod1D(minval=-1.0, maxval=1.0, dtype=tf.float32)
-        x = tf.constant([-2.5, -0.5, 0.5, 1.5], dtype=tf.float32)
-        y = bij.forward(x)
-        self.assertTrue(tf.reduce_all(y <= 1.0))
-        self.assertTrue(tf.reduce_all(y >= -1.0))
-        inv = bij.inverse(y)
-        self.assertTrue(tf.reduce_all(tf.math.is_finite(inv)))
-        fldj = bij.forward_log_det_jacobian(x, event_ndims=0)
-        ildj = bij.inverse_log_det_jacobian(y, event_ndims=0)
-        self.assertTrue(tf.reduce_all(fldj == 0.0))
-        self.assertTrue(tf.reduce_all(ildj == 0.0))
-        self.assertTrue(bij._is_increasing())
 
-        direct_inv = bij._inverse(y)
-        direct_ildj = bij._inverse_log_det_jacobian(y)
-        self.assertTrue(tf.reduce_all(tf.math.is_finite(direct_inv)))
-        self.assertTrue(tf.reduce_all(direct_ildj == 0.0))
+class TestMod1D(unittest.TestCase):
+    """Modulus bijector."""
 
-    def test_multivariate_normal_helper(self):
-        """Test multivariate_normal helper."""
-        mean = np.array([0.0, 1.0], dtype=np.float32)
-        cov = np.array([[1.0, 0.1], [0.1, 2.0]], dtype=np.float32)
+    def test_wraps_into_range(self):
+        """Test that Mod1D wraps values into [minval, maxval)."""
+        bijector = fb.Mod1D(minval=-1., maxval=1.)
+        x = np.array([-2.5, -1., -0.5, 0.5, 1.5, 3.25])
+        y = tu.to_numpy(bijector.forward(x))
+        _assert_close(y, np.array([-0.5, -1., -0.5, 0.5, -0.5, -0.75]))
+        self.assertTrue(np.all(y >= -1.))
+        self.assertTrue(np.all(y < 1.))
 
-        class DummyMVN:
-            """Dummy MVN test suite."""
-            def __init__(self, mean=None, scale_tril=None, **kwargs):
-                """Init."""
-                self.args = {"mean": mean, "scale_tril": scale_tril}
-                self.bijector = tfb.Identity()
+    def test_periodicity_and_inverse(self):
+        """Test periodicity, idempotence and the inverse."""
+        bijector = fb.Mod1D(minval=0., maxval=2. * math.pi, name='angle')
+        self.assertEqual(bijector.name, 'angle')
+        x = np.random.default_rng(4).uniform(0., 2. * math.pi, 20)
+        _assert_close(bijector.forward(x + 4. * math.pi), x, tolerance=max(_tolerance(), 1e-5))
+        _assert_close(bijector.forward(bijector.forward(x)), bijector.forward(x), tolerance=0.)
+        _assert_close(bijector.inverse(x - 2. * math.pi), x, tolerance=max(_tolerance(), 1e-5))
 
-        orig = fb.tfd.MultivariateNormalTriL
-        fb.tfd.MultivariateNormalTriL = DummyMVN
-        try:
-            bij = fb.multivariate_normal(mean, cov)
-        finally:
-            fb.tfd.MultivariateNormalTriL = orig
-
-        x = tf.constant([[0.5, -0.5]], dtype=tf.float32)
-        y = bij.forward(x)
-        self.assertEqual(y.shape, x.shape)
+    def test_zero_log_det(self):
+        """Test that the log determinants vanish."""
+        bijector = fb.Mod1D(minval=-1., maxval=1.)
+        x = np.array([[-2.5, -0.5], [0.5, 1.5]])
+        _assert_close(bijector.forward_log_det_jacobian(x, event_ndims=0), np.zeros((2, 2)), tolerance=0.)
+        _assert_close(bijector.inverse_log_det_jacobian(x, event_ndims=1), np.zeros(2), tolerance=0.)
 
 #########################################################################################################
 # Script entry point

@@ -22,13 +22,13 @@ from ..utilities import stats_utilities as stutils
 def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
                                     indexes_1=None, indexes_2=None,
                                     periodic_indexes=None):
-    """
+    r"""
     Compute the parameter differences of two input weighted samples.
     The parameters of the difference samples are related to the
-    parameters of the input samples, :math:`\\theta_1` and
-    :math:`\\theta_2` by:
+    parameters of the input samples, :math:`\theta_1` and
+    :math:`\theta_2` by:
 
-    .. math:: \\Delta \\theta \\equiv \\theta_1 - \\theta_2
+    .. math:: \Delta \theta \equiv \theta_1 - \theta_2
 
     This function does not assume Gaussianity of the chain.
     This functions does assume that the parameter determinations from the two
@@ -43,10 +43,10 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
         difference. By default the length of the difference samples
         will be the length of the longest one.
         Given two samples the full difference samples can contain
-        :math:`n_1\\times n_2` samples but this is usually prohibitive
+        :math:`n_1\times n_2` samples but this is usually prohibitive
         for realistic chains.
         The boost parameters wil increase the number of samples to be
-        :math:`{\\rm boost}\\times {\\rm max}(n_1,n_2)`.
+        :math:`{\rm boost}\times {\rm max}(n_1,n_2)`.
         Default boost parameter is one.
         If boost is None the full difference chain is going to be computed
         (and will likely require a lot of memory and time).
@@ -156,12 +156,12 @@ def parameter_diff_weighted_samples(samples_1, samples_2, boost=1,
 
 
 def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_params=None, fixed_params=None, **kwargs):
-    """
+    r"""
     Compute the chain of the parameter differences between the two input
     chains. The parameters of the difference chain are related to the
-    parameters of the input chains, :math:`\\theta_1` and :math:`\\theta_2` by:
+    parameters of the input chains, :math:`\theta_1` and :math:`\theta_2` by:
 
-    .. math:: \\Delta \\theta \\equiv \\theta_1 - \\theta_2
+    .. math:: \Delta \theta \equiv \theta_1 - \theta_2
 
     This function only returns the differences for the parameters that are
     common to both chains.
@@ -180,10 +180,10 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
         difference chain. By default the length of the difference chain
         will be the length of the longest chain.
         Given two chains the full difference chain can contain
-        :math:`n_1\\times n_2` samples but this is usually prohibitive
+        :math:`n_1\times n_2` samples but this is usually prohibitive
         for realistic chains.
         The boost parameters wil increase the number of samples to be
-        :math:`{\\rm boost}\\times {\\rm max}(n_1,n_2)`.
+        :math:`{\rm boost}\times {\rm max}(n_1,n_2)`.
         Default boost parameter is one.
         If boost is None the full difference chain is going to be computed
         (and will likely require a lot of memory and time).
@@ -196,8 +196,17 @@ def parameter_diff_chain(chain_1, chain_2, boost=1, param_names=None, periodic_p
     :param fixed_params: (optional) dictionary with the names of the fixed
         parameters. The keys are the names and the values are the values of
         the parameters.
+    :param kwargs: (optional) additional keyword arguments forwarded to the
+        :class:`~getdist.mcsamples.MCSamples` constructor of the difference
+        chain (e.g. ``settings``). Only keywords that are explicit named
+        arguments of the constructor are kept, the others are silently dropped.
     :return: :class:`~getdist.mcsamples.MCSamples` the instance with the
         parameter difference chain.
+    :raises ValueError: if ``boost`` is smaller than one, if there are no
+        shared parameters, if ``param_names``, ``fixed_params`` or
+        ``periodic_params`` are not found in the chains.
+    :raises TypeError: if ``chain_1`` or ``chain_2`` is not a
+        :class:`~getdist.mcsamples.MCSamples` instance.
     """
     # check input:
     if boost is not None:

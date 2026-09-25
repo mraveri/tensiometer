@@ -193,10 +193,10 @@ def MISE_bandwidth(num_params, num_samples, feedback=0, **kwargs):
 
 @jit(nopython=True, fastmath=True, parallel=True)
 def _UCV_optimizer_brute_force(H, weights, white_samples):
-    """
+    r"""
     Optimizer for the cross validation bandwidth estimator.
     This does the computation with a brite force algorithm that scales as
-    :math:`n_{\\rm samples}^2`. For this reason this is really never used.
+    :math:`n_{\rm samples}^2`. For this reason this is really never used.
     Note this solves for sqrt(H).
     """
     # digest:
@@ -643,7 +643,7 @@ def kde_parameter_shift_1D_fft(diff_chain,
                                scale=None, nbins=1024, feedback=1,
                                boundary_correction_order=1,
                                mult_bias_correction_order=1,
-                               **kwarks):
+                               **kwargs):
     """
     Compute the MCMC estimate of the probability of a parameter shift given
     an input parameter difference chain in 1 dimension and by using FFT.
@@ -663,13 +663,21 @@ def kde_parameter_shift_1D_fft(diff_chain,
     :param nbins: (optional) number of 1D bins for the fft. Powers of 2 work best. Default is 1024.
     :param mult_bias_correction_order: (optional) multiplicative bias
         correction passed to GetDist.
-        See :meth:`~getdist.mcsamples.MCSamples.get2DDensity`.
+        See :meth:`~getdist.mcsamples.MCSamples.get1DDensity`.
     :param boundary_correction_order: (optional) boundary correction
         passed to GetDist.
-        See :meth:`~getdist.mcsamples.MCSamples.get2DDensity`.
+        See :meth:`~getdist.mcsamples.MCSamples.get1DDensity`.
     :param feedback: (optional) print to screen the time taken
         for the calculation.
+    :param kwargs: additional keyword arguments; accepted for interface
+        compatibility but ignored (not forwarded to GetDist).
     :return: probability value and error estimate.
+        A tuple ``(P, low, upper)`` with the shift probability and its
+        Clopper-Pearson 68% interval; ``low`` and ``upper`` are None when no
+        sample is above the zero-shift threshold and the probability is
+        obtained by direct integration of the density.
+    :raises ValueError: if ``param_names`` are not in ``diff_chain`` or
+        ``prior_diff_chain``, or if the number of parameters is not 1.
     :reference: `Raveri, Zacharegkas and Hu 19 <https://arxiv.org/pdf/1912.04880.pdf>`_
     """
     # initialize param names:
@@ -690,7 +698,7 @@ def kde_parameter_shift_1D_fft(diff_chain,
                              'Possible parameters', prior_params)
     # check that we only have one parameter:
     if len(param_names) != 1:
-        raise ValueError('Calling 1D algorithm with more than 1 parameters')
+        raise ValueError('Calling 1D algorithm with a number of parameters different from 1')
     # initialize scale:
     if scale is None or isinstance(scale, str):
         scale = -1
@@ -762,7 +770,7 @@ def kde_parameter_shift_2D_fft(diff_chain,
                                scale=None, nbins=1024, feedback=1,
                                boundary_correction_order=1,
                                mult_bias_correction_order=1,
-                               **kwarks):
+                               **kwargs):
     """
     Compute the MCMC estimate of the probability of a parameter shift given
     an input parameter difference chain in 2 dimensions and by using FFT.
@@ -788,7 +796,15 @@ def kde_parameter_shift_2D_fft(diff_chain,
         See :meth:`~getdist.mcsamples.MCSamples.get2DDensity`.
     :param feedback: (optional) print to screen the time taken
         for the calculation.
+    :param kwargs: additional keyword arguments; accepted for interface
+        compatibility but ignored (not forwarded to GetDist).
     :return: probability value and error estimate.
+        A tuple ``(P, low, upper)`` with the shift probability and its
+        Clopper-Pearson 68% interval; ``low`` and ``upper`` are None when no
+        sample is above the zero-shift threshold and the probability is
+        obtained by direct integration of the density.
+    :raises ValueError: if ``param_names`` are not in ``diff_chain`` or
+        ``prior_diff_chain``, or if the number of parameters is not 2.
     :reference: `Raveri, Zacharegkas and Hu 19 <https://arxiv.org/pdf/1912.04880.pdf>`_
     """
     # initialize param names:
@@ -809,7 +825,7 @@ def kde_parameter_shift_2D_fft(diff_chain,
                              'Possible parameters', prior_params)
     # check that we only have two parameters:
     if len(param_names) != 2:
-        raise ValueError('Calling 2D algorithm with more than 2 parameters')
+        raise ValueError('Calling 2D algorithm with a number of parameters different from 2')
     # initialize scale:
     if scale is None or isinstance(scale, str):
         scale = -1
@@ -861,15 +877,22 @@ def kde_parameter_shift_2D_fft(diff_chain,
         _low, _upper = stutils.clopper_pearson_binomial_trial(_num_filtered,
                                                             _num_samples,
                                                             alpha=0.32)
+    # if the prior vanishes at zero a zero shift is excluded:
+    elif prior_diff_chain is not None and not np.isfinite(prob_zero):
+        _P = 1.0
+        _low, _upper = None, None
     # if there are no samples try to do the integral:
     else:
         norm = simps(simps(density.P, density.y), density.x)
-        _second_filter = density.P < prob_zero
+        if prior_diff_chain is None:
+            _second_filter = density.P < prob_zero
+        else:
+            prior_grid = prior_density.spl(density.x, density.y).T
+            grid_ratio = np.divide(density.P, prior_grid, out=np.zeros_like(density.P), where=prior_grid != 0)
+            _second_filter = grid_ratio < prob_zero
         density.P[_second_filter] = 0
         _P = simps(simps(density.P, density.y), density.x)/norm
         _low, _upper = None, None
-        if prior_diff_chain is not None:
-            _P = 1.0
     #
     t1 = time.time()
     if feedback > 0:
@@ -899,13 +922,13 @@ def _ell_helper(_ind, _white_samples, _num_params):
 def kde_parameter_shift(diff_chain, param_names=None,
                         scale=None, method='neighbor_elimination',
                         feedback=1, **kwargs):
-    """
+    r"""
     Compute the KDE estimate of the probability of a parameter shift given
     an input parameter difference chain.
     This function uses a Kernel Density Estimate (KDE) algorithm discussed in
     (`Raveri, Zacharegkas and Hu 19 <https://arxiv.org/pdf/1912.04880.pdf>`_).
-    If the difference chain contains :math:`n_{\\rm samples}` this algorithm
-    scales as :math:`O(n_{\\rm samples}^2)` and might require long run times.
+    If the difference chain contains :math:`n_{\rm samples}` this algorithm
+    scales as :math:`O(n_{\rm samples}^2)` and might require long run times.
     For this reason the algorithm is parallelized with the
     joblib library.
     If the problem is 1d or 2d use the fft algorithm in :func:`kde_parameter_shift_1D_fft`
@@ -930,14 +953,14 @@ def kde_parameter_shift(diff_chain, param_names=None,
         techniques are provided.
 
            #. method = `brute_force` is a parallelized brute force method. This
-              method scales as :math:`O(n_{\\rm samples}^2)` and can be afforded
+              method scales as :math:`O(n_{\rm samples}^2)` and can be afforded
               only for small tensions. When suspecting a difference that is
               larger than 95% other methods are better.
            #. method = `neighbor_elimination` is a KD Tree based elimination method.
               For large tensions this scales as
-              :math:`O(n_{\\rm samples}\\log(n_{\\rm samples}))`
+              :math:`O(n_{\rm samples}\log(n_{\rm samples}))`
               and in worse case scenarions, with small tensions, this can scale
-              as :math:`O(n_{\\rm samples}^2)` but with significant overheads
+              as :math:`O(n_{\rm samples}^2)` but with significant overheads
               with respect to the brute force method.
               When expecting a statistically significant difference in parameters
               this is the recomended algorithm.

@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.ipynb_checkpoints
+graphify-out
 
 # Distribution / packaging
 env/

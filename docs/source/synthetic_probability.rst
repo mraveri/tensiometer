@@ -23,5 +23,11 @@ tensiometer.synthetic_probability
    synthetic_probability/trainable_bijectors
    synthetic_probability/loss_functions 
    synthetic_probability/lr_schedulers 
+   synthetic_probability/bijectors
+   synthetic_probability/distributions
+   synthetic_probability/autodiff
+   synthetic_probability/training
+   synthetic_probability/optimizers
+   synthetic_probability/tensor_utilities
 
 

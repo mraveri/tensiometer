@@ -16,7 +16,7 @@ import inspect
 
 
 def from_confidence_to_sigma(P):
-    """
+    r"""
     Transforms a probability to effective number of sigmas.
     This matches the input probability with the number of standard deviations
     that an event with the same probability would have had in a Gaussian
@@ -24,7 +24,7 @@ def from_confidence_to_sigma(P):
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_).
 
     .. math::
-        n_{\\sigma}^{\\rm eff}(P) \\equiv \\sqrt{2} {\\rm Erf}^{-1}(P)
+        n_{\sigma}^{\rm eff}(P) \equiv \sqrt{2} {\rm Erf}^{-1}(P)
 
     :param P: the input probability.
     :return: the effective number of standard deviations.
@@ -56,7 +56,7 @@ def from_sigma_to_confidence(nsigma):
 
 
 def from_chi2_to_sigma(val, dofs, exact_threshold=6):
-    """
+    r"""
     Computes the effective number of standard deviations for a chi squared
     variable.
     This matches the probability computed from the chi squared variable
@@ -66,8 +66,8 @@ def from_chi2_to_sigma(val, dofs, exact_threshold=6):
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_).
 
     .. math::
-        n_{\\sigma}^{\\rm eff}(x, {\\rm dofs}) \\equiv
-        \\sqrt{2} {\\rm Erf}^{-1}({\\rm CDF}(\\chi^2_{\\rm dofs}(x)))
+        n_{\sigma}^{\rm eff}(x, {\rm dofs}) \equiv
+        \sqrt{2} {\rm Erf}^{-1}({\rm CDF}(\chi^2_{\rm dofs}(x)))
 
     For very high statistical significant events this function
     switches from the direct formula to an accurate asyntotic expansion.
@@ -280,8 +280,8 @@ def make_list(elements):
 
 
 def PDM_to_vector(pdm):
-    """
-    Transforms a positive definite matrix of dimension :math:`d \\times d`
+    r"""
+    Transforms a positive definite matrix of dimension :math:`d \times d`
     into an unconstrained vector of dimension :math:`d(d+1)/2`.
     This does not use the Cholesky decomposition since we need guarantee of
     strictly positive definiteness.
@@ -325,10 +325,9 @@ def PDM_to_vector(pdm):
 
 
 def vector_to_PDM(vec):
-    """
+    r"""
     Transforms an unconstrained vector of dimension :math:`d(d+1)/2`
-    into a positive definite matrix of dimension :math:`d \\times d`.
-    In the input vector the eigenvalues are in the positions where
+    into a positive definite matrix of dimension :math:`d \times d`.
 
     The absolute values of the elements with indexes of the input vector
     that satisfy:
@@ -344,8 +343,9 @@ def vector_to_PDM(vec):
     of positive definite matrices that is either unconstrained or
     has constraints on the condition number of the matrix.
 
-    :param pdm: the input vector.
-    :return: output positive definite matrix.
+    :param vec: the input vector, of length :math:`d(d+1)/2`, filling the
+        lower triangular part (``np.tril_indices(d, 0)``) of the matrix.
+    :return: output positive definite matrix, with shape ``(d, d)``.
     :reference: https://arxiv.org/abs/1906.00587
     """
     d = int(np.sqrt(1 + 8*len(vec)) - 1)//2

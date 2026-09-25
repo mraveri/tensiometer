@@ -53,7 +53,7 @@ def estimate_shift(flow, prior_flow=None, tol=0.05, max_iter=1000, step=100000):
         if prior_flow is not None:
             _s_prob = _s_prob - prior_flow.log_probability(prior_flow.cast(_s))
         # test:
-        _t = np.array(_s_prob > _thres)
+        _t = np.asarray(_s_prob > _thres)
         # update counters:
         _num_filtered += np.sum(_t)
         _num_samples += step
@@ -99,7 +99,7 @@ def estimate_shift_from_samples(flow, prior_flow=None):
         _s_prob = _s_prob - prior_flow.log_probability(prior_flow.cast(flow.chain_samples))
 
     # calculate probability of shift:
-    _t = np.array(_s_prob > _thres)
+    _t = np.asarray(_s_prob > _thres)
     _num_filtered = np.sum(_t)
     _num_samples = len(_t)
     _P = float(_num_filtered)/float(_num_samples)
@@ -113,28 +113,32 @@ def estimate_shift_from_samples(flow, prior_flow=None):
 # helper function to compute tension with default MAF:
 
 
-def flow_parameter_shift(diff_chain, cache_dir=None, root_name='sprob', tol=0.05, max_iter=1000, step=100000, **kwargs):
+def flow_parameter_shift(diff_chain, cache_file=None, tol=0.05, max_iter=1000, step=100000, **kwargs):
     """
     Wrapper function to compute a normalizing flow estimate of the probability of a parameter shift given the input 
     parameter difference chain. 
-    The function accepts as kwargs all the ones that are relevant for the function flow_from_chain.
+    The function accepts as kwargs all the ones that are relevant for the function flow_from_chain
+    (including ``overwrite_cache`` and ``cache_mode``).
 
     :param diff_chain: input parameter difference chain.
     :type diff_chain: :class:`~getdist.mcsamples.MCSamples`
-    :param cache_dir: name of the directory to save training cache files. If none (default) does not cache.
-    :param root_name: root name for the cache files.
+    :param cache_file: path of the file where the trained flow is cached. If None (default) does not cache.
+        A cached flow is reused only if it was trained on the same chain with the same settings.
     :param tol: absolute tolerance on the shift significance, defaults to 0.05.
     :type tol: float, optional
     :param max_iter: maximum number of sampling steps, defaults to 1000.
     :type max_iter: int, optional
     :param step: number of samples per step, defaults to 100000.
     :type step: int, optional
+    :param kwargs: additional keyword arguments forwarded to
+        :func:`~tensiometer.synthetic_probability.synthetic_probability.flow_from_chain`
+        (e.g. ``overwrite_cache``, ``cache_mode`` and the flow/training settings).
     :return: probability value and error estimate, then the parameter difference flow
     """
     # since this function uses the synthetic_probability module, we need to import it here:
     from ..synthetic_probability import synthetic_probability as sp
     # initialize and train parameter difference flow:
-    diff_flow = sp.flow_from_chain(diff_chain, cache_dir=cache_dir, root_name=root_name, **kwargs)
+    diff_flow = sp.flow_from_chain(diff_chain, cache_file=cache_file, **kwargs)
     # Compute tension:
     result = estimate_shift(diff_flow, tol=tol, max_iter=max_iter, step=step)
     #

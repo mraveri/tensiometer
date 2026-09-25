@@ -6,8 +6,11 @@ This file contains a set of utilities operating on flows.
 # initial imports and set-up:
 
 import numpy as np
+import torch
 
 from getdist import MCSamples
+
+from . import tensor_utilities as tu
 
 ###############################################################################
 # get samples at each intermediate space:
@@ -51,33 +54,34 @@ def get_samples_bijectors(flow, feedback=False, extra_samples=None):
                                             weights=_flow.test_weights,
                                             name_tag='validation_space',
                                             ))
-    if extra_samples is not None:
-        extra_samples_spaces.append(flow.fixed_bijector.inverse(extra_samples).numpy())
-    # loop over bijectors:
-    _temp_train_samples = _flow.training_samples
-    _temp_test_samples = _flow.test_samples
-    if extra_samples is not None:
-        _temp_extra_samples = flow.fixed_bijector.inverse(extra_samples).numpy()
-    for ind, bijector in enumerate(_flow.trainable_bijector._bijectors):
-        # feedback:
-        if feedback:
-            print(ind, '- bijector name: ', bijector.name)
-        # process samples trough the bijector:
-        _temp_train_samples = bijector.inverse(_temp_train_samples)
-        _temp_test_samples = bijector.inverse(_temp_test_samples)
+    with torch.no_grad():
         if extra_samples is not None:
-            _temp_extra_samples = bijector.inverse(_temp_extra_samples)
-            extra_samples_spaces.append(_temp_extra_samples.numpy())
-        # get the training samples:
-        training_samples_spaces.append(MCSamples(samples=_temp_train_samples.numpy(),
-                                                weights=_flow.training_weights,
-                                                name_tag=str(ind)+'_after_'+bijector.name,
-                                                ))
-        # get the validation samples:
-        validation_samples_spaces.append(MCSamples(samples=_temp_test_samples.numpy(),
-                                                weights=_flow.test_weights,
-                                                name_tag=str(ind)+'_after_'+bijector.name,
-                                                ))
+            extra_samples_spaces.append(tu.to_numpy(flow.fixed_bijector.inverse(extra_samples)))
+        # loop over bijectors:
+        _temp_train_samples = _flow.training_samples
+        _temp_test_samples = _flow.test_samples
+        if extra_samples is not None:
+            _temp_extra_samples = tu.to_numpy(flow.fixed_bijector.inverse(extra_samples))
+        for ind, bijector in enumerate(_flow.trainable_bijector.bijectors):
+            # feedback:
+            if feedback:
+                print(ind, '- bijector name: ', bijector.name)
+            # process samples trough the bijector:
+            _temp_train_samples = tu.to_numpy(bijector.inverse(_temp_train_samples))
+            _temp_test_samples = tu.to_numpy(bijector.inverse(_temp_test_samples))
+            if extra_samples is not None:
+                _temp_extra_samples = tu.to_numpy(bijector.inverse(_temp_extra_samples))
+                extra_samples_spaces.append(_temp_extra_samples)
+            # get the training samples:
+            training_samples_spaces.append(MCSamples(samples=_temp_train_samples,
+                                                    weights=_flow.training_weights,
+                                                    name_tag=str(ind)+'_after_'+bijector.name,
+                                                    ))
+            # get the validation samples:
+            validation_samples_spaces.append(MCSamples(samples=_temp_test_samples,
+                                                    weights=_flow.test_weights,
+                                                    name_tag=str(ind)+'_after_'+bijector.name,
+                                                    ))
     # return the samples:
     if extra_samples is not None:
         return training_samples_spaces, validation_samples_spaces, extra_samples_spaces
@@ -104,7 +108,7 @@ def KL_divergence(flow_1, flow_2, num_samples=1000, num_batches=100):
         # sample from the first flow:
         _temp_samples = flow_1.sample(num_samples)
         # calculate the log probability difference:
-        _temp_diff = flow_1.log_probability(_temp_samples) - flow_2.log_probability(_temp_samples)
+        _temp_diff = tu.to_numpy(flow_1.log_probability(_temp_samples)) - tu.to_numpy(flow_2.log_probability(_temp_samples))
         # filter out not finite values:
         _temp_diff = _temp_diff[np.isfinite(_temp_diff)]
         # average and append:        

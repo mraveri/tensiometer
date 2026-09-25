@@ -146,7 +146,7 @@ class TestGaussianTensionSlow(unittest.TestCase):
                              conditional_params=["p0"],
                              marginalized_parameters=[],
                              dimensional_reduce=False,
-                             normparam="p0",
+                             normparam="p1",
                              dimensional_threshold=0.05)
         self.assertIn("CPCA_eig", res)
         chain_res = gt.linear_CPCA_chains(self.chain_1, self.chain_12, ["p0", "p1"])
@@ -231,6 +231,37 @@ class TestGaussianTensionAdditional(unittest.TestCase):
         self.assertIn("CPCA_eig", results)
         self.assertIn("CPCA_projector", results)
         self.assertEqual(results["CPCA_eig"].shape[0], results["CPCA_eigv"].shape[0])
+
+    def test_linear_cpca_normparam_index_after_reduction(self):
+        """normparam indexes the reduced parameter list after fixing and marginalizing."""
+        rng = np.random.default_rng(3)
+        _temp = rng.normal(size=(4, 4))
+        fisher12 = _temp @ _temp.T + 4.0 * np.eye(4)
+        fisher1 = 0.5 * fisher12 + 0.1 * np.eye(4)
+        results = gt.linear_CPCA(
+            fisher_1=fisher1,
+            fisher_12=fisher12,
+            param_names=["p0", "p1", "p2", "p3"],
+            conditional_params=["p0"],
+            marginalized_parameters=["p1"],
+            normparam="p3",
+        )
+        self.assertEqual(results["param_names"], ["p2", "p3"])
+        self.assertEqual(results["normparam"], 1)
+        self.assertTrue(np.all(results["CPCA_var_filter"][1, :]))
+        text = gt.print_CPCA_results(results)
+        self.assertIn("CPC parameter combinations", text)
+
+    def test_linear_cpca_normparam_removed_raises(self):
+        """normparam that is fixed or marginalized raises a ValueError."""
+        fisher = np.diag([1.0, 2.0, 3.0])
+        names = ["p0", "p1", "p2"]
+        with self.assertRaises(ValueError):
+            gt.linear_CPCA(fisher_1=fisher, fisher_12=2.0 * fisher, param_names=names,
+                           conditional_params=["p0"], normparam="p0")
+        with self.assertRaises(ValueError):
+            gt.linear_CPCA(fisher_1=fisher, fisher_12=2.0 * fisher, param_names=names,
+                           marginalized_parameters=["p1"], normparam="p1")
 
     def test_localized_covariance_param_error(self):
         """Test localized covariance parameter validation."""

@@ -67,13 +67,13 @@ def _check_chain_type(chain):
 
 
 def get_prior_covariance(chain, param_names=None):
-    """
+    r"""
     Utility to estimate the prior covariance from the ranges of a chain.
     The flat range prior covariance
     (`link <https://en.wikipedia.org/wiki/Uniform_distribution_(continuous)>`_)
     is given by:
 
-    .. math:: C_{ij} = \\delta_{ij} \\frac{( \\mathrm{max}(p_i) - \\mathrm{min}(p_i) )^2}{12}
+    .. math:: C_{ij} = \delta_{ij} \frac{( \mathrm{max}(p_i) - \mathrm{min}(p_i) )^2}{12}
 
     :param chain: the input chain.
     :type chain: :class:`~getdist.mcsamples.MCSamples`
@@ -194,18 +194,18 @@ def get_localized_covariance(chain_1, chain_2, param_names,
 
 def get_Neff(chain, prior_chain=None, param_names=None,
              prior_factor=1.0, localize=False, **kwargs):
-    """
+    r"""
     Function to compute the number of effective parameters constrained by a
     chain over the prior.
     The number of effective parameters is defined as in Eq. (29) of
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_) as:
 
-    .. math:: N_{\\rm eff} \\equiv
-        N -{\\rm tr}[ \\mathcal{C}_\\Pi^{-1}\\mathcal{C}_p ]
+    .. math:: N_{\rm eff} \equiv
+        N -{\rm tr}[ \mathcal{C}_\Pi^{-1}\mathcal{C}_p ]
 
     where :math:`N` is the total number of nominal parameters of the chain,
-    :math:`\\mathcal{C}_\\Pi` is the covariance of the prior and
-    :math:`\\mathcal{C}_p` is the posterior covariance.
+    :math:`\mathcal{C}_\Pi` is the covariance of the prior and
+    :math:`\mathcal{C}_p` is the posterior covariance.
 
     :param chain: the input chain.
     :type chain: :class:`~getdist.mcsamples.MCSamples`
@@ -217,7 +217,7 @@ def get_Neff(chain, prior_chain=None, param_names=None,
         ranges computed from the input chain.
     :type prior_chain: :class:`~getdist.mcsamples.MCSamples` - optional
     :param param_names: parameter names to restrict the
-        calculation of :math:`N_{\\rm eff}`.
+        calculation of :math:`N_{\rm eff}`.
         If none is given the default assumes that all running parameters
         should be used.
     :type param_names: optional
@@ -228,7 +228,14 @@ def get_Neff(chain, prior_chain=None, param_names=None,
         Default is no scaling, prior_factor=1.
     :type prior_factor: optional
     :param localize: whether to localize the covariance.
+        Only used when ``prior_chain`` is given, in which case the prior
+        covariance is computed with :func:`get_localized_covariance`
+        localizing ``prior_chain`` around ``chain``. Default is False.
     :type localize: optional
+    :param kwargs: additional keyword arguments forwarded to
+        :func:`get_localized_covariance` (e.g. ``localize_params``,
+        ``scale``) when ``localize`` is True and ``prior_chain`` is given.
+        Ignored otherwise.
     :return: the number of effective parameters.
     """
     # initialize param names:
@@ -275,6 +282,8 @@ def gaussian_approximation(chain, param_names=None, **kwargs):
         If none is given the default assumes that all parameters
         should be used.
     :type param_names: optional
+    :param kwargs: additional keyword arguments forwarded to the
+        :class:`~getdist.gaussian_mixtures.GaussianND` constructor.
     :return: :class:`~getdist.gaussian_mixtures.GaussianND` object with the
         Gaussian approximation of the chain.
     """
@@ -312,7 +321,7 @@ def gaussian_approximation(chain, param_names=None, **kwargs):
 
 def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
          cutoff=0.05, prior_factor=1.0):
-    """
+    r"""
     Compute the value and degrees of freedom of the quadratic form giving the
     probability of a difference between the means of the two input chains,
     in the Gaussian approximation.
@@ -320,16 +329,16 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
     This is defined as in
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_) to be:
 
-    .. math:: Q_{\\rm DM} \\equiv (\\theta_1-\\theta_2)
-        (\\mathcal{C}_1+\\mathcal{C}_2
-        -\\mathcal{C}_1\\mathcal{C}_\\Pi^{-1}\\mathcal{C}_2
-        -\\mathcal{C}_2\\mathcal{C}_\\Pi^{-1}\\mathcal{C}_1)^{-1}
-        (\\theta_1-\\theta_2)^T
+    .. math:: Q_{\rm DM} \equiv (\theta_1-\theta_2)
+        (\mathcal{C}_1+\mathcal{C}_2
+        -\mathcal{C}_1\mathcal{C}_\Pi^{-1}\mathcal{C}_2
+        -\mathcal{C}_2\mathcal{C}_\Pi^{-1}\mathcal{C}_1)^{-1}
+        (\theta_1-\theta_2)^T
 
-    where :math:`\\theta_i` is the parameter mean of the i-th posterior,
-    :math:`\\mathcal{C}` the posterior covariance and :math:`\\mathcal{C}_\\Pi`
+    where :math:`\theta_i` is the parameter mean of the i-th posterior,
+    :math:`\mathcal{C}` the posterior covariance and :math:`\mathcal{C}_\Pi`
     the prior covariance.
-    :math:`Q_{\\rm DM}` is :math:`\\chi^2` distributed with number of degrees
+    :math:`Q_{\rm DM}` is :math:`\chi^2` distributed with number of degrees
     of freedom equal to the rank of the shift covariance.
 
     :param chain_1: :class:`~getdist.mcsamples.MCSamples`
@@ -359,8 +368,8 @@ def Q_DM(chain_1, chain_2, prior_chain=None, param_names=None,
         parameter space directions that are constrained by data and prior.
         Default is no scaling, prior_factor=1.
     :type prior_factor: optional
-    :return: :math:`Q_{\\rm DM}` value and number of degrees of freedom.
-        Since :math:`Q_{\\rm DM}` is :math:`\\chi^2` distributed the
+    :return: :math:`Q_{\rm DM}` value and number of degrees of freedom.
+        Since :math:`Q_{\rm DM}` is :math:`\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
         :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
@@ -434,7 +443,7 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
                 dimensional_threshold=0.1):
     """
     Performs the CPCA analysis of two Fisher matrices.
-    As discussed in (`Dacunha et al. 22 <https://arxiv.org/pdf/1806.04649.pdf>`_)
+    As discussed in (`Dacunha et al. 22 <https://arxiv.org/pdf/2112.05737.pdf>`_)
     this quantifies the modes that the joint chain improves over the single one.
     Note this is a lower-level function that does not require GetDist chains.
 
@@ -447,29 +456,29 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
     :param conditional_params: (optional) list of parameters to treat as fixed,
         i.e. for KL_PCA conditional on fixed values of these parameters
     :type conditional_params: list[str]
-    :param param_map: (optional) a transformation to apply to parameter values;
-        A list or string containing either N (no transformation)
-        or L (for log transform) or M (for minus log transform of negative
-        parameters) for each parameter.
-        By default uses log if no parameter values cross zero.
-        The transformed parameters are added to the joint chain.
-    :type param_map: Union[str, List[str]]
+    :param marginalized_parameters: (optional) list of parameters to
+        marginalize over (after fixing ``conditional_params``) by inverting
+        the Fisher matrices, dropping these parameters from the covariances
+        and inverting back. Default is an empty list.
+    :type marginalized_parameters: list[str]
     :param normparam: (optional) name of parameter to normalize result
         (i.e. this parameter will have unit power)
-        By default scales to the parameter that has the largest impactr on the KL mode variance.
+        By default scales to the parameter that has the largest impact on the KL mode variance.
     :type normparam: str
     :param dimensional_reduce: (optional) perform dimensional reduction of the KL modes considered
         keeping only parameters with a large impact on KL mode variances.
         Default is True.
     :type dimensional_reduce: bool
-    :param dimensional_threshold: (optional) threshold for dimensional reducetion.
+    :param dimensional_threshold: (optional) threshold for dimensional reduction.
         Default is 10% so that parameters with a contribution less than 10% of KL mode
         variance are neglected from a specific KL mode.
     :type dimensional_threshold: float
-    :param verbose: (optional) chatty output. Default True.
-    :type verbose: bool
     :return: dictionary containing the results of the CPCA analysis
     :rtype: dict
+    :raises ValueError: if the size of ``fisher_1`` or ``fisher_12`` does not
+        match the length of ``param_names``, if ``conditional_params`` or
+        ``marginalized_parameters`` are not all in ``param_names``, or if
+        ``normparam`` is fixed, marginalized or not in ``param_names``.
     """
     # initialize param names:
     num_params = len(param_names)
@@ -505,7 +514,10 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
     num_params = len(param_names_to_use)
     # initialize internal variables:
     if normparam is not None:
-        normparam = param_names.index(normparam)
+        if normparam not in param_names_to_use:
+            raise ValueError('Input normparam:', normparam, '\n',
+                             'is not among the parameters used in the analysis:', param_names_to_use)
+        normparam = param_names_to_use.index(normparam)
     # perform the CPCA decomposition:
     CPC_eig, CPC_eigv = stutils.KL_decomposition(F_p12, F_p1)
     # sort in decreasing order (best mode first):
@@ -558,13 +570,22 @@ def linear_CPCA(fisher_1, fisher_12, param_names,
 def linear_CPCA_chains(chain_1, chain_12, param_names, **kwargs):
     """
     Performs the CPCA analysis of two chains.
-    As discussed in (`Dacunha et al. 22 <https://arxiv.org/pdf/1806.04649.pdf>`_)
+    As discussed in (`Dacunha et al. 22 <https://arxiv.org/pdf/2112.05737.pdf>`_)
     this quantifies the modes that the joint chain improves over the single one.
 
     :param chain_1: :class:`~getdist.mcsamples.MCSamples` the reference input chain.
     :param chain_12: :class:`~getdist.mcsamples.MCSamples` the joint input chain.
     :param param_names: parameter names to use in the calculation. Defaults to all
         running parameters.
+    :param kwargs: additional keyword arguments forwarded to :func:`linear_CPCA`
+        (e.g. ``conditional_params``, ``marginalized_parameters``, ``normparam``,
+        ``dimensional_reduce``, ``dimensional_threshold``). Keywords not in the
+        signature of :func:`linear_CPCA` are silently dropped.
+    :return: dictionary with the results of :func:`linear_CPCA`, extended with
+        ``reference_point`` (mean of ``chain_12``), ``param_labels``,
+        ``correlation_mode_parameter`` (correlation between CPCA modes and all
+        parameters of ``chain_12``) and ``correlation_parameter_names``.
+    :rtype: dict
     """
     # test if chains:
     _check_chain_type(chain_1)
@@ -946,7 +967,7 @@ def Q_UDM_covariance_components(chain_1, chain_12, param_names=None,
 
 def Q_UDM(chain_1, chain_12, lower_cutoff=1.05, upper_cutoff=100.,
           param_names=None):
-    """
+    r"""
     Compute the value and degrees of freedom of the quadratic form giving the
     probability of a difference between the means of the two input chains,
     in update form with the Gaussian approximation.
@@ -954,23 +975,23 @@ def Q_UDM(chain_1, chain_12, lower_cutoff=1.05, upper_cutoff=100.,
     This is defined as in
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_) to be:
 
-    .. math:: Q_{\\rm UDM} \\equiv (\\theta_1-\\theta_{12})
-        (\\mathcal{C}_1-\\mathcal{C}_{12})^{-1}
-        (\\theta_1-\\theta_{12})^T
+    .. math:: Q_{\rm UDM} \equiv (\theta_1-\theta_{12})
+        (\mathcal{C}_1-\mathcal{C}_{12})^{-1}
+        (\theta_1-\theta_{12})^T
 
-    where :math:`\\theta_1` is the parameter mean of the first posterior,
-    :math:`\\theta_{12}` is the parameter mean of the joint posterior,
-    :math:`\\mathcal{C}` the posterior covariance and :math:`\\mathcal{C}_\\Pi`
+    where :math:`\theta_1` is the parameter mean of the first posterior,
+    :math:`\theta_{12}` is the parameter mean of the joint posterior,
+    :math:`\mathcal{C}` the posterior covariance and :math:`\mathcal{C}_\Pi`
     the prior covariance.
-    :math:`Q_{\\rm UDM}` is :math:`\\chi^2` distributed with number of degrees
+    :math:`Q_{\rm UDM}` is :math:`\chi^2` distributed with number of degrees
     of freedom equal to the rank of the shift covariance.
 
     In case of uninformative priors the statistical significance of
-    :math:`Q_{\\rm UDM}` is the same as the one reported by
-    :math:`Q_{\\rm DM}` but offers likely mitigation against non-Gaussianities
+    :math:`Q_{\rm UDM}` is the same as the one reported by
+    :math:`Q_{\rm DM}` but offers likely mitigation against non-Gaussianities
     of the posterior distribution.
-    In the case where both chains are Gaussian :math:`Q_{\\rm UDM}` is
-    symmetric if the first input chain is swapped :math:`1\\leftrightarrow 2`.
+    In the case where both chains are Gaussian :math:`Q_{\rm UDM}` is
+    symmetric if the first input chain is swapped :math:`1\leftrightarrow 2`.
     If the input distributions are not Gaussian it is better to use the most
     constraining chain as the base for the parameter update.
 
@@ -988,8 +1009,8 @@ def Q_UDM(chain_1, chain_12, lower_cutoff=1.05, upper_cutoff=100.,
     :param upper_cutoff: (optional) upper cutoff for the selection of KL modes.
     :param param_names: (optional) parameter names of the parameters to be used
         in the calculation. By default all running parameters.
-    :return: :math:`Q_{\\rm UDM}` value and number of degrees of freedom.
-        Since :math:`Q_{\\rm UDM}` is :math:`\\chi^2` distributed the
+    :return: :math:`Q_{\rm UDM}` value and number of degrees of freedom.
+        Since :math:`Q_{\rm UDM}` is :math:`\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
         :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
@@ -1075,7 +1096,7 @@ def get_MAP_loglike(chain, feedback=True):
 
 def Q_MAP(chain, num_data, prior_chain=None,
           normalization_factor=0.0, prior_factor=1.0, feedback=True):
-    """
+    r"""
     Compute the value and degrees of freedom of the quadratic form giving
     the goodness of fit measure at maximum posterior (MAP), in
     Gaussian approximation.
@@ -1083,15 +1104,15 @@ def Q_MAP(chain, num_data, prior_chain=None,
     This is defined as in
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_) to be:
 
-    .. math:: Q_{\\rm MAP} \\equiv -2\\ln \\mathcal{L}(\\theta_{\\rm MAP})
+    .. math:: Q_{\rm MAP} \equiv -2\ln \mathcal{L}(\theta_{\rm MAP})
 
-    where :math:`\\mathcal{L}(\\theta_{\\rm MAP})` is the data likelihood
+    where :math:`\mathcal{L}(\theta_{\rm MAP})` is the data likelihood
     evaluated at MAP.
     In Gaussian approximation this is distributed as:
 
-    .. math:: Q_{\\rm MAP} \\sim \\chi^2(d-N_{\\rm eff})
+    .. math:: Q_{\rm MAP} \sim \chi^2(d-N_{\rm eff})
 
-    where :math:`d` is the number of data points and :math:`N_{\\rm eff}`
+    where :math:`d` is the number of data points and :math:`N_{\rm eff}`
     is the number of effective parameters, as computed by the function
     :func:`tensiometer.gaussian_tension.get_Neff`.
 
@@ -1114,8 +1135,8 @@ def Q_MAP(chain, num_data, prior_chain=None,
     :param feedback: logical flag to set whether the function should print
         a warning every time the explicit MAP file is not found.
         By default this is true.
-    :return: :math:`Q_{\\rm MAP}` value and number of degrees of freedom.
-        Since :math:`Q_{\\rm MAP}` is :math:`\\chi^2` distributed the
+    :return: :math:`Q_{\rm MAP}` value and number of degrees of freedom.
+        Since :math:`Q_{\rm MAP}` is :math:`\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
         :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.
@@ -1136,25 +1157,25 @@ def Q_MAP(chain, num_data, prior_chain=None,
 
 def Q_DMAP(chain_1, chain_2, chain_12, prior_chain=None,
            param_names=None, prior_factor=1.0, feedback=True):
-    """
+    r"""
     Compute the value and degrees of freedom of the quadratic form giving
     the goodness of fit loss measure, in Gaussian approximation.
 
     This is defined as in
     (`Raveri and Hu 18 <https://arxiv.org/pdf/1806.04649.pdf>`_) to be:
 
-    .. math:: Q_{\\rm DMAP} \\equiv Q_{\\rm MAP}^{12} -Q_{\\rm MAP}^{1}
-        -Q_{\\rm MAP}^{2}
+    .. math:: Q_{\rm DMAP} \equiv Q_{\rm MAP}^{12} -Q_{\rm MAP}^{1}
+        -Q_{\rm MAP}^{2}
 
-    where :math:`Q_{\\rm MAP}^{12}` is the joint likelihood at maximum
-    posterior (MAP) and :math:`Q_{\\rm MAP}^{i}` is the likelihood at MAP
+    where :math:`Q_{\rm MAP}^{12}` is the joint likelihood at maximum
+    posterior (MAP) and :math:`Q_{\rm MAP}^{i}` is the likelihood at MAP
     for the two single data sets.
     In Gaussian approximation this is distributed as:
 
-    .. math:: Q_{\\rm DMAP} \\sim \\chi^2(N_{\\rm eff}^1 + N_{\\rm eff}^2 -
-        N_{\\rm eff}^{12})
+    .. math:: Q_{\rm DMAP} \sim \chi^2(N_{\rm eff}^1 + N_{\rm eff}^2 -
+        N_{\rm eff}^{12})
 
-    where :math:`N_{\\rm eff}` is the number of effective parameters,
+    where :math:`N_{\rm eff}` is the number of effective parameters,
     as computed by the function :func:`tensiometer.gaussian_tension.get_Neff`
     for the joint and the two single data sets.
 
@@ -1180,8 +1201,8 @@ def Q_DMAP(chain_1, chain_2, chain_12, prior_chain=None,
     :param feedback: logical flag to set whether the function should print
         a warning every time the explicit MAP file is not found.
         By default this is true.
-    :return: :math:`Q_{\\rm DMAP}` value and number of degrees of freedom.
-        Since :math:`Q_{\\rm DMAP}` is :math:`\\chi^2` distributed the
+    :return: :math:`Q_{\rm DMAP}` value and number of degrees of freedom.
+        Since :math:`Q_{\rm DMAP}` is :math:`\chi^2` distributed the
         probability to exceed the test can be computed
         using the cdf method of :py:data:`scipy.stats.chi2` or
         :meth:`tensiometer.utilities.stats_utilities.from_chi2_to_sigma`.

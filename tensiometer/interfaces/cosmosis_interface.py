@@ -367,6 +367,9 @@ def get_maximum_likelihood(dummy, max_posterior, chain_min_root,
     Import the maximum likelihood file for a Cosmosis run, if present.
 
     :param dummy: dummy argument for interfacing, not used in practice
+    :param max_posterior: placeholder matching the signature of
+        :meth:`~getdist.mcsamples.MCSamples.getBestFit`; ignored, the content
+        of the Cosmosis minimum file is always returned.
     :param chain_min_root: name of the minimum file or the folder that contains
         it.
     :param param_name_dict: a dictionary with the mapping between
@@ -374,6 +377,9 @@ def get_maximum_likelihood(dummy, max_posterior, chain_min_root,
     :param param_label_dict: dictionary with the mapping between the parameter
         names and the labels.
     :return: :class:`~getdist.types.BestFit` the best fit object.
+    :raises ValueError: if no minimum file is found, if ``chain_min_root`` is
+        neither a file nor a folder, if the file was not produced by the
+        ``max_like`` sampler, or if it does not contain the ``post`` column.
     """
     # decide if the user passed a folder or a chain:
     if os.path.isfile(chain_min_root+'.txt'):
@@ -416,8 +422,8 @@ def get_maximum_likelihood(dummy, max_posterior, chain_min_root,
     # get the numbers:
     best_fit_params = loadNumpyTxt(minimum_file, skiprows=0)[0]
     # look for weight:
-    if 'weigth' in param_names:
-        best_fit.weight = best_fit_params[param_names.index('weigth')]
+    if 'weight' in param_names:
+        best_fit.weight = best_fit_params[param_names.index('weight')]
     else:
         best_fit.weight = 1.0
     # look for log like:

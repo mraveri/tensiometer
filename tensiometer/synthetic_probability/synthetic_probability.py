@@ -1,5 +1,12 @@
 """
 Main file containing the synthetic probability class and methods.
+
+The flows are implemented in PyTorch. Precision (float32 by default, float64 on request)
+and the default device (cpu, cuda, mps) are process-wide settings, see
+:mod:`~tensiometer.synthetic_probability.tensor_utilities`. Public methods accept numpy
+arrays or tensors on any device and return detached CPU tensors (``.numpy()`` works on the
+results); when the input is a tensor that requires gradients the result stays attached to
+the graph on the flow device, so that the methods can be nested and differentiated.
 """
 
 ###############################################################################
@@ -7,6 +14,12 @@ Main file containing the synthetic probability class and methods.
 
 import os
 import copy
+import hashlib
+import inspect
+import json
+import pickle
+import time
+import warnings
 import numpy as np
 import getdist.chains as gchains
 from getdist import MCSamples
@@ -15,10 +28,7 @@ import scipy.integrate
 from scipy.spatial import cKDTree
 import scipy.stats
 from collections.abc import Iterable
-import pickle
-import time
-import joblib
-import gc
+import torch
 
 # plotting:
 import matplotlib
@@ -29,129 +39,39 @@ from . import lr_schedulers as lr
 from . import loss_functions as loss
 from . import trainable_bijectors as tb
 from . import fixed_bijectors as pb
+from . import bijectors as bj
+from . import distributions as ds
+from . import autodiff
+from . import training
+from . import tensor_utilities as tu
 
 from ..utilities import stats_utilities as stutils
 from .. import gaussian_tension
+from .. import __version__ as _tensiometer_version
 
 gchains.print_load_details = False
 
-# tensorflow imports:
+# version of the snapshot file format written by FlowCallback.save:
+SNAPSHOT_FORMAT_VERSION = 1
 
-import tensorflow as tf
-
-try:
-    import tensorflow_probability as tfp
-except Exception as exc:
-    raise ImportError(
-        "Failed to import tensorflow_probability. Please install a version compatible "
-        "with your TensorFlow/Keras installation (e.g. tensorflow_probability>=0.24 for "
-        "TensorFlow>=2.16)."
-    ) from exc
+# save mode of the snapshot being written (None outside of save):
+_save_mode = None
 
 
-def _parse_version(version):
+def __getattr__(name):
     """
-    Parse a version string into a tuple of integers.
+    Forward ``prec`` and ``np_prec`` to the live values of
+    :mod:`~tensiometer.synthetic_probability.tensor_utilities`.
 
-    :param version: version string to parse.
-    :returns: tuple of integers suitable for comparisons.
+    :param name: attribute name.
+    :returns: the torch or numpy dtype of the active precision.
+    :raises AttributeError: for any other name.
     """
-    parts = []
-    for chunk in str(version).split("."):
-        digits = ""
-        for ch in chunk:
-            if ch.isdigit():
-                digits += ch
-            else:
-                break
-        if digits == "":
-            break
-        parts.append(int(digits))
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts[:3])
-
-
-def _ensure_tfp_compat(tf_version, tfp_version):
-    """
-    Validate TensorFlow and TensorFlow Probability version compatibility.
-
-    :param tf_version: TensorFlow version tuple.
-    :param tfp_version: TensorFlow Probability version tuple.
-    :raises ValueError: when the versions are known to be incompatible.
-    """
-    if tf_version >= (2, 16, 0) and tfp_version < (0, 24, 0):
-        raise ValueError(
-            "TensorFlow >= 2.16 requires tensorflow_probability >= 0.24 for "
-            "Keras 3 compatibility."
-        )
-    if tf_version < (2, 16, 0) and tfp_version >= (0, 24, 0):
-        raise ValueError(
-            "tensorflow_probability >= 0.24 requires TensorFlow >= 2.16. "
-            "Please downgrade tensorflow_probability or upgrade TensorFlow."
-        )
-
-
-_ensure_tfp_compat(_parse_version(tf.__version__), _parse_version(tfp.__version__))
-
-
-def _is_tf_function(func):
-    """Return True if ``func`` is a TensorFlow function wrapper."""
-    return isinstance(func, tf.types.experimental.GenericFunction)
-
-
-def _rebuild_tf_function(target, func_name):
-    """
-    Rebuild a ``tf.function`` wrapper to clear cached traces.
-
-    :param target: object that owns the function.
-    :param func_name: attribute name of the TensorFlow function.
-    """
-    func = getattr(target, func_name)
-    python_fn = getattr(func, "python_function", None)
-    if python_fn is None:
-        return
-    bound_fn = python_fn.__get__(target, type(target))
-    input_signature = getattr(func, "input_signature", None)
-    try:
-        setattr(target, func_name, tf.function(bound_fn, input_signature=input_signature))
-    except TypeError:
-        try:
-            setattr(target, func_name, tf.function(bound_fn))
-        except TypeError:
-            return
-
-
-def _clear_tf_function_cache(func):
-    """
-    Clear the cached concrete functions if present.
-
-    :param func: TensorFlow function wrapper.
-    """
-    cache = getattr(func, "_function_cache", None)
-    if cache is not None:
-        cache.clear()
-
-
-def _iter_callable_names(obj):
-    """
-    Collect callable attribute names, skipping properties that raise.
-
-    :param obj: object to inspect.
-    :returns: list of unique callable attribute names.
-    """
-    names = []
-    for name in dir(obj):
-        try:
-            attr = getattr(obj, name)
-        except Exception:
-            continue
-        if callable(attr):
-            names.append(name)
-    for name, attr in obj.__dict__.items():
-        if callable(attr):
-            names.append(name)
-    return list(set(names))
+    if name == 'prec':
+        return tu.prec
+    if name == 'np_prec':
+        return tu.np_prec
+    raise AttributeError("module {!r} has no attribute {!r}".format(__name__, name))
 
 
 def _normalize_weights(weights):
@@ -172,42 +92,10 @@ def _normalize_weights(weights):
     return weights
 
 
-tfb = tfp.bijectors
-tfd = tfp.distributions
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input
-from tensorflow.keras.callbacks import Callback
-import tensorflow.keras.callbacks as keras_callbacks
-# tensorflow precision:
-prec = tf.float32
-np_prec = np.float32
+def _precision_name(dtype):
+    """Name of a torch floating dtype, for example ``'float32'``."""
+    return str(dtype).replace('torch.', '')
 
-###############################################################################
-# Keras helpers:
-
-class LogProbLayer(tf.keras.layers.Layer):
-    """Keras layer that evaluates distribution log-probability."""
-
-    def __init__(self, distribution, **kwargs):
-        """
-        Initialize the log-probability layer.
-
-        :param distribution: TensorFlow Probability distribution instance.
-        :param kwargs: additional keyword arguments passed to ``Layer``.
-        """
-        super().__init__(**kwargs)
-        self.distribution = distribution
-
-    def build(self, input_shape):
-        """Build the layer and initialize distribution variables."""
-        if input_shape[-1] is not None:
-            dummy = tf.zeros((1, int(input_shape[-1])), dtype=self.dtype or prec)
-            _ = self.distribution.log_prob(dummy)
-        super().build(input_shape)
-
-    def call(self, inputs):
-        """Compute log-probability for the inputs."""
-        return self.distribution.log_prob(inputs)
 
 # plotting global settings:
 matplotlib_backend = matplotlib.get_backend()
@@ -242,7 +130,7 @@ plot_options = {
 # main class to compute NF-based probability distributions:
 
 
-class FlowCallback(Callback):
+class FlowCallback(training.Callback):
     """
     A class to compute the normalizing flow interpolation of a probability density given the samples.
 
@@ -252,39 +140,61 @@ class FlowCallback(Callback):
     * `Y` designates samples in the gaussian approximation space, `Y` is obtained by shifting and scaling `X` by its mean and covariance (like a PCA);
     * `Z` designates samples in the gaussianized space, connected to `Y` with a normalizing flow denoted `trainable_bijector`.
 
-    The user may provide the `trainable_bijector` as a :class:`~tfp.bijectors.Bijector` object from `Tensorflow Probability <https://www.tensorflow.org/probability/>`_ or make use of the utility class MaskedAutoregressiveFLow to instantiate a Masked Autoregressive Flow (with `trainable_bijector='MAF'`).
+    The user may provide the `trainable_bijector` as a :class:`~tensiometer.synthetic_probability.bijectors.Bijector` object or make use of the utility class :class:`~tensiometer.synthetic_probability.trainable_bijectors.AutoregressiveFlow` to instantiate a Masked Autoregressive Flow (with `trainable_bijector='AutoregressiveFlow'`).
 
-    This class derives from :class:`~tf.keras.callbacks.Callback` from Keras, which allows for visualization during training. The normalizing flows (X->Y->Z) are implemented as :class:`~tfp.bijectors.Bijector` objects and encapsulated in a Keras :class:`~tf.keras.Model`.
+    This class derives from :class:`~tensiometer.synthetic_probability.training.Callback`, which allows for visualization during training. The normalizing flows (X->Y->Z) are implemented as :class:`~tensiometer.synthetic_probability.bijectors.Bijector` objects (PyTorch modules) and trained with a :class:`~tensiometer.synthetic_probability.training.Trainer`.
 
     Here is an example:
 
     .. code-block:: python
 
         # Initialize the flow and model
-        diff_flow_callback = FlowCallback(chain, trainable_bijector='MAF')
+        diff_flow_callback = FlowCallback(chain, trainable_bijector='AutoregressiveFlow')
         # Train the model
         diff_flow_callback.train()
-        # Compute the shift probability and confidence interval
-        p, p_low, p_high = diff_flow_callback.estimate_shift_significance()
+        # Save and reload, without the chain:
+        diff_flow_callback.save('diff_flow.pt')
+        diff_flow_callback = FlowCallback.load('diff_flow.pt')
 
     :param chain: input parameter difference chain.
     :type chain: :class:`~getdist.mcsamples.MCSamples`
     :param param_names: parameter names of the parameters to be used
         in the calculation. By default all running parameters.
     :type param_names: list, optional
-    :param trainable_bijector: either a :class:`~tfp.bijectors.Bijector` object
-        representing the mapping from `Z` to `Y`, or 'MAF', defaults to 'MAF'.
-    :type trainable_bijector: optional
-    :param learning_rate: initial learning rate, defaults to 1e-3.
-    :type learning_rate: float, optional
+    :param param_ranges: dictionary with the ranges of all the parameters, by default from the chain.
+    :param periodic_params: list of names of periodic parameters.
     :param feedback: feedback level, defaults to 1. Zero is no feedback (including training plotting). One is a little feedback. Two and higher is a lot of feedback (useful for debug).
     :type feedback: int, optional
     :param plot_every: how much to plot during training. This quantifies how many epochs should pass before plotting.
     :type plot_every: int, optional
+    :param initialize_model: build the trainer at initialization (otherwise at the first training).
+    :param prior_bijector: ``'ranges'`` (uniform priors on the parameter ranges), a bijector, or None.
+    :param apply_rescaling: whiten the samples with their Gaussian approximation (True),
+        rescale them independently (``'independent'``) or not (False).
+    :param trainable_bijector: ``'AutoregressiveFlow'``, a
+        :class:`~tensiometer.synthetic_probability.trainable_bijectors.TrainableTransformation`,
+        a bijector, or None. Defaults to ``'AutoregressiveFlow'``.
     :param validation_split: fraction of samples to use for the validation sample, defaults to 0.1
     :type validation_split: float, optional
+    :param device: compute device (``'cpu'``, ``'cuda'``, ``'cuda:N'``, ``'mps'``), defaults to
+        the device set with :func:`~tensiometer.synthetic_probability.tensor_utilities.set_device`
+        or ``TENSIOMETER_DEVICE`` (cpu unless changed).
+    :param kwargs: options of the trainable transformation, of the loss function and of the
+        training split (``rng``, ``validation_training_idx``, ``learning_rate``, ...).
     :reference: George Papamakarios, Theo Pavlakou, Iain Murray (2017). Masked Autoregressive Flow for Density Estimation. `arXiv:1705.07057 <https://arxiv.org/abs/1705.07057>`_
     """
+
+    # defaults for objects built without the constructor:
+    is_light = False
+    _trainer_initialized = False
+
+    # attributes that are not stored in light snapshots (see save):
+    _full_only_attributes = (
+        'chain_samples', 'chain_weights', 'chain_loglikes', 'chain_nearest_index',
+        'training_samples', 'test_samples', 'training_weights', 'test_weights',
+        'training_logP_preabs', 'test_logP_preabs', 'training_idx', 'test_idx',
+        'training_dataset', 'validation_dataset', 'chi2Y', 'chi2Z', 'loss', 'trainer',
+    )
 
     def __init__(
             self,
@@ -299,6 +209,7 @@ class FlowCallback(Callback):
             apply_rescaling=True,
             trainable_bijector='AutoregressiveFlow',
             validation_split=0.1,
+            device=None,
             **kwargs):
 
         # check input:
@@ -308,15 +219,24 @@ class FlowCallback(Callback):
             raise ValueError('feedback needs to be a positive integer')
         if plot_every < 0 or not isinstance(plot_every, int):
             raise ValueError('plot_every needs to be a positive integer')
-            
+        if 'trainable_bijector_path' in kwargs:
+            raise ValueError('trainable_bijector_path has been removed. Save the whole flow with '
+                             'flow.save(path) and restore it with FlowCallback.load(path).')
+
         # read in varaiables:
         self.feedback = feedback
         self.plot_every = plot_every
+        self.is_light = False
+        # precision and device:
+        self.device = tu.check_device(device)
+        tu.lock_precision()
+        self.prec = tu.get_precision()
+        self.np_prec = tu.np_prec
 
         # initialize internal samples from chain:
-        self._init_chain(chain, 
-                         param_names=param_names, 
-                         param_ranges=param_ranges, 
+        self._init_chain(chain,
+                         param_names=param_names,
+                         param_ranges=param_ranges,
                          periodic_params=periodic_params,
                          **kwargs)
         # initialize fixed bijector:
@@ -330,10 +250,10 @@ class FlowCallback(Callback):
         self._init_distribution()
         # initialize loss function:
         self._init_loss_function(**kwargs)
-        # initialize model:
-        self._model_initialied = False
+        # initialize trainer:
+        self._trainer_initialized = False
         if initialize_model:
-            self._init_model()
+            self._init_trainer()
         # initialize training metrics and plotting:
         self._init_training_monitoring()
 
@@ -341,7 +261,7 @@ class FlowCallback(Callback):
         self.is_trained = False
         self.MAP_coord = None
         self.MAP_logP = None
-        
+
     def _init_chain(self, chain=None, param_names=None, param_ranges=None, periodic_params=None, init_nearest=False, **kwargs):
         """
         Read in MCMC sample chain and save internal quantities.
@@ -349,7 +269,7 @@ class FlowCallback(Callback):
         # return if we have no chain:
         if chain is None:
             return None
-        
+
         # feedback:
         if self.feedback > 0:
             print('* Initializing samples')
@@ -363,7 +283,8 @@ class FlowCallback(Callback):
         # feedback:
         if self.feedback > 1:
             print('    - flow name:', self.name_tag)
-            print('    - precision:', prec)
+            print('    - precision:', self.prec)
+            print('    - device   :', self.device)
 
         # initialize param names:
         if param_names is None:
@@ -381,7 +302,7 @@ class FlowCallback(Callback):
 
         # check periodic parameters:
         if periodic_params is not None:
-            if not isinstance(periodic_params, Iterable):
+            if not isinstance(periodic_params, Iterable) or isinstance(periodic_params, str):
                 periodic_params = [periodic_params]
             for name in periodic_params:
                 if name not in param_names:
@@ -390,7 +311,7 @@ class FlowCallback(Callback):
             periodic_params = []
         self.periodic_params = periodic_params
         self.trainable_periodic_params = []
-        
+
         # initialize ranges:
         self.parameter_ranges = {}
         for name in param_names:
@@ -421,7 +342,7 @@ class FlowCallback(Callback):
         for name in param_names:
             if np.any(chain.samples[:, chain.index[name]] < self.parameter_ranges[name][0]) or \
                     np.any(chain.samples[:, chain.index[name]] > self.parameter_ranges[name][1]):
-                raise ValueError('Samples for parameter ', name, 
+                raise ValueError('Samples for parameter ', name,
                                  ' are outside the specified range: ', self.parameter_ranges[name],
                                  ' min/max values are: ', np.amin(chain.samples[:, chain.index[name]]),
                                  np.amax(chain.samples[:, chain.index[name]]))
@@ -434,7 +355,10 @@ class FlowCallback(Callback):
                 print('    - periodic parameters:', self.periodic_params)
 
         # initialize sample MAP:
-        temp = chain.samples[np.argmin(chain.loglikes), :]
+        if chain.loglikes is not None:
+            temp = chain.samples[np.argmin(chain.loglikes), :]
+        else:
+            temp = chain.samples[np.argmax(chain.weights), :]
         self.sample_MAP = np.array([temp[chain.index[name]] for name in param_names])
         # try to get real best fit:
         try:
@@ -445,20 +369,20 @@ class FlowCallback(Callback):
         # initialize the samples:
         ind = [chain.index[name] for name in param_names]
         self.num_params = len(ind)
-        self.chain_samples = chain.samples[:, ind].astype(np_prec)
-        self.chain_weights = chain.weights.astype(np_prec)
+        self.chain_samples = chain.samples[:, ind].astype(self.np_prec)
+        self.chain_weights = chain.weights.astype(self.np_prec)
 
         # initialize loglikes:
         self.has_loglikes = chain.loglikes is not None
         if not self.has_loglikes:
             self.chain_loglikes = None
         else:
-            self.chain_loglikes = chain.loglikes.astype(np_prec)
+            self.chain_loglikes = chain.loglikes.astype(self.np_prec)
 
         # initialize nearest neighbours:
         if init_nearest:
             self._init_nearest_samples()
-        
+
         # print feedback:
         if self.feedback > 0:
             print(f'    - time taken: {time.time() - _time:.4f} seconds')
@@ -497,7 +421,7 @@ class FlowCallback(Callback):
         _time = time.time()
 
         # Prior bijector setup:
-        if prior_bijector == 'ranges':
+        if isinstance(prior_bijector, str) and prior_bijector == 'ranges':
             # extend slightly the ranges to avoid overflows:
             temp_ranges = []
             for name in self.param_names:
@@ -515,10 +439,12 @@ class FlowCallback(Callback):
                     temp_ranges.append(None)
             # define bijector:
             self.prior_bijector = pb.prior_bijector_helper(temp_ranges)
-        elif isinstance(prior_bijector, tfp.bijectors.Bijector):
+        elif isinstance(prior_bijector, bj.Bijector):
             self.prior_bijector = prior_bijector
         elif prior_bijector is None or prior_bijector is False:
-            self.prior_bijector = tfb.Identity()
+            self.prior_bijector = bj.Identity()
+        else:
+            raise ValueError('prior_bijector must be "ranges", a bijector or None, got ' + repr(prior_bijector))
         self.bijectors = [self.prior_bijector]
 
         # feedback:
@@ -528,12 +454,13 @@ class FlowCallback(Callback):
         # Whitening bijector:
         if apply_rescaling:
             # calculate gaussian approximation, leaving out periodic parameters:
-            temp_X = self.prior_bijector.inverse(self.chain_samples).numpy()
+            with torch.no_grad():
+                temp_X = tu.to_numpy(self.prior_bijector.inverse(self.chain_samples))
             temp_chain = MCSamples(samples=temp_X, weights=self.chain_weights, names=self.param_names)
             temp_gaussian_approx = gaussian_tension.gaussian_approximation(temp_chain, param_names=self.param_names)
             # calculate mean and covariance:
-            _mean = temp_gaussian_approx.means[0]
-            _cov = temp_gaussian_approx.covs[0]
+            _mean = np.array(temp_gaussian_approx.means[0], dtype=np.float64)
+            _cov = np.array(temp_gaussian_approx.covs[0], dtype=np.float64)
             # periodic parameters are handled differently, rescaling to unit box:
             if len(self.periodic_params) > 0:
                 for name in self.periodic_params:
@@ -544,14 +471,10 @@ class FlowCallback(Callback):
                     _cov[:, _index] = 0.0
                     _cov[_index, _index] = (0.5*(b-a))**2
             if apply_rescaling == 'independent':
-                temp_dist = tfd.MultivariateNormalDiag(
-                    loc=self.cast(temp_gaussian_approx.means[0]),
-                    scale_diag=self.cast(np.sqrt(np.diagonal(temp_gaussian_approx.covs[0]))))
+                _scale_tril = np.diag(np.sqrt(np.diagonal(_cov)))
             else:
-                temp_dist = tfd.MultivariateNormalTriL(
-                    loc=self.cast(temp_gaussian_approx.means[0]),
-                    scale_tril=tf.linalg.cholesky(self.cast(temp_gaussian_approx.covs[0])))
-            self.bijectors.append(temp_dist.bijector)
+                _scale_tril = np.linalg.cholesky(_cov)
+            self.bijectors.append(bj.AffineTriL(_mean, _scale_tril))
 
         # feedback:
         if self.feedback > 1:
@@ -566,8 +489,9 @@ class FlowCallback(Callback):
             if not apply_rescaling:
                 raise ValueError('Cannot use periodic parameters without rescaling')
             # chain the bijectors and evaluate them:
-            _temp_bijectors = tfb.Chain(self.bijectors) 
-            _temp_samples = _temp_bijectors.inverse(self.chain_samples).numpy()
+            _temp_bijectors = bj.Chain(self.bijectors)
+            with torch.no_grad():
+                _temp_samples = tu.to_numpy(_temp_bijectors.inverse(self.chain_samples))
             # build modulus bijector:
             temp_bijectors = []
             for name in self.param_names:
@@ -577,28 +501,26 @@ class FlowCallback(Callback):
                     # compute circular mean:
                     _avg_sin = np.average(np.sin(np.pi*_temp_samples[:,_index]), weights=self.chain_weights)
                     _avg_cos = np.average(np.cos(np.pi*_temp_samples[:,_index]), weights=self.chain_weights)
-                    _circ_mean = np.arctan2(_avg_sin, _avg_cos) / np.pi
-                    _circ_mean = self.cast(_circ_mean)
+                    _circ_mean = float(self.np_prec(np.arctan2(_avg_sin, _avg_cos) / np.pi))
                     # shift and mod the samples to calculate variance:
-                    _tmp = pb.Mod1D(minval=-1.0, maxval=1.0).forward(_temp_samples[:,_index]-_circ_mean)
-                    _circ_var = np.average(_tmp**2, weights=self.chain_weights)                    
+                    with torch.no_grad():
+                        _tmp = tu.to_numpy(pb.Mod1D(minval=-1.0, maxval=1.0).forward(_temp_samples[:,_index]-_circ_mean))
+                    _circ_var = np.average(_tmp**2, weights=self.chain_weights)
                     # define bijectors:
-                    _temp_temp_bijectors = [pb.Mod1D(minval=-1.0, maxval=1.0), tfb.Shift(_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)]
+                    _temp_temp_bijectors = [pb.Mod1D(minval=-1.0, maxval=1.0), bj.Shift(_circ_mean), pb.Mod1D(minval=-1.0, maxval=1.0)]
                     # if the variance is small (the distribution is well localized inside a period) then rescale to variance 1:
                     if np.sqrt(_circ_var) / 2.0 < 0.05:
-                        _temp_temp_bijectors.append(tfb.Scale(self.cast(np.sqrt(_circ_var))))
+                        _temp_temp_bijectors.append(bj.Scale(float(np.sqrt(_circ_var))))
                     else:
                         self.trainable_periodic_params.append(name)
-                    temp_bijectors.append(tfb.Chain(_temp_temp_bijectors, name='ShiftMod1D'))                       
+                    temp_bijectors.append(bj.Chain(_temp_temp_bijectors, name='ShiftMod1D'))
                 else:
-                    temp_bijectors.append(tfb.Identity())
-            n = len(self.param_names)
-            split = tfb.Split(n, axis=-1)
-            bijector = tfb.Chain([tfb.Invert(split), tfb.JointMap(temp_bijectors), split], name='ModBijector')
+                    temp_bijectors.append(bj.Identity())
+            bijector = bj.Blockwise(temp_bijectors, name='ModBijector')
             self.bijectors.append(bijector)
 
-        self.fixed_bijector = tfb.Chain(self.bijectors)
-        
+        self.fixed_bijector = bj.Chain(self.bijectors)
+
         # feedback:
         if self.feedback > 0:
             print('    - time taken: {0:.4f} seconds'.format(time.time() - _time))
@@ -606,7 +528,7 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_trainable_bijector(self, trainable_bijector, trainable_bijector_path=None, **kwargs):
+    def _init_trainable_bijector(self, trainable_bijector, **kwargs):
         """
         Initialize trainable part of the bijector
         """
@@ -620,49 +542,47 @@ class FlowCallback(Callback):
             kwargs['periodic_params'] = [True if name in self.trainable_periodic_params else False for name in self.param_names]
 
         # calculate minimum ranges in training space:
-        _training_samples = self.fixed_bijector.inverse(self.chain_samples).numpy()
-        _training_space_min = np.amin(_training_samples, axis=0).astype(np_prec)
-        _training_space_max = np.amax(_training_samples, axis=0).astype(np_prec)
+        with torch.no_grad():
+            _training_samples = tu.to_numpy(self.fixed_bijector.inverse(self.chain_samples))
+        _training_space_min = np.amin(_training_samples, axis=0).astype(self.np_prec)
+        _training_space_max = np.amax(_training_samples, axis=0).astype(self.np_prec)
         kwargs['parameters_min'] = _training_space_min
         kwargs['parameters_max'] = _training_space_max
         # select model for trainable transformation:
-        if trainable_bijector == 'AutoregressiveFlow':
-            self.trainable_transformation = tb.AutoregressiveFlow(self.num_params, 
-                                                                  feedback=self.feedback, 
+        if isinstance(trainable_bijector, str) and trainable_bijector == 'AutoregressiveFlow':
+            self.trainable_transformation = tb.AutoregressiveFlow(self.num_params,
+                                                                  feedback=self.feedback,
+                                                                  device='cpu',
                                                                   **kwargs)
         elif isinstance(trainable_bijector, tb.TrainableTransformation):
             self.trainable_transformation = trainable_bijector
-        elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
+        elif isinstance(trainable_bijector, bj.Bijector):
             self.trainable_transformation = None
         elif trainable_bijector is None or trainable_bijector is False:
             self.trainable_transformation = None
         else:
-            raise ValueError
-
-        # load from file:
-        if trainable_bijector_path is not None:
-            if self.trainable_transformation is not None:
-                if self.feedback > 1:
-                    print('    - loading trainable bijector from file:', trainable_bijector_path)
-                self.trainable_transformation = self.trainable_transformation.load(trainable_bijector_path, 
-                                                                                   **kwargs)
-            else:
-                raise ValueError('Cannot load a bijector from file if the trainable bijector is not a TrainableTransformation')
+            raise ValueError('trainable_bijector must be "AutoregressiveFlow", a TrainableTransformation, '
+                             'a bijector or None, got ' + repr(trainable_bijector))
 
         # initialize bijector:
         if self.trainable_transformation is not None:
             self.trainable_bijector = self.trainable_transformation.bijector
-        elif isinstance(trainable_bijector, tfp.bijectors.Bijector):
+        elif isinstance(trainable_bijector, bj.Bijector):
             self.trainable_bijector = trainable_bijector
-        elif trainable_bijector is None or trainable_bijector is False:
-            self.trainable_bijector = tfb.Identity()
+        else:
+            self.trainable_bijector = bj.Identity()
 
         self.bijectors.append(self.trainable_bijector)
-        self.bijector = tfb.Chain(self.bijectors)
+        self.bijector = bj.Chain(self.bijectors)
+
+        # move all the bijectors to the flow device:
+        self.bijector.to(self.device)
+        if self.trainable_transformation is not None and hasattr(self.trainable_transformation, 'device'):
+            self.trainable_transformation.device = self.device
 
         # feedback:
         if self.feedback > 0:
-            print('    - time taken: {0:.4f} seconds'.format(time.time() - _time))        
+            print('    - time taken: {0:.4f} seconds'.format(time.time() - _time))
         #
         return None
 
@@ -687,52 +607,37 @@ class FlowCallback(Callback):
         else:
             self.test_idx, self.training_idx = validation_training_idx
 
-        # training samples:
-        self.training_samples = self.fixed_bijector.inverse(
-            self.chain_samples[self.training_idx, :]).numpy().astype(np_prec)
-        self.num_training_samples = len(self.training_samples)
+        with torch.no_grad():
+            # training samples:
+            self.training_samples = tu.to_numpy(self.fixed_bijector.inverse(
+                self.chain_samples[self.training_idx, :])).astype(self.np_prec)
+            self.num_training_samples = len(self.training_samples)
 
-        if self.has_loglikes:
-            _jac_true_preabs = self.fixed_bijector.inverse_log_det_jacobian(
-                self.chain_samples[self.training_idx, :], event_ndims=1)
-            self.training_logP_preabs = -1. * self.chain_loglikes[self.training_idx] - _jac_true_preabs
+            if self.has_loglikes:
+                _jac_true_preabs = tu.to_numpy(self.fixed_bijector.inverse_log_det_jacobian(
+                    self.chain_samples[self.training_idx, :], event_ndims=1))
+                self.training_logP_preabs = (-1. * self.chain_loglikes[self.training_idx] - _jac_true_preabs).astype(self.np_prec)
+            else:
+                self.training_logP_preabs = None
 
-        self.training_weights = _normalize_weights(self.chain_weights[self.training_idx])
-        self.has_weights = np.any(self.training_weights != self.training_weights[0])
+            self.training_weights = _normalize_weights(self.chain_weights[self.training_idx])
+            self.has_weights = bool(np.any(self.training_weights != self.training_weights[0])) if len(self.training_weights) > 0 else False
 
-        # test samples:
-        self.test_samples = self.fixed_bijector.inverse(self.chain_samples[self.test_idx, :]).numpy().astype(np_prec)
-        self.num_test_samples = len(self.test_samples)
+            # test samples:
+            self.test_samples = tu.to_numpy(self.fixed_bijector.inverse(self.chain_samples[self.test_idx, :])).astype(self.np_prec)
+            self.num_test_samples = len(self.test_samples)
 
-        if self.has_loglikes:
-            _jac_true_test_preabs = self.fixed_bijector.inverse_log_det_jacobian(
-                self.chain_samples[self.test_idx, :], event_ndims=1)
-            self.test_logP_preabs = -1. * self.chain_loglikes[self.test_idx] - _jac_true_test_preabs
+            if self.has_loglikes:
+                _jac_true_test_preabs = tu.to_numpy(self.fixed_bijector.inverse_log_det_jacobian(
+                    self.chain_samples[self.test_idx, :], event_ndims=1))
+                self.test_logP_preabs = (-1. * self.chain_loglikes[self.test_idx] - _jac_true_test_preabs).astype(self.np_prec)
+            else:
+                self.test_logP_preabs = None
 
-        self.test_weights = _normalize_weights(self.chain_weights[self.test_idx])
+            self.test_weights = _normalize_weights(self.chain_weights[self.test_idx])
 
-        # initialize tensorflow sample generator:
-        if self.has_loglikes:
-            self.training_dataset = tf.data.Dataset.from_tensor_slices((
-                self.cast(self.training_samples),
-                self.cast(self.training_logP_preabs),
-                self.cast(self.training_weights),
-            ))
-        else:
-            self.training_dataset = tf.data.Dataset.from_tensor_slices((
-                self.cast(self.training_samples),
-                self.cast(self.training_weights),
-            ))
-        self.training_dataset = self.training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
-        self.training_dataset = self.training_dataset.shuffle(
-            self.num_training_samples, reshuffle_each_iteration=True).repeat()
-
-        # initialize validation data:
-        if self.has_loglikes:
-            self.validation_dataset = (
-                self.cast(self.test_samples), self.cast(self.test_logP_preabs), self.cast(self.test_weights))
-        else:
-            self.validation_dataset = (self.cast(self.test_samples), self.cast(self.test_weights))
+        # initialize the tensors used for training:
+        self._init_dataset_tensors()
 
         # final feedback
         if self.feedback > 1:
@@ -755,6 +660,36 @@ class FlowCallback(Callback):
         #
         return None
 
+    def _init_dataset_tensors(self):
+        """
+        Create the training and validation tensors ``(samples, logP or None, weights)`` on the
+        flow device from the stored numpy arrays.
+        """
+        def _tensor(value):
+            if value is None:
+                return None
+            return tu.to_tensor(value, device=self.device)
+        self.training_dataset = (
+            _tensor(self.training_samples),
+            _tensor(getattr(self, 'training_logP_preabs', None)),
+            _tensor(self.training_weights))
+        self.validation_dataset = (
+            _tensor(self.test_samples),
+            _tensor(getattr(self, 'test_logP_preabs', None)),
+            _tensor(self.test_weights))
+        #
+        return None
+
+    def _build_distributions(self):
+        """Build the base, full and abstract space distributions on the flow device."""
+        self.base_distribution = ds.standard_normal(self.num_params, device=self.device)
+        # samples from std gaussian mapped to original space:
+        self.distribution = ds.TransformedDistribution(
+            distribution=self.base_distribution, bijector=self.bijector)
+        # abstract space distribution:
+        self.trained_distribution = ds.TransformedDistribution(
+            distribution=self.base_distribution, bijector=self.trainable_bijector)
+
     def _init_distribution(self):
         """
         Initialize the transformed distributions
@@ -763,55 +698,21 @@ class FlowCallback(Callback):
         if self.feedback > 0:
             print('* Initializing transformed distribution')
         _time = time.time()
-
-        # full distribution:
-        self.base_distribution = tfd.MultivariateNormalDiag(
-            tf.zeros(self.num_params, dtype=prec), tf.ones(self.num_params, dtype=prec))
-        self.distribution = tfd.TransformedDistribution(
-            distribution=self.base_distribution,
-            bijector=self.bijector)  # samples from std gaussian mapped to original space
-        # abstract space distribution:
-        self.trained_distribution = tfd.TransformedDistribution(
-            distribution=self.base_distribution, bijector=self.trainable_bijector)
+        self._build_distributions()
         # feedback:
         if self.feedback > 0:
             print('    - time taken: {0:.4f} seconds'.format(time.time() - _time))
         #
         return None
 
-    def _compile_model(self):
+    def _reset_optimizer(self):
         """
-        Utility function to compile model
+        Reset the loss function state and create a fresh optimizer.
         """
-        # feedback:
-        if self.feedback > 0:
-            print('    - Compiling model')
-        _time = time.time()
         # reset loss function:
         self.loss.reset()
-        # compile model:
-        self.model.compile(
-            optimizer=tf.optimizers.Adam(
-                learning_rate=self.initial_learning_rate, global_clipnorm=self.global_clipnorm),
-            loss=self.loss,
-            weighted_metrics=[])
-        # we need to rebuild all the self methods that are tf.functions otherwise they might do unwanted caching...
-        _self_functions = _iter_callable_names(self)
-        # get the methods that are tensorflow functions:
-        _tf_functions = []
-        for func in _self_functions:
-            try:
-                attr = getattr(self, func)
-            except Exception:
-                continue
-            if _is_tf_function(attr):
-                _tf_functions.append(func)
-        # clear function caches to avoid stale traces
-        for func in _tf_functions:
-            _clear_tf_function_cache(getattr(self, func))
-        # feedback:
-        if self.feedback > 0:
-            print('    - time taken: {0:.4f} seconds'.format(time.time() - _time))
+        # new optimizer:
+        self.trainer.reset_optimizer()
         #
         return None
 
@@ -825,7 +726,7 @@ class FlowCallback(Callback):
             **kwargs):
         """
         Initialize the loss function.
- 
+
         mode can be standard, fixed or variable
         """
         # feedback:
@@ -857,6 +758,8 @@ class FlowCallback(Callback):
             self.loss = loss.SoftAdapt_weight_loss(**kwargs)
         elif self.loss_mode == 'sharpstep':
             self.loss = loss.SharpStep(**kwargs)
+        else:
+            raise ValueError('Unknown loss_mode ' + repr(self.loss_mode))
         # print feedback:
         if self.feedback > 1:
             self.loss.print_feedback(padding='    - ')
@@ -866,25 +769,26 @@ class FlowCallback(Callback):
         #
         return None
 
-    def _init_model(self):
+    def _init_trainer(self):
         """
-        Initialize model for training
-        """            
+        Initialize the trainer (optimizer and training loop).
+        """
         # feedback:
         if self.feedback > 0:
-            print('* Initializing training model')
+            print('* Initializing trainer')
         _time = time.time()
 
-        # build model:
-        self._model_initialied = False
-        x_ = Input(shape=(self.num_params,), dtype=prec)
-        log_prob = LogProbLayer(self.trained_distribution, name="log_prob")(x_)
-        model = Model(x_, log_prob)
-        self.set_model(model)
-        # compile model:
-        self._compile_model()
-        num_model_params = self.model.count_params()
-        self._model_initialied = True
+        # build trainer:
+        self._trainer_initialized = False
+        self.trainer = training.Trainer(
+            module=self.trainable_bijector,
+            log_prob_fn=self.trained_distribution.log_prob,
+            loss=self.loss,
+            learning_rate=self.initial_learning_rate,
+            global_clipnorm=self.global_clipnorm)
+        self.loss.reset()
+        num_model_params = training.count_parameters(self.trainable_bijector)
+        self._trainer_initialized = True
         # feedback:
         if self.feedback > 1:
             print('    - trainable parameters :', num_model_params)
@@ -902,73 +806,60 @@ class FlowCallback(Callback):
         #
         return None
 
-    def reset_tensorflow_caches(self):
+    def _check_trainable(self):
         """
-        Reset tensorflow caches. Useful for memory management.
-        When tf functions are run they build deep caches and can consume a lot of memory.
-        """
-        # get all methods:        
-        _self_functions = _iter_callable_names(self)
-        # get the methods that are tensorflow functions:
-        _tf_functions = []
-        for func in _self_functions:
-            try:
-                attr = getattr(self, func)
-            except Exception:
-                continue
-            if _is_tf_function(attr):
-                _tf_functions.append(func)
-        # clean temp graph:
-        for _f in _tf_functions:
-            _clear_tf_function_cache(getattr(self, _f))
-        # bijectors need to be cleared manually:
-        self.distribution.bijector._cache.clear()
-        self.prior_bijector._cache.clear()
-        self.fixed_bijector._cache.clear()
-        self.trainable_bijector._cache.clear()
-        self.bijector._cache.clear()
-        for _b in self.bijectors:
-            _b._cache.clear()
-        # clean tensorflow cache:
-        tf.keras.backend.clear_session()
-        # collect garbage:
-        gc.collect()
+        Raise if the flow cannot be trained.
 
-    def on_epoch_begin(self, epoch, logs):
+        :raises RuntimeError: for flows loaded from light snapshots.
+        """
+        if self.is_light:
+            raise RuntimeError('This flow was loaded from a light snapshot and cannot be trained. '
+                               'Load a full snapshot or rebuild the flow from the chain.')
+
+    def on_epoch_begin(self, epoch, logs=None):
         """
         Initialization to be done at the beginning of every epoch:
+        updates the weights of variable weight losses.
+
+        :param epoch: index of the current epoch.
+        :param logs: dictionary of training metrics passed by the training loop (unused, the
+            internal ``self.log`` is used instead).
+        :returns: None
         """
         # update loss function if needed:
         if issubclass(type(self.loss), loss.variable_weight_loss):
-            self.model.loss.update_lambda_values_on_epoch_begin(epoch, logs=self.log)
+            self.loss.update_lambda_values_on_epoch_begin(epoch, logs=self.log)
         #
         return None
 
     def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=None, **kwargs):
         """
-        Train the normalizing flow model. Internally, this runs the fit method of the Keras :class:`~tf.keras.Model`, to which `**kwargs are passed`.
+        Train the normalizing flow model. Internally, this runs the fit method of the
+        :class:`~tensiometer.synthetic_probability.training.Trainer`, to which relevant `**kwargs` are passed.
 
         :param epochs: number of training epochs, defaults to 100.
         :type epochs: int, optional
         :param batch_size: number of samples per batch, defaults to None. If None, the training sample is divided into `steps_per_epoch` batches.
         :type batch_size: int, optional
-        :param steps_per_epoch: number of steps per epoch, defaults to None. If None and `batch_size` is also None, then `steps_per_epoch` is set to 100.
+        :param steps_per_epoch: number of steps per epoch, defaults to None. If None and `batch_size` is also None, then `steps_per_epoch` is set to 20.
         :type steps_per_epoch: int, optional
-        :param callbacks: a list of additional Keras callbacks, such as :class:`~tf.keras.callbacks.ReduceLROnPlateau`, defaults to None which contains a selection of useful callbacks.
+        :param callbacks: a list of additional :class:`~tensiometer.synthetic_probability.training.Callback`, defaults to None which uses the learning rate scheduler selected with the ``lr_scheduler`` keyword (default :class:`~tensiometer.synthetic_probability.lr_schedulers.LRAdaptLossSlopeEarlyStop`).
         :type callbacks: list, optional
-        :param verbose: verbosity level, defaults to 1.
+        :param verbose: verbosity level: 0 silent, 1 one line per epoch, -1 progress bar. Defaults to 0 if ``feedback`` is 0 and 1 otherwise.
         :type verbose: int, optional
-        :return: A :class:`~tf.keras.callbacks.History` object. Its `history` attribute is a dictionary of training and validation loss values and metrics values at successive epochs: `"shift0_chi2"` is the squared norm of the zero-shift point in the gaussianized space, with the probability-to-exceed and corresponding tension in `"shift0_pval"` and `"shift0_nsigma"`; `"chi2Z_ks"` and `"chi2Z_ks_p"` contain the :math:`D_n` statistic and probability-to-exceed of the Kolmogorov-Smironov test that squared norms of the transformed samples `Z` are :math:`\\chi^2` distributed (with a number of degrees of freedom equal to the number of parameters).
-
-        batch_size = None
-        steps_per_epoch = None
-        verbose = None
-        callbacks = None
-        epochs = 2
+        :param kwargs: ``lr_scheduler``, name of the learning rate scheduler class in
+            :mod:`~tensiometer.synthetic_probability.lr_schedulers` (default
+            ``'LRAdaptLossSlopeEarlyStop'``, None for no scheduler), used only if ``callbacks`` is None,
+            and the options of its constructor (``min_lr`` defaults to the final learning rate of the flow).
+            Options of :meth:`~tensiometer.synthetic_probability.training.Trainer.fit` other than the
+            explicit arguments above are also passed through.
+        :return: A :class:`~tensiometer.synthetic_probability.training.History` object. Its `history` attribute is a dictionary of training and validation loss values and learning rates at successive epochs.
+        :raises RuntimeError: for flows loaded from light snapshots.
         """
+        self._check_trainable()
         # check that model is initialized:
-        if not self._model_initialied:
-            self._init_model()
+        if not self._trainer_initialized:
+            self._init_trainer()
         # We're trying to loop through the full sample each epoch
         if batch_size is None:
             if steps_per_epoch is None:
@@ -977,14 +868,11 @@ class FlowCallback(Callback):
         else:
             if steps_per_epoch is None:
                 steps_per_epoch = int(self.num_training_samples / batch_size)
-        # get tensorflow verbosity:
+        batch_size = max(int(batch_size), 1)
+        steps_per_epoch = max(int(steps_per_epoch), 1)
+        # get verbosity:
         if verbose is None:
-            if self.feedback == 0:
-                _verbose = 0
-            elif self.feedback >= 1:
-                _verbose = 2
-            elif self.feedback >= 3:
-                _verbose = 1
+            verbose = 0 if self.feedback == 0 else 1
         # set callbacks:
         if callbacks is None:
             callbacks = []
@@ -992,27 +880,36 @@ class FlowCallback(Callback):
             lr_scheduler_name = kwargs.get('lr_scheduler', 'LRAdaptLossSlopeEarlyStop')
             if lr_scheduler_name is not None:
                 if hasattr(lr, lr_scheduler_name):
-                    lr_schedule = getattr(lr, lr_scheduler_name)(min_lr=self.final_learning_rate,
-                                                                 **stutils.filter_kwargs(kwargs, getattr(lr, lr_scheduler_name)))
-                    callbacks.append(lr_schedule)
+                    _scheduler = getattr(lr, lr_scheduler_name)
+                    _scheduler_kwargs = stutils.filter_kwargs(kwargs, _scheduler)
+                    if 'min_lr' in inspect.signature(_scheduler).parameters:
+                        _scheduler_kwargs.setdefault('min_lr', self.final_learning_rate)
+                    callbacks.append(_scheduler(**_scheduler_kwargs))
                 else:
                     print(f"Warning: lr_scheduler '{lr_scheduler_name}' not found in lr module.")
-            # TQDM progress bar:
-            if verbose == -1:
-                from tqdm.keras import TqdmCallback
-                callbacks.append(TqdmCallback(verbose=self.feedback))
-                _verbose = 0
-
+        # validation data:
+        if self.num_test_samples > 0:
+            validation_data = self.validation_dataset
+        else:
+            validation_data = None
+        # other options of the trainer:
+        _fit_kwargs = stutils.filter_kwargs(kwargs, self.trainer.fit)
+        for key in ['x', 'y', 'sample_weight', 'validation_data', 'epochs', 'batch_size',
+                    'steps_per_epoch', 'callbacks', 'verbose']:
+            _fit_kwargs.pop(key, None)
         # Run training:
-        hist = self.model.fit(
-            x=self.training_dataset.batch(batch_size),
-            batch_size=batch_size,
+        x, y, w = self.training_dataset
+        hist = self.trainer.fit(
+            x=x,
+            y=y,
+            sample_weight=w,
+            validation_data=validation_data,
             epochs=epochs,
+            batch_size=batch_size,
             steps_per_epoch=steps_per_epoch,
-            validation_data=self.validation_dataset,
-            verbose=_verbose,
-            callbacks=[tf.keras.callbacks.TerminateOnNaN(), self] + callbacks,
-            **stutils.filter_kwargs(kwargs, self.model.fit))
+            callbacks=[self] + list(callbacks),
+            verbose=verbose,
+            **_fit_kwargs)
         # model is now trained:
         self.is_trained = True
         #
@@ -1024,11 +921,18 @@ class FlowCallback(Callback):
         random weight initializations and selects the one that has the best
         performances on the validation set after training.
 
+        The first member of the population starts from the current weights, the others from
+        freshly initialized weights.
+
         :param pop_size: number of weight initializations. Time to solution scales linearly with this parameter.
+        :param kwargs: options passed to :meth:`train` for every member of the population.
+        :returns: training and validation loss of the best member.
+        :raises RuntimeError: for flows loaded from light snapshots.
         """
+        self._check_trainable()
         # check that model is initialized:
-        if not self._model_initialied:
-            self._init_model()
+        if not self._trainer_initialized:
+            self._init_trainer()
         # initialize:
         best_loss, best_val_loss, best_weights, best_log = None, None, None, None
         loss, val_loss, logs = [], [], []
@@ -1041,55 +945,44 @@ class FlowCallback(Callback):
                     print('* Training population', ind)
                 else:
                     print('* Training')
-                    
+
             # initialize logs:
             self.log = {_k: [] for _k in self.log.keys()}
             self.log['population'] = ind
             if best_loss is not None:
                 self.log['best_loss'] = best_loss
 
-            # build the random weights:
-            for layer in self.model.layers:
-                if getattr(layer, "built", False):
-                    continue
-                input_shape = getattr(layer, "input_shape", None)
-                if input_shape is None:
-                    input_shape = getattr(layer, "batch_input_shape", None)
-                if input_shape is None:
-                    continue
-                try:
-                    layer.build(input_shape)
-                except Exception:
-                    continue
+            # draw new random weights:
+            if ind > 1:
+                training.reset_module_parameters(self.trainable_bijector)
 
-            # re-compile model:
-            self._compile_model()
+            # reset optimizer:
+            self._reset_optimizer()
 
             # train:
             history = self.train(**kwargs)
-            # save log:
-            loss.append(history.history['loss'][-1])
-            val_loss.append(history.history['val_loss'][-1])
+            # save log (a population whose training never completed an epoch has infinite loss):
+            if len(history.history.get('loss', [])) > 0:
+                _last_loss = history.history['loss'][-1]
+                _last_val_loss = history.history.get('val_loss', history.history['loss'])[-1]
+            else:
+                _last_loss, _last_val_loss = np.inf, np.inf
+            loss.append(_last_loss)
+            val_loss.append(_last_val_loss)
             logs.append(copy.deepcopy(self.log))
 
             # if improvement save weights:
-            if best_val_loss is None:
+            if best_val_loss is None or _last_val_loss < best_val_loss:
                 best_log = copy.deepcopy(self.log)
-                best_loss = copy.deepcopy(history.history['loss'][-1])
-                best_val_loss = copy.deepcopy(history.history['val_loss'][-1])
-                best_weights = copy.deepcopy(self.model.get_weights())
-            else:
-                if history.history['val_loss'][-1] < best_val_loss:
-                    best_log = copy.deepcopy(self.log)
-                    best_loss = copy.deepcopy(history.history['loss'][-1])
-                    best_val_loss = copy.deepcopy(history.history['val_loss'][-1])
-                    best_weights = copy.deepcopy(self.model.get_weights())
+                best_loss = copy.deepcopy(_last_loss)
+                best_val_loss = copy.deepcopy(_last_val_loss)
+                best_weights = copy.deepcopy(self.trainable_bijector.state_dict())
 
             # update counter:
             ind += 1
 
         # select best:
-        self.model.set_weights(best_weights)
+        self.trainable_bijector.load_state_dict(best_weights)
         self.log = best_log
         self.population_logs = logs
 
@@ -1109,46 +1002,118 @@ class FlowCallback(Callback):
 
     def cast(self, v):
         """
-        Cast vector/tensor to tensorflow tensor with internal precision of the flow.
+        Convert a vector to a host (CPU) tensor with the precision of the flow.
 
-        :param v: input vector
+        :param v: input vector (array-like or tensor).
+        :returns: CPU tensor.
         """
-        return tf.cast(v, dtype=prec)
+        return tu.to_tensor(v, device='cpu')
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+    def _input(self, coord):
+        """
+        Convert an input of a non-derivative method.
+
+        :param coord: array-like or tensor.
+        :returns: tensor on the flow device and whether the caller wants a graph-attached result.
+        """
+        needs_graph = torch.is_tensor(coord) and coord.requires_grad
+        return tu.to_tensor(coord, device=self.device), needs_graph
+
+    def _grad_input(self, coord):
+        """
+        Convert an input of a derivative method.
+
+        :param coord: array-like or tensor.
+        :returns: tensor requiring gradients on the flow device and whether the caller wants a
+            graph-attached result.
+        """
+        needs_graph = torch.is_tensor(coord) and coord.requires_grad
+        return autodiff.prepare_input(coord, device=self.device), needs_graph
+
+    @staticmethod
+    def _output(result, needs_graph):
+        """
+        Convert a result for the public interface: detached CPU tensor unless a graph is needed.
+
+        :param result: tensor.
+        :param needs_graph: keep the result attached to the graph on its device.
+        :returns: tensor.
+        """
+        if needs_graph:
+            return result
+        return result.detach().cpu()
+
+    def _evaluate(self, method, coord):
+        """Evaluate a device method on a public input without derivatives."""
+        x, needs_graph = self._input(coord)
+        with torch.set_grad_enabled(needs_graph):
+            result = method(x)
+        return self._output(result, needs_graph)
+
+    def _differentiate(self, method, coord):
+        """Evaluate a device derivative method ``method(x, create_graph)`` on a public input."""
+        x, needs_graph = self._grad_input(coord)
+        result = method(x, create_graph=needs_graph)
+        return self._output(result, needs_graph)
+
+    ###############################################################################
+    # Probability methods:
+
+    def _log_probability(self, x):
+        """Log probability on the flow device."""
+        return self.distribution.log_prob(x)
+
+    def _log_probability_jacobian(self, x, create_graph=True):
+        """Gradient of the log probability on the flow device."""
+        return autodiff.gradient(self._log_probability, x, create_graph=create_graph)
+
+    def _log_probability_hessian(self, x, create_graph=True):
+        """Hessian of the log probability on the flow device."""
+        return autodiff.batch_jacobian(
+            lambda _x: self._log_probability_jacobian(_x, create_graph=True), x, create_graph=create_graph)
+
+    def _log_probability_abs(self, z):
+        """Log probability as a function of abstract coordinates, on the flow device."""
+        temp_1 = self.distribution.distribution.log_prob(z)
+        temp_2 = self.distribution.bijector.forward_log_det_jacobian(z, event_ndims=1)
+        return temp_1 - temp_2
+
+    def _log_probability_abs_jacobian(self, z, create_graph=True):
+        """Gradient of the log probability in abstract coordinates."""
+        return autodiff.gradient(self._log_probability_abs, z, create_graph=create_graph)
+
+    def _log_probability_abs_hessian(self, z, create_graph=True):
+        """Hessian of the log probability in abstract coordinates."""
+        return autodiff.batch_jacobian(
+            lambda _z: self._log_probability_abs_jacobian(_z, create_graph=True), z, create_graph=create_graph)
+
     def log_probability(self, coord):
         """
         Returns learned log probability in parameter space.
 
-        :param coord: input parameter value
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: log probability, shape ``(N,)``
         """
-        return self.distribution.log_prob(coord)
+        return self._evaluate(self._log_probability, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
     def log_probability_jacobian(self, coord):
         """
         Computes the Jacobian of log probability in parameter space.
 
-        :param coord: input parameter value
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: gradient, shape ``(N, D)``
         """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.log_probability(coord)
-        return tape.gradient(f, coord)
+        return self._differentiate(self._log_probability_jacobian, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
     def log_probability_hessian(self, coord):
         """
         Computes the Hessian of log probability in parameter space.
 
-        :param coord: input parameter value
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: Hessian, shape ``(N, D, D)``
         """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.log_probability_jacobian(coord)
-        return tape.batch_jacobian(f, coord)
+        return self._differentiate(self._log_probability_hessian, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
     def log_probability_abs(self, abs_coord):
         """
         Returns learned log probability in original parameter space as a function of abstract coordinates.
@@ -1156,48 +1121,40 @@ class FlowCallback(Callback):
 
         :param abs_coord: input parameter value in abstract Gaussian coordinates
         """
-        temp_1 = self.distribution.distribution.log_prob(abs_coord)
-        temp_2 = self.distribution.bijector.forward_log_det_jacobian(abs_coord, event_ndims=1)
-        return temp_1 - temp_2
+        return self._evaluate(self._log_probability_abs, abs_coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
     def log_probability_abs_jacobian(self, abs_coord):
         """
         Jacobian of the original parameter space log probability with respect to abstract coordinates.
 
         :param abs_coord: input parameter value in abstract Gaussian coordinates
         """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(abs_coord)
-            f = self.log_probability_abs(abs_coord)
-        return tape.gradient(f, abs_coord)
+        return self._differentiate(self._log_probability_abs_jacobian, abs_coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
     def log_probability_abs_hessian(self, abs_coord):
         """
         Hessian of the original parameter space log probability with respect to abstract coordinates.
 
         :param abs_coord: input parameter value in abstract Gaussian coordinates
         """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(abs_coord)
-            f = self.log_probability_abs_jacobian(abs_coord)
-        return tape.batch_jacobian(f, abs_coord)
+        return self._differentiate(self._log_probability_abs_hessian, abs_coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[], dtype=tf.int32)])
     def _sample(self, N):
         """
-        Wrapper to reduce retracing...
+        Draw samples on the flow device.
         """
-        return self.distribution.sample(N)
-    
+        return self.distribution.sample(int(N))
+
     def sample(self, N):
         """
         Return samples from the synthetic probablity.
 
         :param N: number of samples
+        :returns: CPU tensor of shape ``(N, D)``
         """
-        return self._sample(tf.cast(N, tf.int32))
+        with torch.no_grad():
+            samples = self._sample(int(N))
+        return samples.detach().cpu()
 
     def MCSamples(self, size, logLikes=True, **kwargs):
         """
@@ -1205,27 +1162,30 @@ class FlowCallback(Callback):
 
         :param size: number of samples
         :param logLikes: logical, whether to include log-likelihoods or not.
+        :param kwargs: options passed to :class:`~getdist.mcsamples.MCSamples`; ``name_tag``
+            defaults to the flow name tag.
+        :returns: :class:`~getdist.mcsamples.MCSamples` with the samples (non-finite samples removed).
         """
         # sample:
         samples = self.sample(size)
-        finite_filter = tf.reduce_all(tf.math.is_finite(samples), axis=-1)
+        finite_filter = torch.isfinite(samples).all(dim=-1)
         if logLikes:
             loglikes = -self.log_probability(samples)
-            finite_filter = tf.math.logical_and(finite_filter, tf.math.is_finite(loglikes))
+            finite_filter = finite_filter & torch.isfinite(loglikes)
         else:
             loglikes = None
         # filter out non-finite values:
-        if not np.all(finite_filter):
+        if not bool(finite_filter.all()):
             samples = samples[finite_filter]
             if loglikes is not None:
-                loglikes = loglikes[finite_filter]        
+                loglikes = loglikes[finite_filter]
             # feedback:
             if self.feedback > 0:
                 print('    - found non-finite values, filtering out {0} samples'.format(size - len(samples)))
         # create MCSamples object:
         mc_samples = MCSamples(
-            samples=samples.numpy(),
-            loglikes=loglikes.numpy(),
+            samples=tu.to_numpy(samples),
+            loglikes=None if loglikes is None else tu.to_numpy(loglikes),
             names=self.param_names,
             labels=self.param_labels,
             ranges=self.parameter_ranges,
@@ -1237,7 +1197,37 @@ class FlowCallback(Callback):
     def evidence(self, indexes=None, weighted=False):
         """
         Get evidence from the flow. Can pass indexes to use only some of the samples for the estimate.
+
+        Each chain sample gives an estimate of the log evidence, ``-loglikes - log_probability``,
+        the difference between the chain log posterior (up to normalization) and the normalized flow
+        log probability. For a perfect flow all the estimates are equal to the log evidence.
+        The chain log-likelihoods are needed, and they must refer to the flow parameters.
+
+        - The returned value is the weighted average of these estimates. On posterior samples its
+          expectation is the log evidence plus the Kullback-Leibler divergence
+          ``KL(posterior || flow)``, so the estimate is biased high, by an amount that vanishes for
+          a perfect flow.
+        - The returned error is the weighted standard deviation of the estimates. It measures how
+          well the flow reproduces the local values of the posterior (it vanishes for a perfect
+          flow) and gives a conservative scale for the error of the estimate, which is dominated by
+          the bias above. It is not the statistical error of the mean, which is smaller by about
+          the square root of the number of samples and does not include the bias.
+
+        :param indexes: indexes (or boolean mask) of the chain samples to use, defaults to None (all samples).
+        :param weighted: if True, further weight the samples with the chi-squared survival function
+            of their log-likelihood distance from the best sample, defaults to False.
+        :returns: tuple with the log evidence estimate and the weighted standard deviation of the
+            per-sample estimates.
+        :raises ValueError: if the chain log-likelihoods of the flow parameters are not available
+            (chains without log-likelihoods and transformed flows). The evidence does not depend on
+            the parameterization, so for a transformed flow it can be computed on the original flow.
         """
+        # the chain log-likelihoods of the flow parameters are needed (light flows have no chain at all):
+        if not self.__dict__.get('is_light', False) and not self.has_loglikes:
+            raise ValueError('The evidence needs the chain log-likelihoods of the flow parameters, which are not '
+                             'available for this flow (chain without log-likelihoods or transformed flow). '
+                             'The evidence does not depend on the parameterization: for a transformed flow '
+                             'compute it on the original flow.')
         # filter by index:
         if indexes is not None:
             _samples = self.chain_samples[indexes, :]
@@ -1248,7 +1238,7 @@ class FlowCallback(Callback):
             _loglikes = self.chain_loglikes
             _weights = self.chain_weights
         # compute log likes:
-        flow_log_likes = self.log_probability(self.cast(_samples))
+        flow_log_likes = tu.to_numpy(self.log_probability(_samples))
         # use distance weights if required:
         if weighted:
             evidence_weights = scipy.stats.chi2.sf(2.0 * (_loglikes - np.amin(_loglikes)), self.num_params)
@@ -1266,18 +1256,18 @@ class FlowCallback(Callback):
         Compute smoothness score for the flow. This measures how much the flow is non-linear in between neares neighbours.
         """
         # check if nearest neighbours are already initialized:
-        if not hasattr(self, 'chain_nearest_index'):
+        if 'chain_nearest_index' not in self.__dict__:
             self._init_nearest_samples()
         # get delta log likes and delta params:
         delta_theta = self.chain_samples - self.chain_samples[self.chain_nearest_index[:, 1], :]
         delta_log_likes = -(self.chain_loglikes - self.chain_loglikes[self.chain_nearest_index[:, 1]])
         # compute the gradient:
-        delta_1 = tf.einsum(
-            "...i, ...i -> ...", self.log_probability_jacobian(self.cast(self.chain_samples)),
+        delta_1 = np.einsum(
+            "...i, ...i -> ...", tu.to_numpy(self.log_probability_jacobian(self.chain_samples)),
             delta_theta) - delta_log_likes
-        delta_2 = tf.einsum(
+        delta_2 = np.einsum(
             "...i, ...i -> ...",
-            self.log_probability_jacobian(self.cast(self.chain_samples[self.chain_nearest_index[:, 1], :])),
+            tu.to_numpy(self.log_probability_jacobian(self.chain_samples[self.chain_nearest_index[:, 1], :])),
             delta_theta) - delta_log_likes
         # average:
         score = np.average(np.abs(0.5 * (delta_1 + delta_2)), weights=self.chain_weights)
@@ -1286,267 +1276,460 @@ class FlowCallback(Callback):
 
     ###############################################################################
     # Information geometry base methods:
-    
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+
+    def _map_to_abstract_coord(self, x):
+        """Map from parameter space to abstract space on the flow device."""
+        return self.bijector.inverse(x)
+
+    def _map_to_original_coord(self, z):
+        """Map from abstract space to parameter space on the flow device."""
+        return self.bijector.forward(z)
+
+    def _log_det_metric(self, x):
+        """Log determinant of the metric on the flow device."""
+        return 2. * self.bijector.inverse_log_det_jacobian(x, event_ndims=1)
+
+    def _direct_jacobian(self, x, create_graph=True):
+        """Jacobian of the map to original coordinates at ``x``."""
+        abs_coord = self._map_to_abstract_coord(x)
+        if not abs_coord.requires_grad:
+            abs_coord = abs_coord.detach().requires_grad_(True)
+        return autodiff.batch_jacobian(self._map_to_original_coord, abs_coord, create_graph=create_graph)
+
+    def _inverse_jacobian(self, x, create_graph=True):
+        """Jacobian of the map to abstract coordinates at ``x``."""
+        return autodiff.batch_jacobian(self._map_to_abstract_coord, x, create_graph=create_graph)
+
+    def _inverse_jacobian_coord_derivative(self, x, create_graph=True):
+        """Coordinate derivative of the inverse Jacobian."""
+        return autodiff.batch_jacobian(
+            lambda _x: self._inverse_jacobian(_x, create_graph=True), x, create_graph=create_graph)
+
+    def _metric(self, x, create_graph=True):
+        """Metric ``J^T J`` with ``J`` the inverse Jacobian."""
+        jac = self._inverse_jacobian(x, create_graph=create_graph)
+        return jac.transpose(-1, -2) @ jac
+
+    def _inverse_metric(self, x, create_graph=True):
+        """Inverse metric ``J J^T`` with ``J`` the direct Jacobian."""
+        jac = self._direct_jacobian(x, create_graph=create_graph)
+        return jac @ jac.transpose(-1, -2)
+
+    def _coord_metric_derivative(self, x, create_graph=True):
+        """First coordinate derivative of the metric."""
+        return autodiff.batch_jacobian(lambda _x: self._metric(_x, create_graph=True), x, create_graph=create_graph)
+
+    def _coord_inverse_metric_derivative(self, x, create_graph=True):
+        """First coordinate derivative of the inverse metric."""
+        return autodiff.batch_jacobian(
+            lambda _x: self._inverse_metric(_x, create_graph=True), x, create_graph=create_graph)
+
+    def _coord_metric_derivative_2(self, x, create_graph=True):
+        """Second coordinate derivative of the metric."""
+        return autodiff.batch_jacobian(
+            lambda _x: self._coord_metric_derivative(_x, create_graph=True), x, create_graph=create_graph)
+
+    def _coord_inverse_metric_derivative_2(self, x, create_graph=True):
+        """Second coordinate derivative of the inverse metric."""
+        return autodiff.batch_jacobian(
+            lambda _x: self._coord_inverse_metric_derivative(_x, create_graph=True), x, create_graph=create_graph)
+
+    def _levi_civita_connection(self, x, create_graph=True):
+        """Levi-Civita connection ``Gamma^i_jk``."""
+        inv_metric = self._inverse_metric(x, create_graph=create_graph)
+        metric_derivative = self._coord_metric_derivative(x, create_graph=create_graph)
+        rank = metric_derivative.dim()
+        leading = list(range(rank - 3))
+        term_1 = metric_derivative.permute(*(leading + [rank - 2, rank - 3, rank - 1]))
+        term_2 = metric_derivative.permute(*(leading + [rank - 2, rank - 1, rank - 3]))
+        term_3 = metric_derivative.permute(*(leading + [rank - 1, rank - 3, rank - 2]))
+        return 0.5 * torch.einsum("...ij,...jkl->...ikl", inv_metric, term_1 + term_2 - term_3)
+
     def map_to_abstract_coord(self, coord):
         """
         Map from parameter space to abstract space
+
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: abstract coordinates, shape ``(N, D)``
         """
-        return self.bijector.inverse(coord)
-    
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        return self._evaluate(self._map_to_abstract_coord, coord)
+
     def map_to_original_coord(self, coord):
         """
         Map from abstract space to parameter space
+
+        :param coord: input abstract coordinates, shape ``(N, D)``
+        :returns: parameter values, shape ``(N, D)``
         """
-        return self.bijector(coord)
-    
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        return self._evaluate(self._map_to_original_coord, coord)
+
     def log_det_metric(self, coord):
         """
         Computes the log determinant of the metric
+
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: log determinant, shape ``(N,)``
         """
-        log_det = self.bijector.inverse_log_det_jacobian(coord, event_ndims=1)
-        if len(log_det.shape) == 0:
-            return 2. * log_det * tf.ones_like(coord[..., 0])
-        else:
-            return 2. * log_det
-    
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        return self._evaluate(self._log_det_metric, coord)
+
     def direct_jacobian(self, coord):
         """
         Computes the Jacobian of the parameter transformation at one point in (original) parameter space
-        """
-        abs_coord = self.map_to_abstract_coord(coord)
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(abs_coord)
-            f = self.map_to_original_coord(abs_coord)
-        return tape.batch_jacobian(f, abs_coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: Jacobian of the map from abstract to parameter space, shape ``(N, D, D)``
+        """
+        return self._differentiate(self._direct_jacobian, coord)
+
     def inverse_jacobian(self, coord):
         """
         Computes the inverse Jacobian of the parameter transformation at one point in (original) parameter space
-        """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.map_to_abstract_coord(coord)
-        return tape.batch_jacobian(f, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: Jacobian of the map from parameter to abstract space, shape ``(N, D, D)``
+        """
+        return self._differentiate(self._inverse_jacobian, coord)
+
     def inverse_jacobian_coord_derivative(self, coord):
         """
         Compute the coordinate derivative of the inverse Jacobian at a given point in (original) parameter space
-        """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.inverse_jacobian(coord)
-        return tape.batch_jacobian(f, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: derivative, shape ``(N, D, D, D)``, the last index being the derivative one
+        """
+        return self._differentiate(self._inverse_jacobian_coord_derivative, coord)
+
     def metric(self, coord):
         """
         Computes the metric at a given point or array of points in (original) parameter space
-        """
-        # compute Jacobian:
-        jac = self.inverse_jacobian(coord)
-        # take the transpose (we need to calculate the indexes that we want to swap):
-        trailing_axes = [-1, -2]
-        leading = tf.range(tf.rank(jac) - len(trailing_axes))
-        trailing = trailing_axes + tf.rank(jac)
-        new_order = tf.concat([leading, trailing], axis=0)
-        jac_T = tf.transpose(jac, new_order)
-        # compute metric:
-        metric = tf.linalg.matmul(jac_T, jac)
-        #
-        return metric
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: metric, shape ``(N, D, D)``
+        """
+        return self._differentiate(self._metric, coord)
+
     def inverse_metric(self, coord):
         """
         Computes the inverse metric at a given point or array of points in (original) parameter space
-        """
-        # compute Jacobian:
-        jac = self.direct_jacobian(coord)
-        # take the transpose (we need to calculate the indexes that we want to swap):
-        trailing_axes = [-1, -2]
-        leading = tf.range(tf.rank(jac) - len(trailing_axes))
-        trailing = trailing_axes + tf.rank(jac)
-        new_order = tf.concat([leading, trailing], axis=0)
-        jac_T = tf.transpose(jac, new_order)
-        # compute metric:
-        metric = tf.linalg.matmul(jac, jac_T)
-        #
-        return metric
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: inverse metric, shape ``(N, D, D)``
+        """
+        return self._differentiate(self._inverse_metric, coord)
+
     def coord_metric_derivative(self, coord):
         """
         Compute the coordinate derivative of the metric at a given point in (original) parameter space
-        """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.metric(coord)
-        return tape.batch_jacobian(f, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: derivative, shape ``(N, D, D, D)``, the last index being the derivative one
+        """
+        return self._differentiate(self._coord_metric_derivative, coord)
+
     def coord_inverse_metric_derivative(self, coord):
         """
         Compute the coordinate derivative of the inverse metric at a given point in (original) parameter space
-        """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.inverse_metric(coord)
-        return tape.batch_jacobian(f, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: derivative, shape ``(N, D, D, D)``, the last index being the derivative one
+        """
+        return self._differentiate(self._coord_inverse_metric_derivative, coord)
+
     def coord_metric_derivative_2(self, coord):
         """
         Compute the second coordinate derivative of the metric at a given point in (original) parameter space
-        """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.coord_metric_derivative(coord)
-        return tape.batch_jacobian(f, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: second derivative, shape ``(N, D, D, D, D)``, the last two indexes being the derivative ones
+        """
+        return self._differentiate(self._coord_metric_derivative_2, coord)
+
     def coord_inverse_metric_derivative_2(self, coord):
         """
         Compute the second coordinate derivative of the inverse metric at a given point in (original) parameter space
-        """
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.coord_inverse_metric_derivative(coord)
-        return tape.batch_jacobian(f, coord)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: second derivative, shape ``(N, D, D, D, D)``, the last two indexes being the derivative ones
+        """
+        return self._differentiate(self._coord_inverse_metric_derivative_2, coord)
+
     def levi_civita_connection(self, coord):
         """
         Compute the Levi-Civita connection, gives Gamma^i_j_k
+
+        :param coord: input parameter value, shape ``(N, D)``
+        :returns: connection coefficients, shape ``(N, D, D, D)`` with indexes ``(i, j, k)``
         """
-        inv_metric = self.inverse_metric(coord)
-        metric_derivative = self.coord_metric_derivative(coord)
-        # first transpose:
-        trailing_axes = [-2, -3, -1]
-        leading = tf.range(tf.rank(metric_derivative) - len(trailing_axes))
-        trailing = trailing_axes + tf.rank(metric_derivative)
-        new_order = tf.concat([leading, trailing], axis=0)
-        term_1 = tf.transpose(metric_derivative, new_order)
-        # second transpose:
-        trailing_axes = [-2, -1, -3]
-        leading = tf.range(tf.rank(metric_derivative) - len(trailing_axes))
-        trailing = trailing_axes + tf.rank(metric_derivative)
-        new_order = tf.concat([leading, trailing], axis=0)
-        term_2 = tf.transpose(metric_derivative, new_order)
-        # third transpose:
-        trailing_axes = [-1, -3, -2]
-        leading = tf.range(tf.rank(metric_derivative) - len(trailing_axes))
-        trailing = trailing_axes + tf.rank(metric_derivative)
-        new_order = tf.concat([leading, trailing], axis=0)
-        term_3 = tf.transpose(metric_derivative, new_order)
-        # compute
-        connection = 0.5 * tf.einsum("...ij,...jkl-> ...ikl", inv_metric, term_1 + term_2 - term_3)
-        #
-        return connection
-    
-    @tf.function()
+        return self._differentiate(self._levi_civita_connection, coord)
+
     def geodesic_distance(self, coord_1, coord_2, **kwargs):
         """
-        Compute geodesic distance between pair of points
+        Compute geodesic distance between pair of points.
+
+        :param coord_1: first points.
+        :param coord_2: second points.
+        :param kwargs: options of ``torch.linalg.norm`` (``axis`` and ``keepdims`` are accepted
+            as aliases of ``dim`` and ``keepdim``). Without ``dim`` the norm is taken over all
+            the elements, as in the TensorFlow version.
+        :returns: CPU tensor with the distance(s).
         """
-        # map to abstract coordinates:
-        abs_coord_1 = self.map_to_abstract_coord(coord_1)
-        abs_coord_2 = self.map_to_abstract_coord(coord_2)
-        # metric there is Euclidean:
-        return tf.linalg.norm(abs_coord_1 - abs_coord_2, **kwargs)
-    
-    @tf.function()
+        if 'axis' in kwargs:
+            kwargs['dim'] = kwargs.pop('axis')
+        if 'keepdims' in kwargs:
+            kwargs['keepdim'] = kwargs.pop('keepdims')
+        x_1, needs_graph_1 = self._input(coord_1)
+        x_2, needs_graph_2 = self._input(coord_2)
+        needs_graph = needs_graph_1 or needs_graph_2
+        with torch.set_grad_enabled(needs_graph):
+            # map to abstract coordinates:
+            abs_coord_1 = self._map_to_abstract_coord(x_1)
+            abs_coord_2 = self._map_to_abstract_coord(x_2)
+            # metric there is Euclidean:
+            result = torch.linalg.norm(abs_coord_1 - abs_coord_2, **kwargs)
+        return self._output(result, needs_graph)
+
     def geodesic_bvp(self, pos_start, pos_end, num_points=1000):
         """
         Solve geodesic boundary value problem.
-        """
-        # map initial and final positions to abstract space:
-        _abs_pos_start = self.map_to_abstract_coord(pos_start)
-        _abs_pos_end = self.map_to_abstract_coord(pos_end)
-        # get the affine parameter along the geodesic:
-        _alpha = tf.linspace(0.0, 1.0, num_points)
-        # get the trajectory (a straight line) in abstract space:
-        _traj = tf.expand_dims(
-            _abs_pos_start,
-            axis=-1) + _alpha * (tf.expand_dims(_abs_pos_end, axis=-1) - tf.expand_dims(_abs_pos_start, axis=-1))
-        # take the transpose (we need to calculate the indexes that we want to swap):
-        trailing_axes = [-1, -2]
-        leading = tf.range(tf.rank(_traj) - len(trailing_axes))
-        trailing = trailing_axes + tf.rank(_traj)
-        new_order = tf.concat([leading, trailing], axis=0)
-        _traj = tf.transpose(_traj, new_order)
-        # return map to parameter space:
-        #
-        return self.map_to_original_coord(_traj)
 
-    @tf.function()
+        :param pos_start: initial points ``(N, D)``.
+        :param pos_end: final points ``(N, D)``.
+        :param num_points: number of points along each geodesic.
+        :returns: CPU tensor ``(N, num_points, D)``.
+        """
+        x_start, needs_graph_1 = self._input(pos_start)
+        x_end, needs_graph_2 = self._input(pos_end)
+        needs_graph = needs_graph_1 or needs_graph_2
+        with torch.set_grad_enabled(needs_graph):
+            # map initial and final positions to abstract space:
+            _abs_pos_start = self._map_to_abstract_coord(x_start)
+            _abs_pos_end = self._map_to_abstract_coord(x_end)
+            # get the affine parameter along the geodesic:
+            _alpha = torch.linspace(0.0, 1.0, num_points, dtype=_abs_pos_start.dtype, device=_abs_pos_start.device)
+            # get the trajectory (a straight line) in abstract space:
+            _traj = _abs_pos_start.unsqueeze(-1) + _alpha * (_abs_pos_end.unsqueeze(-1) - _abs_pos_start.unsqueeze(-1))
+            _traj = _traj.transpose(-1, -2)
+            # return map to parameter space:
+            result = self._map_to_original_coord(_traj)
+        return self._output(result, needs_graph)
+
     def geodesic_ivp(self, pos, velocity, solution_times):
         """
         Solve geodesic initial value problem.
+
+        :param pos: initial points (unused).
+        :param velocity: initial velocities (unused).
+        :param solution_times: times at which the solution is required (unused).
+        :raises NotImplementedError: always, not implemented yet.
         """
-        raise NotImplemented
+        raise NotImplementedError('geodesic_ivp is not implemented.')
+
+    ###############################################################################
+    # device handling:
+
+    def to(self, device):
+        """
+        Move the flow to a device. The optimizer is re-created, so its moments are reset.
+
+        :param device: device specification (``'cpu'``, ``'cuda'``, ``'cuda:N'``, ``'mps'``).
+        :returns: the flow itself.
+        :raises ValueError: if the device is not available or does not support the precision.
+        """
+        device = tu.check_device(device)
+        self._move_to(device)
+        return self
+
+    def _move_to(self, device):
+        """Move bijectors, distributions, data tensors and the trainer to ``device``."""
+        self.bijector.to(device)
+        self.device = device
+        _transformation = self.__dict__.get('trainable_transformation', None)
+        if _transformation is not None and hasattr(_transformation, 'device'):
+            _transformation.device = device
+        self._build_distributions()
+        if not self.is_light and 'training_samples' in self.__dict__:
+            self._init_dataset_tensors()
+            if self.__dict__.get('_trainer_initialized', False):
+                self.trainer.log_prob_fn = self.trained_distribution.log_prob
+                self.trainer.reset_optimizer()
+        #
+        return None
 
     ###############################################################################
     # caching methods:
 
-    def save(self, outroot):
+    def save(self, path, mode='full'):
         """
-        Save the flow model to file
+        Save the whole flow to one file, from which :meth:`load` restores it without the chain
+        and without rebuilding anything.
+
+        Two modes are available:
+
+        - ``'full'`` (default): everything, including the chain samples, the training split,
+          the loss and the optimizer state, so that training can be resumed;
+        - ``'light'``: only what is needed to evaluate the flow (bijectors, distributions,
+          parameter names and ranges, MAP estimates, training logs). The file is much
+          smaller but the flow cannot be trained again, and methods that need the chain
+          (``train``, ``global_train``, ``evidence``, ``smoothness_score``,
+          ``compute_training_metrics``, ``training_plot``) fail with an explanatory error.
+
+        The file is a pickle (written with ``torch.save``): it is tied to the package version
+        that wrote it and must only be loaded from trusted sources. Everything stored in the
+        flow must be picklable: user functions given to ``Inline`` bijectors must be module
+        level functions, not lambdas or closures.
+
+        :param path: file path.
+        :param mode: ``'full'`` or ``'light'``.
+        :raises ValueError: for an unknown mode, or ``mode='full'`` on a light flow.
+        :raises pickle.PicklingError: if part of the flow cannot be pickled.
         """
-        # we need to exclude some TF objects because they cannot be pickled:
-        exclude_objects = [
-            'prior_bijector', 'base_distribution', 'loss', 'model', 'bijectors', 'fixed_bijector',
-            'trainable_transformation', 'trainable_bijector', 'bijector', 'training_dataset', 'distribution',
-            'trained_distribution'
-        ]
-    
-        # get properties that can be pickled and properties that cannot:
-        pickle_objects = {}
-        for el in self.__dict__:
-            if el not in exclude_objects:
-                if not type(self.__dict__[el]) == type(tf.function(lambda x: x)):
-                    pickle_objects[el] = self.__dict__[el]
-        # group and save to pickle all the objects that can be pickled:
-        pickle.dump(pickle_objects, open(outroot + '_flow_cache.pickle', 'wb'))
-    
-        # save out trainable transformation:
-        if self.trainable_transformation is not None:
-            self.trainable_transformation.save(outroot)
+        global _save_mode
+        if mode not in ('full', 'light'):
+            raise ValueError("mode must be 'full' or 'light', got " + repr(mode))
+        if mode == 'full' and self.is_light:
+            raise ValueError('A light flow cannot be saved in full mode: the chain data is not available.')
+        self._snapshot_info = {
+            'format_version': SNAPSHOT_FORMAT_VERSION,
+            'tensiometer_version': _tensiometer_version,
+            'torch_version': torch.__version__,
+            'precision': _precision_name(self.prec),
+            'device': str(self.device),
+            'class': type(self).__name__,
+            'mode': mode,
+        }
+        previous_mode = _save_mode
+        _save_mode = mode
+        try:
+            tu.atomic_save(self, path)
+        except (pickle.PicklingError, AttributeError, TypeError) as exc:
+            raise pickle.PicklingError(
+                'The flow could not be pickled: ' + str(exc) + '. Everything stored in the flow must be '
+                'picklable; functions given to Inline bijectors, AnalyticalDerivedParamsBijector or '
+                'TransformedFlowCallback must be module level functions, not lambdas or closures.') from exc
+        finally:
+            _save_mode = previous_mode
         #
         return None
 
     @classmethod
-    def load(cls, chain, outroot, **kwargs):
+    def load(cls, path, device=None):
         """
-        Load the flow model from file
+        Load a flow saved with :meth:`save`. No chain is needed and nothing is rebuilt.
+
+        Loading executes pickle code: only load files from trusted sources. Files written by
+        the TensorFlow version of tensiometer cannot be loaded (retrain the flow).
+
+        :param path: file path.
+        :param device: target device, defaults to the default device. Flows trained on a GPU
+            can be loaded on a CPU-only machine and vice versa.
+        :returns: the flow.
+        :raises FileNotFoundError: if the file does not exist.
+        :raises ValueError: if the file is not a flow snapshot, was written by a newer
+            snapshot format, or has a precision different from a locked one.
+        :raises TypeError: if the snapshot holds a flow that is not an instance of ``cls``.
         """
-        # remove trainable bijector path:
-        temp = kwargs.pop('trainable_bijector_path', None)
-        if temp is not None:
-            print('WARNING: trainable_bijector_path is set and will be ignored by load function')
-        # if feedback is not set, then set it to 0: IW
-        temp = kwargs.get('feedback', None)
-        if temp is None:
-            kwargs['feedback'] = 0
-        # assume that we do not want to retrain a loaded model (unless otherwise specified):
-        temp = kwargs.get('initialize_model', None)
-        if temp is None:
-            kwargs['initialize_model'] = False
-        # re-create the object (we have to do this because we cannot pickle all TF things)        
-        flow = FlowCallback(chain, trainable_bijector_path=outroot, **kwargs)
-        # load the pickle file:
-        pickle_objects = pickle.load(open(outroot + '_flow_cache.pickle', 'rb'))
-        # load to self:
-        for key in pickle_objects:
-            setattr(flow, key, pickle_objects[key])
+        target = tu.check_device(device)
+        if not os.path.isfile(path):
+            raise FileNotFoundError('Flow snapshot not found: ' + str(path))
+        try:
+            flow = torch.load(path, map_location=target, weights_only=False)
+        except Exception as exc:
+            raise ValueError(
+                'Could not load a flow snapshot from ' + str(path) + ' (' + type(exc).__name__ + ': '
+                + str(exc) + '). Caches written by the TensorFlow version of tensiometer cannot be '
+                'loaded; retrain the flow.') from exc
+        info = getattr(flow, '_snapshot_info', None) if isinstance(flow, FlowCallback) else None
+        if info is None:
+            raise ValueError(str(path) + ' is not a flow snapshot written by FlowCallback.save. '
+                             'Caches written by the TensorFlow version of tensiometer cannot be loaded; retrain the flow.')
+        if info.get('format_version', 0) > SNAPSHOT_FORMAT_VERSION:
+            raise ValueError('The snapshot ' + str(path) + ' has format version ' + str(info.get('format_version'))
+                             + ', newer than the supported version ' + str(SNAPSHOT_FORMAT_VERSION)
+                             + '. Update tensiometer.')
+        if not isinstance(flow, cls):
+            raise TypeError('The snapshot ' + str(path) + ' contains a ' + type(flow).__name__
+                            + ', not a ' + cls.__name__)
+        if info.get('tensiometer_version') != _tensiometer_version:
+            warnings.warn('The snapshot ' + str(path) + ' was written by tensiometer '
+                          + str(info.get('tensiometer_version')) + ', this is ' + _tensiometer_version)
+        # precision:
+        saved_precision = tu._parse_precision(info.get('precision', 'float32'))
+        if saved_precision != tu.get_precision():
+            if tu.is_precision_locked():
+                raise ValueError('The snapshot ' + str(path) + ' uses ' + _precision_name(saved_precision)
+                                 + ' but the precision is locked to ' + _precision_name(tu.get_precision()) + '.')
+            tu.set_precision(saved_precision)
+        tu.lock_precision()
+        tu._check_device_precision(target, saved_precision)
         #
         return flow
-    
+
+    def _upgrade_state(self, state):
+        """
+        Fill defaults for attributes added after the snapshot was written.
+
+        :param state: unpickled state dictionary.
+        :returns: the upgraded state dictionary.
+        """
+        return state
+
+    @staticmethod
+    def _state_device(state):
+        """Device of the tensors of an unpickled state."""
+        bijector = state.get('bijector', None)
+        if isinstance(bijector, torch.nn.Module):
+            device = tu.module_device(bijector)
+            if device is not None:
+                return device
+        flows = state.get('flows', None)
+        if flows:
+            return flows[0].device
+        base = state.get('base_distribution', None)
+        if base is not None and hasattr(base, 'mean'):
+            return base.mean.device
+        return state.get('device', tu.get_device())
+
+    def __getstate__(self):
+        """
+        State to pickle: drops the figure and the training tensors (re-created on load) and,
+        when writing a light snapshot, the attributes in ``_full_only_attributes``.
+        """
+        state = self.__dict__.copy()
+        for key in ('fig', 'training_dataset', 'validation_dataset'):
+            state.pop(key, None)
+        if _save_mode == 'light':
+            for key in type(self)._full_only_attributes:
+                state.pop(key, None)
+            state['is_light'] = True
+            state['_trainer_initialized'] = False
+            if '_snapshot_info' in state:
+                state['_snapshot_info'] = dict(state['_snapshot_info'], mode='light')
+        return state
+
+    def __setstate__(self, state):
+        """
+        Restore a pickled state and re-create the training tensors on the device of the
+        restored bijectors.
+        """
+        state = self._upgrade_state(state)
+        self.__dict__.update(state)
+        self.device = self._state_device(state)
+        if not self.__dict__.get('is_light', False) and 'training_samples' in state:
+            self._init_dataset_tensors()
+
+    def __getattr__(self, name):
+        """
+        Explain missing attributes of light flows.
+
+        :raises AttributeError: always (only called for missing attributes).
+        """
+        _dict = object.__getattribute__(self, '__dict__')
+        if _dict.get('is_light', False) and name in type(self)._full_only_attributes:
+            raise AttributeError(
+                "'" + name + "' is not stored in a light flow snapshot; load a full snapshot or "
+                "rebuild the flow from the chain")
+        raise AttributeError("'" + type(self).__name__ + "' object has no attribute '" + name + "'")
+
     ###############################################################################
     # Training statistics:
 
@@ -1640,22 +1823,52 @@ class FlowCallback(Callback):
                     self.chi2Y, size=len(self.chi2Y), replace=True, p=self.test_weights / _weight_sum)
             else:
                 self.chi2Y = np.random.choice(self.chi2Y, size=len(self.chi2Y), replace=True)
-        if len(self.chi2Y) > 0:
-            self.chi2Y_ks, self.chi2Y_ks_p = scipy.stats.kstest(self.chi2Y, 'chi2', args=(self.num_params,))
-        else:
-            self.chi2Y_ks, self.chi2Y_ks_p = 0.0, 0.0
+        self.chi2Y_ks, self.chi2Y_ks_p = scipy.stats.kstest(self.chi2Y, 'chi2', args=(self.num_params,))
         #
         return None
 
-    def compute_training_metrics(self, logs={}):
+    def _trainable_inverse(self, samples):
+        """
+        Map samples of the training space to the abstract space, as a numpy array.
+
+        :param samples: numpy array ``(N, D)``.
+        :returns: numpy array ``(N, D)``.
+        """
+        with torch.no_grad():
+            return tu.to_numpy(self.trainable_bijector.inverse(tu.to_tensor(samples, device=self.device)))
+
+    def _loss_components(self, logP, samples, weights):
+        """
+        Loss components on a whole data set, with numpy arrays for the per-sample components.
+
+        :param logP: true log posterior in the training space.
+        :param samples: samples in the training space.
+        :param weights: sample weights.
+        :returns: tuple of loss components.
+        """
+        with torch.no_grad():
+            _logP = tu.to_tensor(logP, device=self.device)
+            _pred = self.trained_distribution.log_prob(tu.to_tensor(samples, device=self.device))
+            _weights = tu.to_tensor(weights, device=self.device)
+            components = self.loss.compute_loss_components(_logP, _pred, _weights)
+        return tuple(tu.to_numpy(_c) if torch.is_tensor(_c) else _c for _c in components)
+
+    def compute_training_metrics(self, logs=None):
         """
         Compute training metrics and append results to internal logs
+
+        :param logs: dictionary of training metrics for the epoch, from which ``loss``,
+            ``val_loss`` and ``lr`` are read.
+        :returns: None
         """
+        if logs is None:
+            logs = {}
         # update loss log:
         if "loss" in self.training_metrics:
             self.log["loss"].append(logs.get('loss'))
         if "val_loss" in self.training_metrics:
-            self.log["val_loss"].append(logs.get('val_loss'))
+            _val_loss = logs.get('val_loss')
+            self.log["val_loss"].append(np.nan if _val_loss is None else _val_loss)
 
         # update learning rate log:
         if "lr" in self.training_metrics:
@@ -1663,7 +1876,7 @@ class FlowCallback(Callback):
 
         # do KS test:
         if "chi2Z_ks" in self.training_metrics:
-            self.chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.test_samples))**2, axis=1)
+            self.chi2Z = np.sum(self._trainable_inverse(self.test_samples)**2, axis=1)
             # Run KS test
             try:
                 # Note that scipy.stats.kstest does not handle weights yet so we need to resample.
@@ -1714,13 +1927,10 @@ class FlowCallback(Callback):
 
         # compute density loss on validation data:
         if "rho_loss" in self.training_metrics:
-            # import pdb; pdb.set_trace()
-            _train_loss_components = self.loss.compute_loss_components(
-                self.cast(self.training_logP_preabs), self.model.call(self.cast(self.training_samples)),
-                self.cast(self.training_weights))
-            _test_loss_components = self.loss.compute_loss_components(
-                self.cast(self.test_logP_preabs), self.model.call(self.cast(self.test_samples)),
-                self.cast(self.test_weights))
+            _train_loss_components = self._loss_components(
+                self.training_logP_preabs, self.training_samples, self.training_weights)
+            _test_loss_components = self._loss_components(
+                self.test_logP_preabs, self.test_samples, self.test_weights)
             if issubclass(type(self.loss), loss.constant_weight_loss):
                 # average:
                 temp_train_rho_loss = np.average(_train_loss_components[0], weights=self.training_weights)
@@ -1766,7 +1976,7 @@ class FlowCallback(Callback):
                 self.log["ee_loss_rate"].append(self.log["ee_loss"][-1] - self.log["ee_loss"][-2])
 
     @matplotlib.rc_context(plot_options)
-    def _plot_loss(self, ax, logs={}):
+    def _plot_loss(self, ax, logs=None):
         """
         Utility function to plot loss for training and validation samples
         """
@@ -1790,7 +2000,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_lr(self, ax, logs={}):
+    def _plot_lr(self, ax, logs=None):
         """
         Utility function to plot learning rate per epoch
         """
@@ -1803,7 +2013,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_chi2_dist(self, ax, logs={}, fast=False):
+    def _plot_chi2_dist(self, ax, logs=None, fast=False):
         """
         Utility function to plot chi2 distribution vs histogram.
         """
@@ -1812,7 +2022,7 @@ class FlowCallback(Callback):
         ax.plot(
             xx,
             scipy.stats.chi2.pdf(xx, df=self.num_params),
-            label='$\\chi^2_{{{}}}$ PDF'.format(self.num_params),
+            label=r'$\chi^2_{{{}}}$ PDF'.format(self.num_params),
             c='k',
             lw=1.,
             ls='-')
@@ -1844,7 +2054,7 @@ class FlowCallback(Callback):
                 lw=1.,
                 ls='-')
         if not fast:
-            train_chi2Z = np.sum(np.array(self.trainable_bijector.inverse(self.training_samples))**2, axis=1)
+            train_chi2Z = np.sum(self._trainable_inverse(self.training_samples)**2, axis=1)
             train_chi2Z = train_chi2Z[np.isfinite(train_chi2Z)]
             if len(train_chi2Z) > 0:
                 ax.hist(
@@ -1862,7 +2072,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_chi2_ks_p(self, ax, logs={}):
+    def _plot_chi2_ks_p(self, ax, logs=None):
         """
         Utility function to plot the KS test results.
         """
@@ -1883,7 +2093,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_density_evidence_error_losses(self, ax, logs={}):
+    def _plot_density_evidence_error_losses(self, ax, logs=None):
         """
         Plot behavior of density and evidence-error loss as training progresses.
         """
@@ -1900,12 +2110,12 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_lambda_values(self, ax, logs={}):
+    def _plot_lambda_values(self, ax, logs=None):
         """
         Plot balance between the two loss functions
         """
-        ax.plot(np.abs(self.log["lambda_1"]), lw=1., ls='-', label='$\\lambda_1$')
-        ax.plot(np.abs(self.log["lambda_2"]), lw=1., ls='--', label='$\\lambda_2$')
+        ax.plot(np.abs(self.log["lambda_1"]), lw=1., ls='-', label=r'$\lambda_1$')
+        ax.plot(np.abs(self.log["lambda_2"]), lw=1., ls='--', label=r'$\lambda_2$')
         ax.set_title(r"Loss function weights")
         ax.set_xlabel(r"Epoch $\#$")
         ax.set_ylim([-0.1, 1.1])
@@ -1915,7 +2125,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_weighted_density_evidence_error_losses(self, ax, logs={}):
+    def _plot_weighted_density_evidence_error_losses(self, ax, logs=None):
         """
         Plot behavior of density and evidence error loss as training progresses.
         """
@@ -1944,7 +2154,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_losses_rate(self, ax, logs={}, abs_value=False, epoch_range=20):
+    def _plot_losses_rate(self, ax, logs=None, abs_value=False, epoch_range=20):
         """
         Plot evolution of loss function.
         """
@@ -2006,7 +2216,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_evidence(self, ax, logs={}):
+    def _plot_evidence(self, ax, logs=None):
         """
         Utility function to plot the evidence and error on evidence as a function of training.
         """
@@ -2023,7 +2233,7 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def _plot_evidence_error(self, ax, logs={}):
+    def _plot_evidence_error(self, ax, logs=None):
         """
         Utility function to plot the evidence and error on evidence as a function of training.
         """
@@ -2056,7 +2266,10 @@ class FlowCallback(Callback):
     @matplotlib.rc_context(plot_options)
     def on_train_begin(self, logs):
         """
-        Execute on beginning of training
+        Execute on beginning of training: creates the figure unless plotting inline.
+
+        :param logs: dictionary of training metrics passed by the training loop (unused).
+        :returns: None
         """
         if not ipython_plotting:
             self._create_figure()
@@ -2066,7 +2279,10 @@ class FlowCallback(Callback):
     @matplotlib.rc_context(plot_options)
     def on_train_end(self, logs):
         """
-        Execute at end of training
+        Execute at end of training: closes the figure unless plotting inline.
+
+        :param logs: dictionary of training metrics passed by the training loop (unused).
+        :returns: None
         """
         if not ipython_plotting:
             del self.fig
@@ -2078,6 +2294,17 @@ class FlowCallback(Callback):
     def training_plot(self, logs=None, file_path=None, ipython_plotting=False, title=None, fast=False):
         """
         Method to produce training plot with training metrics
+
+        :param logs: dictionary of training metrics passed to the plotting helpers, defaults to
+            None (use ``self.log``). The panels currently plot the internal ``self.log``.
+        :param file_path: path of the file to save the figure to, defaults to None (not saved).
+            If given the figure is closed after saving.
+        :param ipython_plotting: whether plotting is inline in IPython, in which case an existing
+            figure is not cleared and re-created, defaults to False.
+        :param title: figure title, defaults to None (training population number, if available).
+        :param fast: skip the chi2 histogram of the training samples, defaults to False. Only used
+            for variable weight losses.
+        :returns: None
         """
         # check that self.fig exists:
         if not hasattr(self, 'fig'):
@@ -2144,15 +2371,19 @@ class FlowCallback(Callback):
         return None
 
     @matplotlib.rc_context(plot_options)
-    def on_epoch_end(self, epoch, logs={}):
+    def on_epoch_end(self, epoch, logs=None):
         """
-        This method is used by Keras to show progress during training if `feedback` is True.
-        """
+        This method is called by the trainer at the end of every epoch to compute the training
+        metrics and show progress during training if `feedback` is True.
 
-        # update log:
-        try:
-            logs['lr'] = lr._get_optimizer_lr(self.model.optimizer)
-        except AttributeError:
+        :param epoch: index of the current epoch.
+        :param logs: dictionary of training metrics for the epoch. ``lr`` is set to 0 if missing and,
+            with ``feedback > 2``, the internal training metrics are added to it.
+        :returns: None
+        """
+        if logs is None:
+            logs = {}
+        if logs.get('lr', None) is None:
             logs['lr'] = 0.0
 
         # compute metrics:
@@ -2222,9 +2453,13 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
         :param param_names_out: list of output parameter names.
         :param permutations: enable permutation of autoregressive order.
         :param feedback: verbosity level.
+        :param kwargs: options passed to
+            :class:`~tensiometer.synthetic_probability.trainable_bijectors.AutoregressiveFlow`.
+        :raises ValueError: if ``param_names_in`` and ``param_names_out`` have different lengths.
         """
         self.num_params = len(param_names_in)
-        assert len(param_names_out) == self.num_params
+        if len(param_names_out) != self.num_params:
+            raise ValueError('param_names_in and param_names_out must have the same length.')
         self.param_names_in = param_names_in
         self.param_names_out = param_names_out
 
@@ -2241,6 +2476,7 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             trainable_bijector=None,
             rng=np.random.default_rng(seed=seed),
             apply_rescaling='independent',
+            device=self.device,
             feedback=0)
 
         self.flow_out = FlowCallback(
@@ -2250,26 +2486,37 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             trainable_bijector=None,
             rng=np.random.default_rng(seed=seed),
             apply_rescaling='independent',
+            device=self.device,
             feedback=0)
 
         self.num_training_samples = len(self.flow_in.training_samples)
         ind = [chain.index[name] for name in param_names_out]
-        self.chain_samples = chain.samples[:, ind].astype(np_prec)
+        self.chain_samples = chain.samples[:, ind].astype(tu.np_prec)
         self.chain_loglikes = None
         self.has_loglikes = False
-        self.chain_weights = chain.weights.astype(np_prec)
+        self.chain_weights = chain.weights.astype(tu.np_prec)
 
         self.trainable_bijector = self.bijector
-        self.bijector = tfb.Chain([self.flow_out.bijector, self.trainable_bijector, tfb.Invert(self.flow_in.bijector)])
+        self.bijector = bj.Chain([self.flow_out.bijector, self.trainable_bijector, bj.Invert(self.flow_in.bijector)])
 
-        x = Input(shape=(self.num_params,))
-        y = tb.BijectorLayer(self.trainable_bijector)(x)
+        self.trainer = training.Trainer(
+            module=self.trainable_bijector,
+            log_prob_fn=self.trainable_bijector.forward,
+            loss=loss.mean_squared_error(),
+            learning_rate=1e-3)
 
-        self.model = Model(x, y)
+    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=None, verbose=None, **kwargs):
+        """
+        Train the bijector to map the input to the output parameters (mean squared error).
 
-        self.model.compile('adam', 'mse')
-
-    def train(self, epochs=100, batch_size=None, steps_per_epoch=None, callbacks=[], verbose=None, **kwargs):
+        :param epochs: number of epochs.
+        :param batch_size: batch size, defaults to ``num_training_samples / steps_per_epoch``.
+        :param steps_per_epoch: steps per epoch, defaults to 20.
+        :param callbacks: optional list of callbacks.
+        :param verbose: verbosity level, defaults to 0 unless ``feedback >= 3``.
+        :param kwargs: accepted for compatibility with :meth:`FlowCallback.train` and ignored.
+        :returns: :class:`~tensiometer.synthetic_probability.training.History`.
+        """
         # We're trying to loop through the full sample each epoch
         if batch_size is None:
             if steps_per_epoch is None:
@@ -2285,18 +2532,15 @@ class DerivedParamsBijector(tb.AutoregressiveFlow):
             else:
                 verbose = 1
 
-        hist = self.model.fit(
-            # x=self.training_dataset.batch(batch_size),
+        hist = self.trainer.fit(
             x=self.flow_in.training_samples,
             y=self.flow_out.training_samples,
-            validation_data=(self.flow_in.test_samples, self.flow_out.test_samples),
-            batch_size=batch_size,
+            validation_data=(self.flow_in.test_samples, self.flow_out.test_samples, None),
+            batch_size=max(int(batch_size), 1),
             epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
-            # validation_data=self.validation_dataset,
-            verbose=verbose,
-            # callbacks=[tf.keras.callbacks.TerminateOnNaN()] + callbacks,
-            **stutils.filter_kwargs(kwargs, self.model.fit))
+            steps_per_epoch=max(int(steps_per_epoch), 1),
+            callbacks=callbacks,
+            verbose=verbose)
 
         return hist
 
@@ -2310,28 +2554,38 @@ class AnalyticalDerivedParamsBijector:
         :param param_names_in: input parameter names.
         :param param_names_out: output parameter names.
         :param param_labels_out: labels for the derived parameters.
-        :param kwargs: additional arguments forwarded to ``tfp.bijectors.Inline``.
+        :param kwargs: arguments of :class:`~tensiometer.synthetic_probability.bijectors.Inline`
+            (``forward_fn``, ``inverse_fn``, ``inverse_log_det_jacobian_fn``, ...); the
+            functions must be torch functions, and module level functions if the flow is saved.
         """
         self.num_params = len(param_names_in)
-        assert len(param_names_out) == self.num_params
+        if len(param_names_out) != self.num_params:
+            raise ValueError('param_names_in and param_names_out must have the same length.')
         self.param_names_in = param_names_in
-        self.param_names_out = param_names_out        
+        self.param_names_out = param_names_out
         self.param_labels_out = param_labels_out
-        
-        self.bijector = tfp.bijectors.Inline(forward_min_event_ndims=1, **kwargs)
-        
-        
-        
+
+        _kwargs = stutils.filter_kwargs(kwargs, bj.Inline)
+        _kwargs.setdefault('forward_min_event_ndims', 1)
+        self.bijector = bj.Inline(**_kwargs)
+
+
 class TransformedFlowCallback(FlowCallback):
-    """Callback that applies a transformation bijector to a base flow during training."""
+    """Flow obtained by applying a transformation bijector to a trained flow."""
 
     def __init__(self, flow, transformation, transform_posterior=True):
         """
         Applies an analytic bijector to a flow to transform parameters.
+
+        :param flow: trained flow.
+        :param transformation: list with one elementwise bijector per parameter, a
+            :class:`DerivedParamsBijector` or an :class:`AnalyticalDerivedParamsBijector`.
+        :param transform_posterior: if False, the density is not corrected by the Jacobian
+            of the transformation.
+        :raises ValueError: for unsupported transformations.
         """
 
         infos = [
-            # 'name_tag',
             'feedback',
             'plot_every',
             'num_params',
@@ -2340,14 +2594,21 @@ class TransformedFlowCallback(FlowCallback):
         ]
         for info in infos:
             self.__dict__[info] = flow.__dict__[info]
+        for info in ['training_metrics', 'prec', 'np_prec']:
+            if info in flow.__dict__:
+                self.__dict__[info] = flow.__dict__[info]
+        self.device = flow.device
+        self.is_light = bool(flow.__dict__.get('is_light', False))
+        self._trainer_initialized = False
 
         self.transform_posterior = transform_posterior
 
         if isinstance(transformation, Iterable):
-            assert len(transformation) == self.num_params
+            transformation = list(transformation)
+            if len(transformation) != self.num_params:
+                raise ValueError('The transformation needs one bijector per parameter.')
             # new bijector
-            split = tfb.Split(self.num_params, axis=-1)
-            b = tfb.Chain([tfb.Invert(split), tfb.JointMap(transformation), split])
+            b = bj.Blockwise(transformation)
 
             # parameter names and labels:
             self.param_names = []
@@ -2362,17 +2623,20 @@ class TransformedFlowCallback(FlowCallback):
             # set ranges:
             if flow.parameter_ranges is not None:
                 parameter_ranges = {}
-                for i, name in enumerate(flow.param_names):
-                    parameter_ranges[self.param_names[i]] = list(transformation[i](flow.parameter_ranges[name]).numpy())
+                with torch.no_grad():
+                    for i, name in enumerate(flow.param_names):
+                        parameter_ranges[self.param_names[i]] = list(tu.to_numpy(transformation[i](flow.parameter_ranges[name])))
                 self.parameter_ranges = parameter_ranges
             else:
                 self.parameter_ranges = None
 
-            self.chain_samples = b.forward(flow.chain.samples).numpy()
-            self.chain_loglikes = None
-            self.has_loglikes = False
-            self.chain_weights = flow.chain.weights.astype(np_prec)
-            
+            if not self.is_light:
+                with torch.no_grad():
+                    self.chain_samples = tu.to_numpy(b.forward(flow.chain_samples))
+                self.chain_loglikes = None
+                self.has_loglikes = False
+                self.chain_weights = flow.chain_weights.astype(tu.np_prec)
+
         elif isinstance(transformation, DerivedParamsBijector) or isinstance(transformation, AnalyticalDerivedParamsBijector):
             # first find the parameters that the DerivedParamsBijector is modifying
             mod_params = [flow.param_names.index(name) for name in transformation.param_names_in]
@@ -2380,122 +2644,148 @@ class TransformedFlowCallback(FlowCallback):
             perm = mod_params + [i for i in range(flow.num_params) if i not in mod_params]
             # new bijector
             s = len(transformation.param_names_in)
-            split = tfb.Split([s] + [1] * (flow.num_params-s))
-            permute = tfb.Permute(perm)
-            b = tfb.Chain(
-                [
-                    tfb.Invert(split),
-                    tfb.JointMap(
-                        [transformation.bijector] + [tfb.Identity()] * (flow.num_params-s)
-                    ),
-                    split,
-                    permute,
-                ]
-            )
+            b = bj.Chain([
+                bj.Blockwise([transformation.bijector] + [bj.Identity() for _ in range(flow.num_params - s)],
+                             block_sizes=[s] + [1] * (flow.num_params - s)),
+                bj.Permute(perm),
+            ])
 
             # parameter names and labels:
             self.param_names = transformation.param_names_out + [flow.param_names[i] for i in fix_params]
-            
-            self.chain_loglikes = flow.chain_loglikes.astype(np_prec)
-            self.has_loglikes = False
-            self.chain_weights = flow.chain_weights.astype(np_prec)
-            
+
+            if not self.is_light:
+                if flow.chain_loglikes is not None:
+                    self.chain_loglikes = flow.chain_loglikes.astype(tu.np_prec)
+                else:
+                    self.chain_loglikes = None
+                self.has_loglikes = False
+                self.chain_weights = flow.chain_weights.astype(tu.np_prec)
+
         else:
-            raise ValueError
+            raise ValueError('Unsupported transformation of type ' + type(transformation).__name__)
 
         if isinstance(transformation, DerivedParamsBijector):
             self.param_labels = transformation.flow_out.param_labels + [flow.param_labels[i] for i in fix_params]
-            
-            self.chain_samples = np.concatenate(
-                [transformation.chain_samples,
-                 np.take(flow.chain_samples, fix_params, axis=1)], axis=1)
-            
+
+            if not self.is_light:
+                self.chain_samples = np.concatenate(
+                    [transformation.chain_samples,
+                     np.take(flow.chain_samples, fix_params, axis=1)], axis=1)
+
             # set ranges:
             if flow.parameter_ranges is not None:
                 if transformation.flow_out.parameter_ranges is not None:
-                    self.parameter_ranges = transformation.flow_out.parameter_ranges
+                    self.parameter_ranges = copy.deepcopy(transformation.flow_out.parameter_ranges)
                     for i in fix_params:
                         name = flow.param_names[i]
                         self.parameter_ranges[name] = flow.parameter_ranges[name]
-                        
+                else:
+                    self.parameter_ranges = None
+            else:
+                self.parameter_ranges = None
+
         elif isinstance(transformation, AnalyticalDerivedParamsBijector):
             self.param_labels = transformation.param_labels_out + [flow.param_labels[i] for i in fix_params]
-            
-            temp_samples = transformation.bijector.forward(np.take(flow.chain_samples, mod_params, axis=1)).numpy().astype(np_prec)
-            self.chain_samples = np.concatenate(
-                [temp_samples,
-                np.take(flow.chain_samples, fix_params, axis=1)], axis=1)
-            
-            # set ranges:
-            if flow.parameter_ranges is not None:                
-                self.parameter_ranges = {p:(temp_samples[:,i].min(), temp_samples[:,i].max()) for i,p in enumerate(transformation.param_names_out)}
-                for i in fix_params:
-                    name = flow.param_names[i]
-                    self.parameter_ranges[name] = flow.parameter_ranges[name]
 
-        else:
-            raise ValueError
+            if not self.is_light:
+                with torch.no_grad():
+                    temp_samples = tu.to_numpy(transformation.bijector.forward(
+                        np.take(flow.chain_samples, mod_params, axis=1))).astype(tu.np_prec)
+                self.chain_samples = np.concatenate(
+                    [temp_samples,
+                    np.take(flow.chain_samples, fix_params, axis=1)], axis=1)
+
+                # set ranges:
+                if flow.parameter_ranges is not None:
+                    self.parameter_ranges = {p: (temp_samples[:, i].min(), temp_samples[:, i].max())
+                                             for i, p in enumerate(transformation.param_names_out)}
+                    for i in fix_params:
+                        name = flow.param_names[i]
+                        self.parameter_ranges[name] = flow.parameter_ranges[name]
+                else:
+                    self.parameter_ranges = None
+            else:
+                self.parameter_ranges = None
 
         # save bijector:
+        b.to(self.device)
         self.transformer_bijector = b
 
         # set name tag:
         self.name_tag = flow.name_tag + '_transformed'
-        # set sample MAP:
-        if flow.sample_MAP is not None:
-            self.sample_MAP = b.forward(np.atleast_2d(flow.sample_MAP)).numpy()
-        else:
-            self.sample_MAP = None
-        # set chains MAP:
-        if flow.chain_MAP is not None:
-            self.chain_MAP = b.forward(np.atleast_2d(flow.chain_MAP)).numpy()
-        else:
-            self.chain_MAP = None
+        with torch.no_grad():
+            # set sample MAP:
+            if flow.sample_MAP is not None:
+                self.sample_MAP = tu.to_numpy(b.forward(np.atleast_2d(flow.sample_MAP)))
+            else:
+                self.sample_MAP = None
+            # set chains MAP:
+            if flow.chain_MAP is not None:
+                self.chain_MAP = tu.to_numpy(b.forward(np.atleast_2d(flow.chain_MAP)))
+            else:
+                self.chain_MAP = None
 
         # set bijectors and distribution:
         self.bijectors = [b] + flow.bijectors
-        self.bijector = tfb.Chain(self.bijectors)
-        self.distribution = tfd.TransformedDistribution(
-            distribution=flow.distribution.distribution, bijector=self.bijector)
+        self.bijector = bj.Chain(self.bijectors)
+        self.trainable_bijector = flow.__dict__.get('trainable_bijector', None)
+        self._build_distributions()
 
         # MAP:
         if flow.MAP_coord is not None:
-            self.MAP_coord = b.forward(flow.MAP_coord).numpy()
-            self.MAP_logP = self.log_probability(self.cast(self.MAP_coord))
+            with torch.no_grad():
+                self.MAP_coord = tu.to_numpy(b.forward(np.atleast_2d(flow.MAP_coord)))[0]
+            self.MAP_logP = float(self.log_probability(np.atleast_2d(self.MAP_coord))[0])
         else:
             self.MAP_coord = None
             self.MAP_logP = None
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.float32)])
-    def log_probability(self, coord):
-        log_prob = self.distribution.log_prob(coord)
+    def _build_distributions(self):
+        """Build the base and full distributions on the flow device."""
+        self.base_distribution = ds.standard_normal(self.num_params, device=self.device)
+        self.distribution = ds.TransformedDistribution(distribution=self.base_distribution, bijector=self.bijector)
+
+    def _log_probability(self, x):
+        """Log probability, optionally without the Jacobian of the transformation."""
+        log_prob = self.distribution.log_prob(x)
         if not self.transform_posterior:
-            log_prob -= self.transformer_bijector.inverse_log_det_jacobian(coord)
+            log_prob = log_prob - self.transformer_bijector.inverse_log_det_jacobian(x, event_ndims=1)
         return log_prob
 
-    @tf.function()
-    def log_probability_jacobian(self, coord):
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.log_probability(coord)
-        return tape.gradient(f, coord)
+    def train(self, *args, **kwargs):
+        """
+        Transformed flows cannot be trained.
 
-    @tf.function()
-    def log_probability_hessian(self, coord):
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-            tape.watch(coord)
-            f = self.log_probability_jacobian(coord)
-        return tape.batch_jacobian(f, coord)
-    
+        :param args: ignored.
+        :param kwargs: ignored.
+        :raises NotImplementedError: transformed flows cannot be trained, train the original flow.
+        """
+        raise NotImplementedError('Transformed flows cannot be trained: train the original flow.')
+
+    def global_train(self, *args, **kwargs):
+        """
+        Transformed flows cannot be trained.
+
+        :param args: ignored.
+        :param kwargs: ignored.
+        :raises NotImplementedError: transformed flows cannot be trained, train the original flow.
+        """
+        raise NotImplementedError('Transformed flows cannot be trained: train the original flow.')
+
 ###############################################################################
 # Average flow:
 
 
 class average_flow(FlowCallback):
+    """Mixture of flows trained on the same chain, weighted by their validation performance."""
 
     def __init__(self, flows, **kwargs):
         """
         Initialize the average flow class
+
+        :param flows: list of flows with the same parameters, on the same device.
+        :param kwargs: ``validation_training_idx``, the split shared by the flows.
+        :raises ValueError: if the flows have different parameters or devices.
         """
         # check parameters and copy in info:
         for flow in flows:
@@ -2503,6 +2793,12 @@ class average_flow(FlowCallback):
                 raise ValueError(
                     'Flow', flow.name_tag, 'does not have the same parameters as', flows[0].name_tag,
                     '. Cannot average.')
+            if torch.device(flow.device) != torch.device(flows[0].device):
+                raise ValueError('All the flows of an average flow must be on the same device, got '
+                                 + str(flow.device) + ' and ' + str(flows[0].device)
+                                 + '. Use flow.to(device) to move them.')
+        self.is_light = any(bool(flow.__dict__.get('is_light', False)) for flow in flows)
+        self._trainer_initialized = False
         # copy in infos from the first flow:
         infos = [
             'name_tag',
@@ -2522,28 +2818,34 @@ class average_flow(FlowCallback):
             'is_trained',
             'MAP_coord',
             'MAP_logP',
+            'prec',
+            'np_prec',
             # bijectors and distribution:
-            'prior_bijector', 
-            'fixed_bijector', 
+            'prior_bijector',
+            'fixed_bijector',
             'trainable_transformation'
         ]
         for info in infos:
+            if self.is_light and info in FlowCallback._full_only_attributes:
+                continue
             try:
                 self.__dict__[info] = flows[0].__dict__[info]
             except KeyError:
                 print("Flow does not have attribute :", info)
+        self.device = flows[0].device
         # check and save training and validation indexes:
-        validation_training_idx = kwargs.get('validation_training_idx')
-        if validation_training_idx is None:
-            print('Warning: validation_training_idx not found in kwargs. You should ensure that training and validation indexes are coherent across average flow.')
-            self.test_idx, self.training_idx = None, None
-        else:
-            self.test_idx, self.training_idx = validation_training_idx
-        # check consistency of training and validation split across average flows:
-        for flow in flows:
-            if hasattr(flow, 'test_idx') and hasattr(flow, 'training_idx'):
-                if not np.all(flow.test_idx == self.test_idx) or not np.all(flow.training_idx == self.training_idx):
-                    print('Warning: validation and training indexes are not consistent across average flows.')
+        if not self.is_light:
+            validation_training_idx = kwargs.get('validation_training_idx')
+            if validation_training_idx is None:
+                print('Warning: validation_training_idx not found in kwargs. You should ensure that training and validation indexes are coherent across average flow.')
+                self.test_idx, self.training_idx = None, None
+            else:
+                self.test_idx, self.training_idx = validation_training_idx
+            # check consistency of training and validation split across average flows:
+            for flow in flows:
+                if 'test_idx' in flow.__dict__ and 'training_idx' in flow.__dict__:
+                    if not np.array_equal(flow.test_idx, self.test_idx) or not np.array_equal(flow.training_idx, self.training_idx):
+                        print('Warning: validation and training indexes are not consistent across average flows.')
         # copy in flows:
         self.flows = flows
         # process:
@@ -2556,45 +2858,71 @@ class average_flow(FlowCallback):
     def _set_flow_weights(self, mode='val_loss'):
         """
         Compute the relative weights of flows based on validation loss
+
+        :param mode: ``'val_loss'`` (default), ``'loss'``, ``'chi2Z_ks_p'``, ``'equal'`` or another log key.
+        :raises ValueError: if a flow has no ``mode`` entry in its log.
         """
         # get weights:
         if mode == 'equal':
             self.weights = np.ones(self.num_flows) / self.num_flows
-        else:       
+        else:
             _temp_weights = []
             for flow in self.flows:
-                if mode not in flow.log.keys():
-                    raise ValueError('Cannot initialize average flow weights. Key', key, 'not found in flow', flow.name_tag)
+                if mode not in flow.log.keys() or len(flow.log[mode]) == 0:
+                    raise ValueError('Cannot initialize average flow weights. Key', mode, 'not found in flow', flow.name_tag)
                 _temp_weights.append(flow.log[mode][-1])
+            _temp_weights = np.array(_temp_weights, dtype=np.float64)
 
             if mode == 'loss' or mode == 'val_loss':
                 _temp_weights = np.exp(np.amin(_temp_weights) - _temp_weights)
                 self.weights = _temp_weights / np.sum(_temp_weights)
-                
-            if mode == 'chi2Z_ks_p':
+            elif mode == 'chi2Z_ks_p':
                 _temp_weights = np.exp(np.log(_temp_weights) - np.amax(np.log(_temp_weights)))
                 self.weights = _temp_weights / np.sum(_temp_weights)
-            
             else:
                 self.weights = _temp_weights / np.sum(_temp_weights)
 
         # save:
-        self.weights = self.cast(self.weights)
+        self.weights = tu.to_tensor(self.weights, device='cpu')
 
-        # initialize multinomial over weights for sampling:
-        self.weights_prob = tfp.distributions.Multinomial(1, probs=self.weights, validate_args=True)
-        self.distribution = tfp.distributions.Mixture(
-            cat=tfp.distributions.Categorical(probs=self.weights),
-            components=[flow.distribution for flow in self.flows])
+        # initialize the mixture distribution:
+        self._build_distributions()
         #
         return None
 
+    def _build_distributions(self):
+        """Build the mixture distribution of the flows."""
+        self.distribution = ds.Mixture(self.weights, [flow.distribution for flow in self.flows])
+
+    def _move_to(self, device):
+        """Move all the flows to ``device``."""
+        for flow in self.flows:
+            flow.to(device)
+        self.device = device
+        self._build_distributions()
+
     def train(self, **kwargs):
+        """
+        Train all the flows.
+
+        :param kwargs: options passed to :meth:`FlowCallback.train` of every flow.
+        :returns: None
+        :raises RuntimeError: for flows loaded from light snapshots.
+        """
+        self._check_trainable()
         for flow in self.flows:
             flow.train(**kwargs)
         return None
 
     def global_train(self, **kwargs):
+        """
+        Train all the flows with the population strategy.
+
+        :param kwargs: options passed to :meth:`FlowCallback.global_train` of every flow.
+        :returns: None
+        :raises RuntimeError: for flows loaded from light snapshots.
+        """
+        self._check_trainable()
         for flow in self.flows:
             flow.global_train(**kwargs)
         return None
@@ -2605,7 +2933,15 @@ class average_flow(FlowCallback):
     @matplotlib.rc_context(plot_options)
     def training_plot(self, logs=None, file_path=None, ipython_plotting=False):
         """
-        Method to produce training plot with training metrics
+        Method to produce training plot with training metrics, one figure per flow.
+
+        :param logs: dictionary of training metrics passed to the training plot of every flow,
+            defaults to None.
+        :param file_path: path of the file to save the figures to, defaults to None (not saved).
+            The index of the flow is appended to the file name, e.g. ``plot_0.pdf``.
+        :param ipython_plotting: whether plotting is inline in IPython, in which case every
+            figure is shown, defaults to False.
+        :returns: None
         """
         if file_path is not None:
             file_name, file_format = os.path.splitext(file_path)
@@ -2614,8 +2950,8 @@ class average_flow(FlowCallback):
                 _temp_name = file_name+'_'+str(_i)+file_format
             else:
                 _temp_name = None
-            flow.training_plot(logs=logs, 
-                               file_path=_temp_name, 
+            flow.training_plot(logs=logs,
+                               file_path=_temp_name,
                                ipython_plotting=ipython_plotting,
                                title='Training flow '+str(_i))
             if ipython_plotting:
@@ -2631,138 +2967,238 @@ class average_flow(FlowCallback):
         print('Number of flows:', self.num_flows)
         # print flow weights:
         with np.printoptions(precision=2, suppress=True):
-            print('Flow weights   :', self.weights.numpy())
+            print('Flow weights   :', tu.to_numpy(self.weights))
         # cycle over training metrics using the first flow as template:
         _max_label = max(len(_t) for _t in self.flows[0].training_metrics)
-        # cycle over metrics:        
+        # cycle over metrics:
         for _t in self.flows[0].training_metrics:
-            _v = np.array([_f.log[_t][-1] for _f in self.flows])          
+            _v = np.array([_f.log[_t][-1] for _f in self.flows])
             with np.printoptions(precision=2, suppress=False):
                 print(_t.ljust(_max_label)+':', _v)
-    
+
     ###############################################################################
     # Utility functions:
 
     def cast(self, v):
+        """
+        Convert to a CPU tensor with the flow precision.
+
+        :param v: input vector (array-like or tensor).
+        :returns: CPU tensor.
+        """
         return self.flows[0].cast(v)
 
-    
+    def _log_probability_abs(self, abs_coord):
+        """:raises NotImplementedError: average flows have no abstract coordinates."""
+        raise NotImplementedError('Average flow does not have well defined abstract coordinates')
+
     def log_probability_abs(self, abs_coord):
-        raise NotImplementedError('Average flow does not have wel defined abstract coordinates')
+        """
+        Not available: average flows have no abstract coordinates.
 
-    
+        :param abs_coord: input parameter value in abstract coordinates (unused).
+        :raises NotImplementedError: average flows have no abstract coordinates.
+        """
+        raise NotImplementedError('Average flow does not have well defined abstract coordinates')
+
     def log_probability_abs_jacobian(self, abs_coord):
-        raise NotImplementedError('Average flow does not have wel defined abstract coordinates')
+        """
+        Not available: average flows have no abstract coordinates.
 
-    
+        :param abs_coord: input parameter value in abstract coordinates (unused).
+        :raises NotImplementedError: average flows have no abstract coordinates.
+        """
+        raise NotImplementedError('Average flow does not have well defined abstract coordinates')
+
     def log_probability_abs_hessian(self, abs_coord):
-        raise NotImplementedError('Average flow does not have wel defined abstract coordinates')
+        """
+        Not available: average flows have no abstract coordinates.
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[], dtype=tf.int32)])
+        :param abs_coord: input parameter value in abstract coordinates (unused).
+        :raises NotImplementedError: average flows have no abstract coordinates.
+        """
+        raise NotImplementedError('Average flow does not have well defined abstract coordinates')
+
     def _sample(self, N):
-        # sample from the weights:
-        temp_weights = tf.cast(self.weights_prob.sample(N), dtype=tf.int32)
-        # count samples:
-        counts = tf.reduce_sum(temp_weights, axis=0)
-        # go through the flows:
-        temp_samples = tf.concat([self.flows[i].sample(counts[i]) for i in range(self.num_flows)], axis=0)
-        #
-        return self.cast(tf.random.shuffle(temp_samples))
-    
-    def sample(self, N):
-        """
-        Return samples from the synthetic probablity.
+        """Draw samples from the mixture on the flows device."""
+        return self.distribution.sample(int(N))
 
-        :param N: number of samples
-        """
-        return self._sample(tf.cast(N, tf.int32))
 
-    ###############################################################################
-    # Caching functions:
-    
-    def reset_tensorflow_caches(self):
-        # clean own tf functions first:
-        _self_functions = _iter_callable_names(self)
-        # get the methods that are tensorflow functions:
-        _tf_functions = []
-        for func in _self_functions:
-            try:
-                attr = getattr(self, func)
-            except Exception:
-                continue
-            if _is_tf_function(attr):
-                _tf_functions.append(func)
-        # clean temp graph:
-        for _f in _tf_functions:
-            _clear_tf_function_cache(getattr(self, _f))
-        # bijectors need to be cleared manually:
-        self.prior_bijector._cache.clear()
-        self.fixed_bijector._cache.clear()
-        # clean the cache of all flows:
-        for flow in self.flows:
-            flow.reset_tensorflow_caches()
-        # clean tensorflow cache:
-        tf.keras.backend.clear_session()
-        # collect garbage:
-        gc.collect()
+###############################################################################
+# Cache helpers:
 
-    def save(self, outroot):
-        for i, flow in enumerate(self.flows):
-            _outroot = outroot + '_' + str(i)
-            flow.save(_outroot)
-        return None
+# keyword arguments that do not change the flow and are ignored by the cache check:
+_RUNTIME_KWARGS = ('feedback', 'plot_every', 'verbose', 'device')
 
-    @classmethod
-    def load(cls, chain, outroot, num_flows=1, **kwargs):
-        # load each flow:
-        flows = []
-        for i in range(num_flows):
-            _outroot = outroot + '_' + str(i)
-            flows.append(FlowCallback.load(chain, _outroot, **kwargs))
-        # initialize average flow:
-        flow = average_flow(flows, **kwargs)
-        #
-        return flow
+
+def _hash_array(value):
+    """sha256 of an array."""
+    array = np.ascontiguousarray(tu.to_numpy(value))
+    return hashlib.sha256(array.tobytes()).hexdigest()
+
+
+def _normalize_cache_value(value):
+    """
+    Convert a creation argument to a plain, comparable value.
+
+    :param value: any value.
+    :returns: JSON-like value (arrays by shape and hash, callables by qualified name, other
+        objects by type name).
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (np.ndarray, torch.Tensor)):
+        return {'array_shape': list(value.shape), 'sha256': _hash_array(value)}
+    if isinstance(value, dict):
+        return {str(_k): _normalize_cache_value(_v) for _k, _v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_cache_value(_v) for _v in value]
+    if callable(value) and hasattr(value, '__qualname__'):
+        return 'callable:' + str(getattr(value, '__module__', '')) + '.' + value.__qualname__
+    return 'object:' + type(value).__module__ + '.' + type(value).__name__
+
+
+def _chain_fingerprint(chain, param_names=None):
+    """
+    sha256 fingerprint of the chain columns used by a flow.
+
+    :param chain: :class:`~getdist.mcsamples.MCSamples`.
+    :param param_names: parameter names, defaults to the running parameters.
+    :returns: hexadecimal digest.
+    """
+    if param_names is None:
+        param_names = chain.getParamNames().getRunningNames()
+    param_names = list(param_names)
+    digest = hashlib.sha256()
+    digest.update(json.dumps(param_names).encode())
+    indexes = [chain.index[name] for name in param_names]
+    digest.update(np.ascontiguousarray(chain.samples[:, indexes], dtype=np.float64).tobytes())
+    digest.update(np.ascontiguousarray(chain.weights, dtype=np.float64).tobytes())
+    if chain.loglikes is not None:
+        digest.update(np.ascontiguousarray(chain.loglikes, dtype=np.float64).tobytes())
+    return digest.hexdigest()
+
+
+def _cache_record(chain, kwargs):
+    """
+    Record identifying the chain and the creation arguments of a cached flow.
+
+    :param chain: input chain.
+    :param kwargs: creation arguments.
+    :returns: dictionary with ``chain_fingerprint`` and normalized ``kwargs``.
+    """
+    return {
+        'chain_fingerprint': _chain_fingerprint(chain, kwargs.get('param_names', None)),
+        'kwargs': {_k: _normalize_cache_value(_v) for _k, _v in sorted(kwargs.items()) if _k not in _RUNTIME_KWARGS},
+    }
+
+
+def _check_cache_record(stored, record, cache_file):
+    """
+    Check that a cache was made from the same chain and arguments.
+
+    :param stored: record stored in the cache (or None).
+    :param record: record of the current call.
+    :param cache_file: cache path, for the error message.
+    :raises ValueError: listing the differences.
+    """
+    if stored is None:
+        raise ValueError('The cache file ' + str(cache_file) + ' has no cache record; '
+                         'use overwrite_cache=True to retrain and overwrite it.')
+    differences = []
+    if stored.get('chain_fingerprint') != record.get('chain_fingerprint'):
+        differences.append('chain')
+    _missing = object()
+    stored_kwargs = stored.get('kwargs', {})
+    record_kwargs = record.get('kwargs', {})
+    for key in sorted(set(stored_kwargs.keys()) | set(record_kwargs.keys())):
+        if stored_kwargs.get(key, _missing) != record_kwargs.get(key, _missing):
+            differences.append(key)
+    if len(differences) > 0:
+        raise ValueError('The cache file ' + str(cache_file) + ' was created from different inputs ('
+                         + ', '.join(differences) + '). Use overwrite_cache=True to retrain and overwrite it, '
+                         'or use another cache_file.')
+
+
+def _check_removed_cache_kwargs(kwargs):
+    """
+    :raises ValueError: if the removed ``cache_dir`` / ``root_name`` arguments are used.
+    """
+    for key in ['cache_dir', 'root_name']:
+        if key in kwargs:
+            raise ValueError(key + ' has been removed: pass the path of the cache file with cache_file.')
 
 
 ###############################################################################
 # Flow utilities:
 
 
-def flow_from_chain(chain, cache_dir=None, root_name='sprob', **kwargs):
+def flow_from_chain(chain, cache_file=None, overwrite_cache=False, cache_mode='full', **kwargs):
     """
     Helper to initialize and train a synthetic probability starting from a chain.
-    If a cache directory is specified then training results are cached and
-    retreived at later calls.
+
+    If a cache file is given, the trained flow is saved there and loaded (without training)
+    at later calls. A cache hit is accepted only if it was made from the same chain and the
+    same arguments (``feedback``, ``plot_every``, ``verbose`` and ``device`` are ignored).
+
+    :param chain: input chain.
+    :param cache_file: optional path of the cache file.
+    :param overwrite_cache: retrain and overwrite an existing cache file.
+    :param cache_mode: ``'full'`` or ``'light'`` snapshot, see :meth:`FlowCallback.save`.
+    :param kwargs: arguments of :class:`FlowCallback` and :meth:`FlowCallback.global_train`.
+    :returns: trained flow.
+    :raises ValueError: if the cache file was made from different inputs.
     """
-
-    # check if we want to create a cache folder:
-    if cache_dir is not None:
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-
+    _check_removed_cache_kwargs(kwargs)
+    record = _cache_record(chain, kwargs)
     # load from cache:
-    if cache_dir is not None and os.path.isfile(cache_dir + '/' + root_name + '_flow_cache.pickle'):
-        flow = FlowCallback.load(chain, cache_dir + '/' + root_name, **kwargs)
-    else:
-        # initialize posterior flow:
-        flow = FlowCallback(chain, **kwargs)
-        # train posterior flow:
-        flow.global_train(**kwargs)
-        # save trained model:
-        if cache_dir is not None:
-            flow.save(cache_dir + '/' + root_name)
+    if cache_file is not None and os.path.isfile(cache_file) and not overwrite_cache:
+        flow = FlowCallback.load(cache_file, device=kwargs.get('device', None))
+        _check_cache_record(getattr(flow, 'cache_record', None), record, cache_file)
+        return flow
+    # initialize posterior flow:
+    flow = FlowCallback(chain, **kwargs)
+    # train posterior flow:
+    flow.global_train(**kwargs)
+    # save trained model:
+    if cache_file is not None:
+        flow.cache_record = record
+        flow.save(cache_file, mode=cache_mode)
     #
     return flow
 
 
-def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob', use_mpi=False, **kwargs):
+def _remove_file(path):
+    """Remove a file if it exists."""
+    if path is not None and os.path.isfile(path):
+        os.remove(path)
+
+
+def average_flow_from_chain(chain, num_flows=1, cache_file=None, overwrite_cache=False, cache_mode='full',
+                            use_mpi=False, **kwargs):
     """
-    Helper to initialize and train a synthetic probability starting from a chain.
-    If a cache directory is specified then training results are cached and
-    retreived at later calls.
+    Helper to initialize and train an average of flows starting from a chain.
+
+    The flows share the training / validation split. If a cache file is given the
+    assembled average flow is saved there and loaded at later calls; while training, the
+    split and the members are stored in ``cache_file + '.split'`` and ``cache_file + '.part<i>'``,
+    so that interrupted or MPI runs resume. These files are removed once the average flow is saved.
+
+    :param chain: input chain.
+    :param num_flows: number of flows.
+    :param cache_file: optional path of the cache file.
+    :param overwrite_cache: retrain and overwrite existing cache files.
+    :param cache_mode: ``'full'`` or ``'light'`` snapshot of the assembled flow.
+    :param use_mpi: distribute the flows over MPI ranks (requires ``cache_file``).
+    :param kwargs: arguments of :class:`FlowCallback` and :meth:`FlowCallback.global_train`.
+    :returns: the average flow (the flow itself if ``num_flows`` is 1).
+    :raises ValueError: if a cache file was made from different inputs.
     """
-    
+    _check_removed_cache_kwargs(kwargs)
+    kwargs = dict(kwargs)
+
     # get feedback flag:
     feedback = kwargs.get('feedback', 0)
     if feedback is None:
@@ -2770,10 +3206,13 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
     if 'feedback' in kwargs and type(kwargs['feedback']) == int:
         kwargs['feedback'] = max(kwargs['feedback'] - 1, 0)
 
+    # record of the call:
+    record = _cache_record(chain, dict(kwargs, num_flows=num_flows))
+
     # MPI is incompatible with no cache:
-    if use_mpi and cache_dir is None:
+    if use_mpi and cache_file is None:
         use_mpi = False
-        print('Warning: MPI is incompatible with no cache. Disabling MPI.')    
+        print('Warning: MPI is incompatible with no cache. Disabling MPI.')
 
     # check if we want to use MPI:
     if use_mpi:
@@ -2793,23 +3232,32 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
         print('Training average flow with MPI enabled', flush=use_mpi)
         print('MPI size:', size, flush=use_mpi)
 
-   # check if we want to create a cache folder:
-    if cache_dir is not None:
-        if not os.path.exists(cache_dir):
-            if rank == 0:
-                os.makedirs(cache_dir)
-        
+    # device of the assembled flow and of the flows trained by this rank:
+    target_device = kwargs.get('device', None)
+    member_device = tu.resolve_device(target_device)
+    if use_mpi and member_device.type == 'cuda':
+        member_device = torch.device('cuda:' + str(rank % torch.cuda.device_count()))
+
+    # load the assembled flow from cache:
+    if cache_file is not None and os.path.isfile(cache_file) and not overwrite_cache:
+        if feedback > 0 and rank == 0:
+            print('Loading average flow from cache', flush=use_mpi)
+        flow = FlowCallback.load(cache_file, device=target_device)
+        _check_cache_record(getattr(flow, 'cache_record', None), record, cache_file)
+        return flow
+
+    # cache files of the split and of the members:
+    split_file = None if cache_file is None else cache_file + '.split'
+    part_files = [None if cache_file is None else cache_file + '.part' + str(i) for i in range(num_flows)]
+
     # draw training and test indexes so that they are shared across flows:
     if 'validation_training_idx' not in kwargs:
         validation_training_idx = None
         if rank == 0:
-            if cache_dir is not None:
-                idx_cache_files = cache_dir + '/' + root_name + '.validation_training_idx.pickle'
-            else:
-                idx_cache_files = None
-            if idx_cache_files is not None and os.path.isfile(idx_cache_files):
-                with open(idx_cache_files, 'rb') as handle:
-                    validation_training_idx = pickle.load(handle)
+            if split_file is not None and os.path.isfile(split_file) and not overwrite_cache:
+                _split = torch.load(split_file, weights_only=False)
+                _check_cache_record(_split.get('cache_record', None), record, split_file)
+                validation_training_idx = _split['validation_training_idx']
             else:
                 # get number of samples:
                 n = chain.samples.shape[0]
@@ -2820,9 +3268,8 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
                 n_split = int(validation_split * n)
                 validation_training_idx = indices[:n_split], indices[n_split:]
                 # save to file:
-                if cache_dir is not None:
-                    with open(idx_cache_files, 'wb') as handle:
-                        pickle.dump(validation_training_idx, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                if split_file is not None:
+                    tu.atomic_save({'cache_record': record, 'validation_training_idx': validation_training_idx}, split_file)
         # broadcast:
         if use_mpi:
             validation_training_idx = comm.bcast(validation_training_idx, root=0)
@@ -2831,25 +3278,20 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
     # load each flow from cache or compute:
     flows = []
     for i in range(num_flows):
-        
+
         # skip if not in rank:
         if i % size != rank:
             continue
-            
-        # get output root:
-        if cache_dir is not None:
-            _outroot = cache_dir + '/' + root_name + '_' + str(i)
-        else:
-            _outroot = ''
+
+        _member_kwargs = dict(kwargs)
+        _member_kwargs['device'] = member_device
+        _member_record = _cache_record(chain, dict(kwargs, member_index=i))
         # do the list of flows:
-        if cache_dir is not None and os.path.isfile(_outroot + '_flow_cache.pickle'):
-            if use_mpi and size > 1:
-                pass
-            else:
-                if feedback > 0:
-                    print('Loading flow', i, 'from cache', flush=use_mpi)
-                flow = FlowCallback.load(chain, _outroot, **kwargs)
-                flows.append(flow)
+        if part_files[i] is not None and os.path.isfile(part_files[i]) and not overwrite_cache:
+            if feedback > 0:
+                print('Loading flow', i, 'from cache', flush=use_mpi)
+            flow = FlowCallback.load(part_files[i], device=member_device)
+            _check_cache_record(getattr(flow, 'cache_record', None), _member_record, part_files[i])
         else:
             # proceed:
             if feedback > 0:
@@ -2858,28 +3300,37 @@ def average_flow_from_chain(chain, num_flows=1, cache_dir=None, root_name='sprob
                 else:
                     print('Training flow', i, flush=use_mpi)
             # initialize posterior flow:
-            flow = FlowCallback(chain, **kwargs)
+            flow = FlowCallback(chain, **_member_kwargs)
             # train posterior flow:
-            flow.global_train(**kwargs)
+            flow.global_train(**_member_kwargs)
             # save trained model:
-            if cache_dir is not None:
-                flow.save(_outroot)
-            flows.append(flow)
+            if part_files[i] is not None:
+                flow.cache_record = _member_record
+                flow.save(part_files[i], mode='full')
+        flows.append(flow)
 
-    # we cannot syncronize the flows over pickle, but the flows are saved to file...
+    # collect the flows of all the ranks from the part files:
     if use_mpi and size > 1:
-        # barrier:
         comm.Barrier()
-        return average_flow_from_chain(chain=chain, 
-                                       num_flows=num_flows, 
-                                       cache_dir=cache_dir, 
-                                       root_name=root_name, 
-                                       use_mpi=False, **kwargs)
-    else:    
-        # initialize the average flow:
-        if len(flows) == 1:
-            _avg_flow = flows[0]
-        else:
-            _avg_flow = average_flow(flows, **kwargs)
-        #
-        return _avg_flow
+        flows = [FlowCallback.load(part_files[i], device=target_device) for i in range(num_flows)]
+    elif tu.resolve_device(target_device) != member_device:
+        flows = [flow.to(tu.resolve_device(target_device)) for flow in flows]
+
+    # initialize the average flow:
+    if len(flows) == 1:
+        _avg_flow = flows[0]
+    else:
+        _avg_flow = average_flow(flows, **kwargs)
+
+    # save the assembled flow and remove the temporary files:
+    if cache_file is not None:
+        if rank == 0:
+            _avg_flow.cache_record = record
+            _avg_flow.save(cache_file, mode=cache_mode)
+            _remove_file(split_file)
+            for part_file in part_files:
+                _remove_file(part_file)
+        if use_mpi and size > 1:
+            comm.Barrier()
+    #
+    return _avg_flow

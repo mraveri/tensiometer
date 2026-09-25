@@ -17,13 +17,9 @@ from scipy.interpolate import interp1d
 from scipy.interpolate import LinearNDInterpolator
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from itertools import combinations
-import pickle
 
 from numba import njit
-
-# tensorflow imports:
-import tensorflow as tf
-import tensorflow_probability as tfp
+import torch
 
 # getdist imports:
 import getdist.mcsamples as mcsamples
@@ -33,11 +29,18 @@ from getdist.densities import Density1D, Density2D
 
 # tensiometer imports:
 from ..utilities import stats_utilities as stutils
+from . import autodiff
+from . import bijectors as bj
 from . import fixed_bijectors as pb
 from . import synthetic_probability as sp
+from . import tensor_utilities as tu
+from .optimizers import batched_minimize
 
 ###############################################################################
 # utility functions:
+
+# numpy 2 renamed trapz to trapezoid (and later removed trapz):
+_trapezoid = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
 
 
 @njit
@@ -89,10 +92,20 @@ def _binned_argmax_2D(x_bins, y_bins, vals, num_bins_x, num_bins_y):
 
 def points_minimizer(func, jac, x0, bounds=None, feedback=0, use_scipy=True, **kwargs):
     """
-    Minimize one point. Has default options to deal with 32 bit precisions.
+    Minimize a population of points. Has default options to deal with 32 bit precisions.
     Note that the scipy implementation can be run with boundaries
-    while the tensorflow one cannot.
-    Note that using tensorflow methods require everything to be tensors.
+    while the torch one (:func:`~tensiometer.synthetic_probability.optimizers.batched_minimize`) cannot.
+    The scipy branch minimizes one point at a time with numpy functions; the torch branch
+    minimizes all the points at once and ``func`` / ``jac`` act on tensors of shape ``(B, d)``.
+
+    :param func: objective function.
+    :param jac: gradient of the objective.
+    :param x0: initial points, shape ``(B, d)``.
+    :param bounds: optional list of ``(min, max)`` bounds (scipy only).
+    :param feedback: feedback level.
+    :param use_scipy: use scipy (default) or the batched torch minimizer.
+    :param kwargs: options of the minimizer.
+    :returns: numpy arrays ``success (B,)``, ``min_value (B,)`` and ``min_point (B, d)``.
     """
     if use_scipy:
         # read in options:
@@ -122,8 +135,8 @@ def points_minimizer(func, jac, x0, bounds=None, feedback=0, use_scipy=True, **k
                 print('    - initial loss function', func(_x0))
             # main minimizer call:
             result = minimize(
-                func, x0=_x0, 
-                jac=jac if not _use_jac else None, 
+                func, x0=_x0,
+                jac=jac if _use_jac else None,
                 bounds=bounds,
                 method=_method, 
                 options=_options, 
@@ -146,14 +159,14 @@ def points_minimizer(func, jac, x0, bounds=None, feedback=0, use_scipy=True, **k
         min_point = np.array(min_point)
     else:
         if bounds is not None:
-            print('WARNING: tensorflow minimizer does not support bounds. Ignoring bounds.')
-        result = tfp.optimizer.lbfgs_minimize(
-            value_and_gradients_function=lambda x: [func(x), jac(x)],
-            initial_position=x0,
-        )
-        success = result.converged
-        min_value = result.objective_value
-        min_point = result.position
+            print('WARNING: torch minimizer does not support bounds. Ignoring bounds.')
+        result = batched_minimize(
+            lambda x: (func(x), jac(x)),
+            tu.to_tensor(x0, device='cpu'),
+            **stutils.filter_kwargs(kwargs, batched_minimize))
+        success = tu.to_numpy(result.converged)
+        min_value = tu.to_numpy(result.objective_value)
+        min_point = tu.to_numpy(result.position)
     #
     return success, min_value, min_point
 
@@ -177,6 +190,18 @@ def find_flow_MAP(
     This is achieved by first sampling. Selecting the best samples.
     Mapping them to abstract coordinates (where we have no bounds)
     and finding the MAP.
+
+    :param flow: flow to maximize.
+    :param feedback: feedback level.
+    :param abstract: minimize in the abstract (Gaussian) coordinates of the flow.
+    :param num_samples: number of samples of the initial random search.
+    :param num_best_to_follow: number of best samples that are minimized.
+    :param initial_points: optional initial points in parameter space (skips the random search).
+    :param use_scipy: use scipy (one point at a time) or the batched torch minimizer.
+    :param box_bijector: optional bijector from unbounded coordinates to the prior box.
+    :param kwargs: options of the minimizer.
+    :returns: best log probability and best point, in parameter space.
+    :raises ValueError: if both ``abstract`` and ``box_bijector`` are used, or no minimization succeeded.
     """
     # branch depending on wether initial points are provided:
     if initial_points is None:
@@ -188,12 +213,12 @@ def find_flow_MAP(
             print('  number of minimization initial samples =', num_samples)
             print('  number of best points to follow =', num_best_to_follow)
         # find the initial population of points:
-        temp_samples = flow.sample(num_samples)
-        temp_probs = flow.log_probability(temp_samples)
+        temp_samples = tu.to_numpy(flow.sample(num_samples))
+        temp_probs = tu.to_numpy(flow.log_probability(temp_samples))
         # find the best ones:
         _best_indexes = np.argpartition(temp_probs, -num_best_to_follow)[-num_best_to_follow:]
         # select population:
-        best_population = tf.gather(temp_samples, _best_indexes)
+        best_population = temp_samples[_best_indexes]
         # delete samples (these can be heavy):
         del (temp_samples, temp_probs)
     else:
@@ -209,8 +234,10 @@ def find_flow_MAP(
     if abstract:
         best_population = flow.map_to_abstract_coord(flow.cast(best_population))
     elif box_bijector is not None:
-        best_population = box_bijector.inverse(flow.cast(best_population))
-    # create the tensorflow functions (so that tracing happens here)
+        with torch.no_grad():
+            best_population = box_bijector.inverse(flow.cast(best_population)).cpu()
+    best_population = tu.to_numpy(best_population)
+    # objective functions acting on tensors:
     if abstract:
 
         def func(x):
@@ -222,15 +249,13 @@ def find_flow_MAP(
     elif box_bijector is not None:
         
         def func(x):
-            return -flow.log_probability(box_bijector(x))
-        
-        @tf.function
+            with torch.no_grad():
+                return -flow.log_probability(box_bijector(x))
+
         def jac(x):
-            with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-                tape.watch(x)
-                f = func(x)
-            return tape.gradient(f, x)
-        
+            return autodiff.gradient(
+                lambda _x: -flow.log_probability(box_bijector(_x)), autodiff.prepare_input(x), create_graph=False)
+
     else:
 
         def func(x):
@@ -243,10 +268,10 @@ def find_flow_MAP(
     if use_scipy:
 
         def func2(x):
-            return -flow.log_probability(flow.cast([x]))[0].numpy().astype(np.float64)
+            return tu.to_numpy(func(flow.cast([x])))[0].astype(np.float64)
 
         def jac2(x):
-            return -flow.log_probability_jacobian(flow.cast([x]))[0].numpy().astype(np.float64)
+            return tu.to_numpy(jac(flow.cast([x])))[0].astype(np.float64)
     else:
         func2, jac2 = func, jac
     # now set the ranges:
@@ -254,7 +279,7 @@ def find_flow_MAP(
         bounds = [flow.parameter_ranges[name] for name in flow.param_names]
     else:
         bounds = None
-    if box_bijector is not None or abstract:
+    if box_bijector is not None or abstract or not use_scipy:
         bounds = None
     # now do the minimization
     success, min_value, min_point = points_minimizer(
@@ -266,13 +291,25 @@ def find_flow_MAP(
     # we need to filter for finite values:
     _filter = np.all(np.isfinite(min_point), axis=1)
     _filter = np.logical_and(_filter, np.isfinite(min_value))
-    _filter = np.logical_and(_filter, success)
+    if np.any(np.logical_and(_filter, success)):
+        _filter = np.logical_and(_filter, success)
+    elif np.any(_filter):
+        if feedback > 0:
+            print('  * WARNING: no minimization converged, using the best finite point')
+    else:
+        raise ValueError('find_flow_MAP: no minimization gave a finite result.')
     min_value = min_value[_filter]
     min_point = min_point[_filter]
     # then find best solution and send out:
     _min_idx = np.argmin(min_value)
     _value = -min_value[_min_idx]
     _solution = min_point[_min_idx]
+    # map the solution back to parameter space:
+    if abstract:
+        _solution = tu.to_numpy(flow.map_to_original_coord(flow.cast([_solution])))[0]
+    elif box_bijector is not None:
+        with torch.no_grad():
+            _solution = tu.to_numpy(box_bijector(flow.cast([_solution])))[0]
     # feedback:
     if feedback > 0:
         print('  * best value found =', _value)
@@ -286,7 +323,18 @@ def find_flow_MAP(
 
 
 class posterior_profile_plotter(mcsamples.MCSamples):
-    
+    """
+    Profile posterior of a flow, exposed as a getdist ``MCSamples`` object so that the
+    getdist plotting functions show profiles instead of marginals.
+
+    The profiles are computed by a random search over flow samples followed by optional
+    gradient ascent (``pre_polish``) and minimization (``polish``) with scipy
+    (``use_scipy=True``, default) or with the batched torch minimizer.
+
+    The profiler can be saved with its flow with :meth:`savePickle` and restored with
+    :meth:`loadPickle`. Files written by the TensorFlow version of tensiometer cannot be loaded.
+    """
+
     # default options:
     options = {
                'initialize_cache': False,
@@ -312,16 +360,26 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                'scipy_method': 'L-BFGS-B',
                'scipy_options': {'ftol': 1.e-6, 'gtol': 1.e-05},
                'scipy_use_jac': True,
-               # tensorflow minimizer options:
-               'tf_tolerance': 1.e-5,
-               'tf_max_iterations': 1000,
-               'tf_max_line_search_iterations': 20,
+               # torch minimizer options:
+               'torch_tolerance': 1.e-5,
+               'torch_max_iterations': 1000,
+               'torch_max_line_search_iterations': 20,
             }
 
     def __init__(self, flow, feedback=1, **kwargs):
         """
         Initialize the profile posterior plotter.
         Pass a flow and the number of samples to use for base MCSamples.
+
+        The base ``MCSamples`` is built from ``flow.chain_samples`` / ``flow.chain_loglikes``
+        when available, otherwise from ``1000 * flow.num_params`` flow samples.
+
+        :param flow: the flow to profile.
+        :param feedback: feedback level (default 1); higher values print more.
+        :param kwargs: options, see ``posterior_profile_plotter.options``; they update the
+            instance options and, if ``initialize_cache`` is ``True``, are forwarded to
+            :meth:`update_cache`. Also accepts ``name_tag`` (default ``flow.name_tag + '_profiler'``)
+            and the named arguments of the getdist ``MCSamples`` constructor (e.g. ``settings``).
         """
         # copy default options so per-instance updates do not leak
         self.options = copy.deepcopy(self.options)
@@ -347,12 +405,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             print('  * parameters =', flow.param_names)
             print('  * feedback   =', self.feedback)
         # initialize the parent with the flow (so we can do margestats)
-        if hasattr(flow, 'chain_samples') and flow.chain_samples is not None:
+        if getattr(flow, 'chain_samples', None) is not None:
             _samples = flow.chain_samples
             _loglikes = flow.chain_loglikes
         else:
-            _samples = flow.sample(1000 * flow.num_params).numpy()
-            _loglikes = -flow.log_probability(flow.cast(_samples)).numpy()
+            _samples = tu.to_numpy(flow.sample(1000 * flow.num_params))
+            _loglikes = -tu.to_numpy(flow.log_probability(flow.cast(_samples)))
         super().__init__(
             samples=_samples,
             loglikes=_loglikes,
@@ -377,6 +435,16 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         """
         Initialize the profiler cache. This does all the maximization
         calculations and it's the heavy part of the whole thing.
+
+        Draws the random search population, then (depending on ``update_MAP``, ``update_1D``
+        and ``update_2D``) finds the MAP and computes the 1D profiles and the 2D profiles of all
+        pairs of ``params``. The random search samples are deleted at the end.
+
+        :param params: list of parameter names (or indices) to profile, defaults to all parameters.
+        :param kwargs: options, see ``posterior_profile_plotter.options``; they update the instance
+            options and are forwarded to :meth:`sample_profile_population`, :meth:`find_MAP`,
+            :meth:`get1DDensityGridData` and :meth:`get2DDensityGridData`.
+        :returns: None
         """
         # initial feedback:
         if self.feedback > 0:
@@ -437,15 +505,36 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         return None
 
     def update_cache_iterative(self, params=None, niter=1, **kwargs):
+        """
+        Initialize the profiler cache accumulating the random search over several populations.
+
+        The 1D and 2D bins are taken from the getdist marginal densities. For ``niter`` rounds a new
+        population is drawn with :meth:`sample_profile_population` and the best sample of each bin
+        is kept (stored in ``_1d_samples`` / ``_1d_logP`` and ``_2d_samples`` / ``_2d_logP``).
+        The profiles are then computed with :meth:`get1DDensityGridData` and
+        :meth:`get2DDensityGridData`, which use these accumulated samples as starting points.
+        The accumulated samples are kept until :meth:`reset_cache`; parameters (or pairs) they do
+        not cover are profiled with a new random search. The MAP is not updated. The random search
+        samples are deleted at the end.
+
+        :param params: list of parameter names to profile, defaults to all parameters.
+        :param niter: number of random search populations (default 1).
+        :param kwargs: options, see ``posterior_profile_plotter.options`` (``update_1D``,
+            ``update_2D``, ``num_points_1D``, ``num_points_2D`` and ``num_minimization_samples``
+            are read here); forwarded to the getdist ``get1DDensityGridData`` /
+            ``get2DDensityGridData`` used for the binning, to :meth:`sample_profile_population`
+            and to the profile methods. Unlike :meth:`update_cache` they do not update the
+            instance options.
+        :returns: None
+        """
         # initial feedback:
         if self.feedback > 0:
             print('  * initializing profiler data.')
 
         # get parameter names:
-        if params is not None:
-            indexes = [self._parAndNumber(name)[0] for name in params]
-        else:
-            indexes = list(range(self.n))
+        if params is None:
+            params = [name.name for name in self.paramNames.names]
+        indexes = [self._parAndNumber(name)[0] for name in params]
 
         # initialize 1D profiles:
 
@@ -520,8 +609,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                         self.temp_samples[:, idx] > np.amin(x_bins), self.temp_samples[:, idx] < np.amax(x_bins))
                     
                     # first find best samples in the bin:
-                    _indexes = np.digitize(self.temp_samples.numpy()[_filter_range, idx], x_bins) - 1
-                    _max_bins_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_filter_range], len(x_bins) - 1)
+                    _indexes = np.digitize(self.temp_samples[_filter_range, idx], x_bins) - 1
+                    _max_bins_idx = _binned_argmax_1D(_indexes, self.temp_probs[_filter_range], len(x_bins) - 1)
                     
                     # check bins that have points
                     _filter_valid_bins = _max_bins_idx >= 0  
@@ -530,8 +619,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _max_valid_bins_idx = _max_bins_idx[_filter_valid_bins]  
                     
                     # and their logP value
-                    _max_valid_bins_logP = tf.gather(self.temp_probs,
-                                                    _max_valid_bins_idx).numpy()  
+                    _max_valid_bins_logP = self.temp_probs[_filter_range][_max_valid_bins_idx]
                     
                     # check where new points are better than old ones
                     _filter_valid_bins_update = self._1d_logP[name][
@@ -544,7 +632,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     # update best samples
                     self._1d_samples[name][_filter_valid_bins] = np.where(
                         _filter_valid_bins_update[:, None],
-                        copy.deepcopy(self.temp_samples.numpy()[_filter_range][_max_valid_bins_idx]),
+                        copy.deepcopy(self.temp_samples[_filter_range][_max_valid_bins_idx]),
                         self._1d_samples[name][_filter_valid_bins])
                 
             
@@ -562,11 +650,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _filter_range = np.logical_and(_filter_range_x, _filter_range_y)
 
                     # first find best samples in the bin:
-                    _indexes_x = np.digitize(self.temp_samples.numpy()[_filter_range, idx1], x_bins) - 1
-                    _indexes_y = np.digitize(self.temp_samples.numpy()[_filter_range, idx2], y_bins) - 1
+                    _indexes_x = np.digitize(self.temp_samples[_filter_range, idx1], x_bins) - 1
+                    _indexes_y = np.digitize(self.temp_samples[_filter_range, idx2], y_bins) - 1
                     _max_bins_idx = _binned_argmax_2D(
                         _indexes_x, _indexes_y,
-                        self.temp_probs.numpy()[_filter_range], len(x_bins) - 1, len(y_bins) - 1)
+                        self.temp_probs[_filter_range], len(x_bins) - 1, len(y_bins) - 1)
                     
                     # check bins that have points
                     _filter_valid_bins = _max_bins_idx >= 0  
@@ -575,8 +663,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _max_valid_bins_idx = _max_bins_idx[_filter_valid_bins]  
                     
                     # and their logP value
-                    _max_valid_bins_logP = tf.gather(self.temp_probs,
-                                                    _max_valid_bins_idx).numpy()  
+                    _max_valid_bins_logP = self.temp_probs[_filter_range][_max_valid_bins_idx]
                     
                     # check where new points are better than old ones
                     _filter_valid_bins_update = self._2d_logP[names][
@@ -589,7 +676,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     # update best samples
                     self._2d_samples[names][_filter_valid_bins] = np.where(
                         _filter_valid_bins_update[:, None],
-                        copy.deepcopy(self.temp_samples.numpy()[_filter_range][_max_valid_bins_idx]),
+                        copy.deepcopy(self.temp_samples[_filter_range][_max_valid_bins_idx]),
                         self._2d_samples[names][_filter_valid_bins])
                     
 
@@ -621,7 +708,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
     def reset_cache(self):
         """
-        Delete and re-initialize profile posterior (empty) caches.
+        Delete and re-initialize profile posterior (empty) caches, including the samples
+        accumulated by :meth:`update_cache_iterative`.
         """
         # temporary storage for samples for minimization. These can be heavy and should not be stored.
         if hasattr(self, 'temp_samples'):
@@ -642,6 +730,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             del (self.profile_density_2D)
         self.profile_density_1D = dict()
         self.profile_density_2D = dict()
+        # samples accumulated by the iterative search:
+        for _name in ['_1d_bins', '_1d_name_idx', '_1d_samples', '_1d_logP',
+                      '_2d_bins', '_2d_name_idx', '_2d_samples', '_2d_logP']:
+            if hasattr(self, _name):
+                delattr(self, _name)
         # force memory cleanup:
         gc.collect()
         #
@@ -651,6 +744,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         """
         Generate the initial samples for minimzation.
         When calling this function the samples are cached (and can be heavy)
+
+        Sets ``temp_samples`` ``(N, D)``, ``temp_probs`` ``(N,)`` (flow log probability),
+        ``temp_cov`` and ``temp_inv_cov``. With ``box_prior`` only samples inside the prior box
+        are kept and the covariance is computed in the unbounded coordinates.
+
+        :param kwargs: options; only ``num_minimization_samples`` (number of samples ``N``,
+            defaults to the instance option) is used.
+        :returns: None
         """
         if self.feedback > 1:
             print('    * generating samples for profiler')
@@ -664,24 +765,24 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             print('    - sampling the distribution')
         t0 = time.time()
         # sample:
-        self.temp_samples = self.flow.sample(num_minimization_samples)
+        self.temp_samples = tu.to_numpy(self.flow.sample(num_minimization_samples))
         # calculate probability:
-        self.temp_probs = self.flow.log_probability(self.temp_samples)
+        self.temp_probs = tu.to_numpy(self.flow.log_probability(self.temp_samples))
         # process the samples:
         if self.box_prior:
             _box_bijector = self._get_masked_box_bijector()
-            temp_samples = _box_bijector.inverse(self.temp_samples)
-            _temp_filter = np.all(np.isfinite(temp_samples.numpy()), axis=1)
+            with torch.no_grad():
+                temp_samples = tu.to_numpy(_box_bijector.inverse(self.temp_samples))
+            _temp_filter = np.all(np.isfinite(temp_samples), axis=1)
             if self.feedback > 1:
                 print('    - number of random search samples inside box =', np.sum(_temp_filter))
             _temp_filter = np.arange(len(_temp_filter))[_temp_filter]
-            self.temp_samples = tf.gather(self.temp_samples, _temp_filter, axis=0)
-            self.temp_probs = tf.gather(self.temp_probs, _temp_filter, axis=0)
-            self.temp_cov = self.flow.cast(np.cov(temp_samples.numpy()[_temp_filter, :].T))
-            self.temp_inv_cov = tf.linalg.inv(self.temp_cov)
+            self.temp_samples = self.temp_samples[_temp_filter]
+            self.temp_probs = self.temp_probs[_temp_filter]
+            self.temp_cov = np.atleast_2d(np.cov(temp_samples[_temp_filter, :].T))
         else:
-            self.temp_cov = tfp.stats.covariance(self.temp_samples)
-            self.temp_inv_cov = tf.linalg.inv(self.temp_cov)
+            self.temp_cov = np.atleast_2d(np.cov(self.temp_samples.T))
+        self.temp_inv_cov = np.linalg.inv(self.temp_cov)
 
         # feedback:
         t1 = time.time() - t0
@@ -709,13 +810,30 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             } for name in _names]
             bound_bijector = pb.prior_bijector_helper(temp_ranges)
         else:
-            bound_bijector = tfp.bijectors.Identity()
+            bound_bijector = bj.Identity()
         #
         return bound_bijector
 
     def find_MAP(self, x0=None, randomize=True, num_best_to_follow=100, abstract=False, **kwargs):
         """
         Find the flow MAP. Strategy is sample and then minimize.
+
+        The result is cached in ``flow_MAP`` / ``flow_MAP_logP`` and used to initialize the
+        getdist best fit (see :meth:`getBestFit`).
+
+        :param x0: optional initial points in parameter space, shape ``(B, D)``; if given the
+            initial search is skipped.
+        :param randomize: if ``True`` (default) start from the ``num_best_to_follow`` best points of
+            the random search population (drawn with :meth:`sample_profile_population` if not cached),
+            otherwise from the best points of the base ``MCSamples`` samples.
+        :param num_best_to_follow: number of initial points that are minimized (default 100).
+        :param abstract: minimize in the abstract (Gaussian) coordinates of the flow (default ``False``).
+        :param kwargs: options; ``scipy_method``, ``scipy_options`` and ``scipy_use_jac`` (scipy)
+            or ``torch_tolerance``, ``torch_max_iterations`` and ``torch_max_line_search_iterations``
+            (torch) configure the minimizer, ``num_minimization_samples`` is used when sampling.
+            The remaining ones are forwarded to :func:`find_flow_MAP`.
+        :returns: best log probability and best point ``(D,)``, in parameter space.
+        :raises ValueError: if no minimization gave a finite result (from :func:`find_flow_MAP`).
         """
         # if not cached redo the calculation:
         if self.feedback > 1:
@@ -739,7 +857,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 # find the best ones:
                 _best_indexes = np.argpartition(self.temp_probs, -num_best_to_follow)[-num_best_to_follow:]
                 # get best samples:
-                initial_population = tf.gather(self.temp_samples, _best_indexes, axis=0)
+                initial_population = self.temp_samples[_best_indexes]
 
                 # feedback:
                 t1 = time.time() - t0
@@ -755,7 +873,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             if self.use_scipy:
                 print('    - doing minimization (scipy)')
             else:
-                print('    - doing minimization (tensorflow)')
+                print('    - doing minimization (torch)')
         t0 = time.time()
         # prepare kwargs:
         _temp_kwargs = kwargs
@@ -764,10 +882,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _temp_kwargs['method'] = kwargs.pop('scipy_method', self.options.get('scipy_method'))
             _temp_kwargs['use_jac'] = kwargs.pop('scipy_use_jac', self.options.get('scipy_use_jac'))
         else:
-            _temp_kwargs['tolerance'] = kwargs.pop('tf_tolerance', self.options.get('tf_tolerance'))
-            _temp_kwargs['max_iterations'] = kwargs.pop('tf_max_iterations', self.options.get('tf_max_iterations'))
-            _temp_kwargs['max_line_search_iterations'] = kwargs.pop(
-                'tf_max_line_search_iterations', self.options.get('tf_max_line_search_iterations'))
+            _temp_kwargs.update(self._minimizer_options(kwargs))
         # call population minimizer:
         _value, _solution = find_flow_MAP(
             self.flow,
@@ -793,6 +908,16 @@ class posterior_profile_plotter(mcsamples.MCSamples):
     def getLikeStats(self, profile_lims=True):
         """
         Get likelihood statistics
+
+        Overrides the getdist ``MCSamples.getLikeStats`` method, computing the statistics from the
+        flow MAP and the random search population (drawn if not cached). As in getdist, the
+        log-likelihood statistics refer to minus the (flow) log probability.
+
+        :param profile_lims: if ``True`` (default) the N-dimensional limits of each parameter are
+            obtained from the likelihood ratio of its 1D profile, otherwise from the region of the
+            random search samples, as in getdist.
+        :returns: getdist ``LikeStats`` object, also cached in ``likeStats``.
+        :raises ValueError: if the MAP has not been computed (call :meth:`find_MAP` first).
         """
         return self._initialize_likestats(profile_lims=profile_lims)
             
@@ -803,21 +928,21 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # check if we can run:
         if self.flow_MAP_logP is None:
             raise ValueError('_initialize_likestats can only run after MAP finder')
-        # initialize likestats:
+        # initialize likestats, with the getdist convention that loglikes are minus the log probability:
         m = types.LikeStats()
-        maxlike = self.flow_MAP_logP
-        m.logLike_sample = -maxlike
+        best_loglike = -self.flow_MAP_logP
+        m.logLike_sample = best_loglike
         # check that we have cached samples, otherwise generate:
         if self.temp_samples is None:
             self.sample_profile_population()
         # get samples and loglikes from flow:
-        _temp_samples = self.temp_samples.numpy()
-        _temp_loglikes = self.temp_probs.numpy()
-        # compute likelihood statistics:
+        _temp_samples = self.temp_samples
+        _temp_loglikes = -np.asarray(self.temp_probs, dtype=np.float64)
+        # compute likelihood statistics as in getdist:
         m.meanLogLike = np.mean(_temp_loglikes)
-        m.complexity = 2 * (maxlike - m.meanLogLike)
-        m.logMeanInvLike = np.log(np.mean(np.exp(-_temp_loglikes + maxlike))) - maxlike
-        m.logMeanLike = -np.log(np.mean(np.exp(_temp_loglikes - maxlike))) + maxlike
+        m.complexity = 2 * (m.meanLogLike - best_loglike)
+        m.logMeanInvLike = np.log(np.mean(np.exp(_temp_loglikes - best_loglike))) + best_loglike
+        m.logMeanLike = -np.log(np.mean(np.exp(-(_temp_loglikes - best_loglike)))) + best_loglike
         m.varLogLike = np.var(_temp_loglikes)
         m.names = self.paramNames.names
 
@@ -841,7 +966,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                     _filter = _prof.P > 0
                     _log_P = np.log(_prof.P[_filter])
                     _temp_x = _prof.x[_filter]
-                    _temp_y = _log_P.max() - _log_P - scipy.stats.chi2.ppf(cont, 1)
+                    # likelihood ratio: 2 Delta log P follows a chi2 with one degree of freedom:
+                    _temp_y = _log_P.max() - _log_P - 0.5 * scipy.stats.chi2.ppf(cont, 1)
                     # get the limits:
                     zero_crossings = np.where(np.diff(np.sign(_temp_y)))[0]
                     # discriminate several cases:
@@ -876,7 +1002,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 for i, cont in enumerate(m.ND_contours):
                     region = _temp_samples[indexes[:cont], j]
                     par.ND_limit_bot[i] = np.min(region)
-                    par.ND_limit_bot[i] = np.max(region)
+                    par.ND_limit_top[i] = np.max(region)
                 par.bestfit_sample = self.flow_MAP[j]
 
         # save out:
@@ -915,6 +1041,13 @@ class posterior_profile_plotter(mcsamples.MCSamples):
     def getBestFit(self, max_posterior=True):
         """
         Override standard behavior to return cached result
+
+        Overrides the getdist ``MCSamples.getBestFit`` method, returning the best fit built from the
+        flow MAP instead of reading it from a file.
+
+        :param max_posterior: ignored, kept for compatibility with the getdist signature.
+        :returns: getdist ``BestFit`` object.
+        :raises ValueError: if the MAP has not been computed (call :meth:`find_MAP` first).
         """
         # check if we can run:
         if self.bestfit is None:
@@ -925,6 +1058,10 @@ class posterior_profile_plotter(mcsamples.MCSamples):
     def precompute_1D(self, params, **kwargs):
         """
         Precompute profiles for given params.
+
+        :param params: list of parameter names (or indices).
+        :param kwargs: options forwarded to :meth:`get1DDensityGridData`.
+        :returns: None
         """
         for name in params:
             self.get1DDensityGridData(name, **kwargs)
@@ -934,6 +1071,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
     def normalize(self, by='max', **kwargs):
         """
         Normalize the cached profile posterior.
+
+        :param by: ``'max'`` (default) to normalize the maximum to one, or ``'integral'``.
+        :param kwargs: options forwarded to the getdist ``Density1D.normalize`` /
+            ``Density2D.normalize`` methods (e.g. ``in_place``).
+        :returns: None
         """
         # normalize 1D profiles:
         for key in self.profile_density_1D.keys():
@@ -951,15 +1093,27 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         for plotting and analysis.
         Note that this ensures that margestats are from the profile.
 
-        num_points_1D number of points in the 1D profile
-        randomize default true do initial randomization
-        polish do exact minimization polishing by either gradient descent or minimization
+        Overrides the getdist ``MCSamples.get1DDensityGridData`` method. Results are cached in
+        ``profile_density_1D``. The best random search sample of each bin (or, for the parameters it
+        covered, the samples accumulated by :meth:`update_cache_iterative`) is polished by gradient
+        ascent (``pre_polish``) and minimization (``polish``), as set at construction.
+        For a flow with a single parameter the profile is the density, evaluated directly on the grid.
+
+        :param name: name or index of the parameter.
+        :param num_points_1D: number of points in the 1D profile (default 64).
+        :param kwargs: options; ``num_minimization_samples``, ``learning_rate_1D``,
+            ``num_gd_interactions_1D``, ``smooth_scale_1D`` and the scipy / torch minimizer options
+            (see ``posterior_profile_plotter.options``) are read; the remaining ones are forwarded
+            to ``scipy.optimize.minimize`` (filtered to its arguments) when polishing with scipy.
+        :returns: getdist ``Density1D`` normalized to its maximum, with the additional attributes
+            ``maximum`` (maximum log probability), ``profile_subspace`` (profile points ``(M, D)``)
+            and ``profile_smoothing_scale_1D``; None if the parameter is not found.
         """
         # get the number of the parameter:
         idx, par_name = self._parAndNumber(name)
         
         # check:
-        if name is None:
+        if idx is None:
             return None
 
         # look for cached results:
@@ -978,7 +1132,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                                      smooth_scale_1D=10.0, # this should not matter here
                                                      )
         
-        if hasattr(self, '_1d_logP'):
+        # with a single parameter the profile is the density itself:
+        if self.flow.num_params == 1:
+            return self._profile_1D_on_grid(idx, marge_density, num_points_1D)
+
+        if hasattr(self, '_1d_logP') and par_name.name in self._1d_logP:
 
             _result_logP = self._1d_logP[par_name.name]
             _filter_finite = np.isfinite(_result_logP)
@@ -1013,14 +1171,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                 self.temp_samples[:, idx] > np.amin(x_bins), self.temp_samples[:, idx] < np.amax(x_bins))
 
             # first find best samples in the bin:
-            _indexes = np.digitize(self.temp_samples.numpy()[_valid_filter, idx], x_bins)
-            _max_idx = _binned_argmax_1D(_indexes, self.temp_probs.numpy()[_valid_filter], len(x_bins))
-            _max_idx = _max_idx[_max_idx > 0]
+            _indexes = np.digitize(self.temp_samples[_valid_filter, idx], x_bins)
+            _max_idx = _binned_argmax_1D(_indexes, self.temp_probs[_valid_filter], len(x_bins))
+            _max_idx = _max_idx[_max_idx >= 0]
             # get the global (un-filtered indexes):
             _max_idx = np.arange(len(self.temp_samples))[_valid_filter][_max_idx]
             # set data:
-            _result_logP = tf.gather(self.temp_probs, _max_idx)
-            _flow_full_samples = tf.gather(self.temp_samples, _max_idx, axis=0)
+            _result_logP = self.temp_probs[_max_idx]
+            _flow_full_samples = self.temp_samples[_max_idx]
             
             # feedback:
             t1 = time.time() - t0
@@ -1034,7 +1192,6 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         # prepare mask:
         _mask = np.ones(self.flow.num_params)
         _mask[idx] = 0
-        _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
 
         # gradient descent polishing:
         if self.pre_polish:
@@ -1051,15 +1208,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _ensemble, temp_probs, num_moving, num_iter = self._masked_gradient_ascent(
                 learning_rate=_learning_rate, num_iterations=_num_iterations, ensemble=_ensemble, mask=_mask)
             _filter = temp_probs > _result_logP
-            _result_logP = tf.where(_filter, temp_probs, _result_logP)
-            _filter2 = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
-            _flow_full_samples = tf.where(_filter2, _ensemble, _flow_full_samples)
+            _result_logP = np.where(_filter, temp_probs, _result_logP)
+            _flow_full_samples = np.where(_filter[:, None], _ensemble, _flow_full_samples)
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
                 print(
-                    '      at the end of descent after', num_iter.numpy(), 'steps', num_moving.numpy(),
+                    '      at the end of descent after', num_iter, 'steps', num_moving,
                     'samples were still beeing optimized.')
                 if np.sum(_filter) < len(_result_logP):
                     print('      gradient descents did not improve', len(_result_logP) - np.sum(_filter), 'points')
@@ -1078,7 +1234,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
                 # compute bounds:
                 if self.flow.parameter_ranges is not None:
-                    _temp_ranges = list(self.flow.parameter_ranges.values())
+                    _temp_ranges = [self.flow.parameter_ranges[name] for name in self.flow.param_names]
                     del _temp_ranges[idx]
                 else:
                     _temp_ranges = None
@@ -1102,11 +1258,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
                     def temp_func(x):
                         _x = np.insert(x, idx, x0)
-                        return -self.flow.log_probability(self.flow.cast([_x]))[0].numpy().astype(np.float64)
+                        return tu.to_numpy(-self.flow.log_probability(self.flow.cast([_x]))[0]).astype(np.float64)
 
                     def temp_jac(x):
                         _x = np.insert(x, idx, x0)
-                        _jac = -self.flow.log_probability_jacobian(self.flow.cast([_x]))[0].numpy().astype(np.float64)
+                        _jac = tu.to_numpy(-self.flow.log_probability_jacobian(self.flow.cast([_x]))[0]).astype(np.float64)
                         return np.delete(_jac, idx)
                     if not _use_jac:
                         temp_jac = None
@@ -1141,92 +1297,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
             else:
 
-                # polishing with tensorflow minimizer:
+                # polishing with torch minimizer:
                 if self.feedback > 1:
-                    print('    - doing minimization polishing (tensorflow)')
+                    print('    - doing minimization polishing (torch)')
 
-                # get the range bijector and transform initial points:
-                if self.box_prior:
-                    box_bijector = self._get_masked_box_bijector()
-                    _temp_samples = box_bijector.inverse(_flow_full_samples)
-                else:
-                    _temp_samples = _flow_full_samples
-                # get fixed coordinates:
-                _x0 = _temp_samples[:, idx]
-                _x0 = tf.expand_dims(_x0, -1)
-                # get indexes of varying coordinates:
-                _idxs = tf.constant([i for i in range(self.flow.num_params) if i != idx])
-                # get initial points:
-                _initial_x = tf.gather(_temp_samples, _idxs, axis=1)
-                # get number of samples:
-                _num_samps = len(_flow_full_samples)
-
-                # define interfaces:
-                if self.box_prior:
-
-                    @tf.function
-                    def func(x):
-                        # insert fixed coordinate:
-                        left_slice = tf.slice(x, [0, 0], [_num_samps, idx])
-                        right_slice = tf.slice(x, [0, idx], [_num_samps, self.flow.num_params - 1 - idx])
-                        _x = tf.concat([left_slice, _x0, right_slice], axis=1)
-                        #
-                        _logP = -self.flow.log_probability(box_bijector(_x))
-                        #
-                        return _logP
-                else:
-
-                    @tf.function
-                    def func(x):
-                        # insert fixed coordinate:
-                        left_slice = tf.slice(x, [0, 0], [_num_samps, idx])
-                        right_slice = tf.slice(x, [0, idx], [_num_samps, self.flow.num_params - 1 - idx])
-                        _x = tf.concat([left_slice, _x0, right_slice], axis=1)
-                        #
-                        _logP = -self.flow.log_probability(_x)
-                        #
-                        return _logP
-
-                @tf.function
-                def jac(x):
-                    with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-                        tape.watch(x)
-                        f = func(x)
-                    return tape.gradient(f, x)
-
-                # minimize:
-                _masked_fisher = tf.boolean_mask(tf.boolean_mask(self.temp_inv_cov, _mask, axis=0), _mask, axis=1)
-                _masked_fisher = tf.linalg.inv(_masked_fisher)
-                _tf_results = tfp.optimizer.bfgs_minimize(
-                    value_and_gradients_function=lambda x: [func(x), jac(x)],
-                    initial_position=_initial_x,
-                    initial_inverse_hessian_estimate=0.5 * (_masked_fisher + tf.transpose(_masked_fisher)),
-                    tolerance=kwargs.get('tf_tolerance', self.options.get('tf_tolerance')),
-                    max_iterations=kwargs.get('tf_max_iterations', self.options.get('tf_max_iterations')),
-                    max_line_search_iterations=kwargs.get('tf_max_line_search_iterations', self.options.get('tf_max_line_search_iterations')),
-                )
-                _filter = -_tf_results.objective_value > _result_logP
-                # feedback:
-                if np.sum(_tf_results.converged) < len(_tf_results.converged) and self.feedback > 1:
-                    print(
-                        '      Warning minimization failed for ',
-                        len(_tf_results.converged) - np.sum(_tf_results.converged), 'points')
-                    print('      but ', np.sum(_filter.numpy()), 'samples were still better.')
-
-                # get samples:
-                _result_logP = tf.where(_filter, -_tf_results.objective_value, _result_logP)
-                # insert fixed coordinate:
-                x = _tf_results.position
-                left_slice = tf.slice(x, [0, 0], [_num_samps, idx])
-                right_slice = tf.slice(x, [0, idx], [_num_samps, self.flow.num_params - 1 - idx])
-                x = tf.concat([left_slice, _x0, right_slice], axis=1)
-                _filter = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
-                _temp_samples = tf.where(_filter, x, _temp_samples)
-                # transform back:
-                if self.box_prior:
-                    _flow_full_samples = box_bijector(_temp_samples)
-                else:
-                    _flow_full_samples = _temp_samples
+                _result_logP, _flow_full_samples = self._torch_polish(
+                    _flow_full_samples, _result_logP, [idx], _mask, **kwargs)
 
             # feedback:
             t1 = time.time() - t0
@@ -1239,10 +1315,8 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         t0 = time.time()
 
         # convert to numpy array:
-        if tf.is_tensor(_result_logP):
-            _result_logP = _result_logP.numpy()
-        if tf.is_tensor(_flow_full_samples):
-            _flow_full_samples = _flow_full_samples.numpy()
+        _result_logP = tu.to_numpy(_result_logP)
+        _flow_full_samples = tu.to_numpy(_flow_full_samples)
 
         # now interpolate:
         _max_log_P = np.amax(_result_logP)
@@ -1276,34 +1350,39 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             if self.feedback > 1:
                 print('    - time taken for smoothing {0:.4g} (s)'.format(t1))
 
-        # initialize the density:
-        density1D = Density1D(_temp_x, P=_temp_P, view_ranges=marge_density.view_ranges)
-        # save out maximum value:
-        density1D.maximum = _max_log_P
-        # normalize:
-        density1D.normalize('max', in_place=True)
-        # save out the samples:
-        density1D.profile_subspace = _flow_full_samples
         # save out smoothing scale:
         if self.smoothing:
-            density1D.profile_smoothing_scale_1D = _smoothing_sigma
+            _smoothing_scale = _smoothing_sigma
         else:
-            density1D.profile_smoothing_scale_1D = None
-            
-        # cache result:
-        self.profile_density_1D[idx] = density1D
-        #
-        return density1D
+            _smoothing_scale = None
+        # initialize and cache the density:
+        return self._save_1D_profile(idx, _temp_x, _temp_P, _max_log_P, marge_density.view_ranges,
+                                     _flow_full_samples, _smoothing_scale)
     
     def get_1d_profile_variance(self, param, normalize_by='integral', **kwargs):
         """
         In case we are using an average flow we can calculate the variance of the profile
+
+        The log probability of each flow of the average is evaluated on the profile points,
+        interpolated (and smoothed as the profile) on the profile grid, normalized, and the
+        weighted standard deviation across flows is returned.
+
+        :param param: name or index of the parameter.
+        :param normalize_by: ``'integral'`` (default) or ``'max'``, normalization of the profiles.
+        :param kwargs: options forwarded to :meth:`get1DDensityGridData`.
+        :returns: grid ``x``, normalized profile and its standard deviation, each of shape ``(M,)``.
+        :raises ValueError: if the flow is not an ``average_flow``, ``normalize_by`` is not valid
+            or ``param`` is not found.
         """
         # check that the flow is an average flow:
         if not isinstance(self.flow, sp.average_flow):
             raise ValueError('get_1d_profile_variance can only be used with an average flow.')
+        if normalize_by not in ('integral', 'max'):
+            raise ValueError('normalize_by should be either integral or max')
         # get parameter index and density:
-        _idx = self.index[param]
+        _idx, _ = self._parAndNumber(param)
+        if _idx is None:
+            raise ValueError('Parameter ' + str(param) + ' not found in the profiler parameters.')
         _density = self.get1DDensityGridData(param, **kwargs)
         # get the profile data:        
         _profile_subspace = _density.profile_subspace
@@ -1312,7 +1391,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         _log_probabilities, _probabilities = [], []
         for _f in self.flow.flows:
             # calculate the log probability on the profile subspace:
-            _temp_log_P = _f.log_probability(_f.cast(_profile_subspace)).numpy()
+            _temp_log_P = tu.to_numpy(_f.log_probability(_f.cast(_profile_subspace)))
             # interpolate and evaluate on the density grid:
             _max_log_P = np.amax(_temp_log_P)
             _temp_interp = interp1d(_profile_subspace[:, _idx], 
@@ -1324,31 +1403,32 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                  _temp_P = gaussian_filter1d(_temp_P, _density.profile_smoothing_scale_1D, mode='reflect')
             # normalize:
             if normalize_by == 'integral':
-                _temp_P = _temp_P / np.trapz(_temp_P, _x)
-            elif normalize_by == 'max':
-                _temp_P = _temp_P / np.amax(_temp_P)
+                _temp_P = _temp_P / _trapezoid(_temp_P, _x)
             else:
-                raise ValueError('normalize_by should be either integral or max')
+                _temp_P = _temp_P / np.amax(_temp_P)
             # save out probabilities:
             _probabilities.append(_temp_P)
         # calculate the variance of probability (taking into account flow weights):
-        _temp_average = np.average(_probabilities, axis=0, weights=self.flow.weights)
-        _temp_variance = np.average((_probabilities-_temp_average)**2, axis=0, weights=self.flow.weights)
+        _flow_weights = tu.to_numpy(self.flow.weights)
+        _temp_average = np.average(_probabilities, axis=0, weights=_flow_weights)
+        _temp_variance = np.average((_probabilities-_temp_average)**2, axis=0, weights=_flow_weights)
         _temp_std = np.sqrt(_temp_variance)
         # calculate the profile:
         _profile = _density.Prob(_x)
         if normalize_by == 'integral':
-            _profile = _profile / np.trapz(_profile, _x)
-        elif normalize_by == 'max':
-            _profile = _profile / np.amax(_profile)
+            _profile = _profile / _trapezoid(_profile, _x)
         else:
-            raise ValueError('normalize_by should be either integral or max')
+            _profile = _profile / np.amax(_profile)
         #
         return _x, _profile, _temp_std      
 
     def precompute_2D(self, param_pairs, **kwargs):
         """
         Precompute profiles for given names.
+
+        :param param_pairs: list of pairs of parameter names (or indices).
+        :param kwargs: options forwarded to :meth:`get2DDensityGridData`.
+        :returns: None
         """
         for names in param_pairs:
             self.get2DDensityGridData(names[0], names[1], **kwargs)
@@ -1359,13 +1439,31 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         """
         Compute 2D profile posteriors and return it as a grid density data
         for plotting and analysis.
+
+        Overrides the getdist ``MCSamples.get2DDensityGridData`` method. Results are cached in
+        ``profile_density_2D`` (together with the transposed density). The best random search sample
+        of each bin (or, for the parameter pairs it covered, the samples accumulated by
+        :meth:`update_cache_iterative`) is polished by gradient ascent (``pre_polish``) and
+        minimization (``polish``), as set at construction.
+        For a flow with two parameters the profile is the density, evaluated directly on the grid.
+
+        :param name1: name or index of the x parameter.
+        :param name2: name or index of the y parameter.
+        :param num_points_2D: number of points per dimension of the 2D profile (default 32).
+        :param kwargs: options; ``num_minimization_samples``, ``learning_rate_2D``,
+            ``num_gd_interactions_2D``, ``smooth_scale_2D`` and the scipy / torch minimizer options
+            (see ``posterior_profile_plotter.options``) are read; the remaining ones are forwarded
+            to ``scipy.optimize.minimize`` (filtered to its arguments) when polishing with scipy.
+        :returns: getdist ``Density2D`` normalized to its maximum, with the additional attributes
+            ``maximum`` (maximum log probability) and ``profile_subspace`` (profile points ``(M, D)``);
+            None if a parameter is not found.
         """
         # get the number of the parameter:
         idx1, parx = self._parAndNumber(name1)
         idx2, pary = self._parAndNumber(name2)
 
         # check:
-        if name1 is None or name2 is None:
+        if idx1 is None or idx2 is None:
             return None
 
         # look for cached results:
@@ -1384,7 +1482,11 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                                                      smooth_scale_2D=10.0,
                                                      )
 
-        if hasattr(self, '_2d_logP'):
+        # with two parameters the profile is the density itself:
+        if self.flow.num_params == 2:
+            return self._profile_2D_on_grid(idx1, idx2, marge_density, num_points_2D)
+
+        if hasattr(self, '_2d_logP') and (parx.name, pary.name) in self._2d_logP:
             
             _result_logP = self._2d_logP[parx.name, pary.name]
             _filter_finite = np.isfinite(_result_logP)
@@ -1426,17 +1528,17 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _valid_filter = np.logical_and(_valid_filter_x, _valid_filter_y)
 
             # first find best samples in the bin:
-            _indexes_x = np.digitize(self.temp_samples.numpy()[_valid_filter, idx1], x_bins)
-            _indexes_y = np.digitize(self.temp_samples.numpy()[_valid_filter, idx2], y_bins)
+            _indexes_x = np.digitize(self.temp_samples[_valid_filter, idx1], x_bins)
+            _indexes_y = np.digitize(self.temp_samples[_valid_filter, idx2], y_bins)
             _max_idx = _binned_argmax_2D(
                 _indexes_x, _indexes_y,
-                self.temp_probs.numpy()[_valid_filter], len(x_bins), len(y_bins))
-            _max_idx = _max_idx[_max_idx > 0]
+                self.temp_probs[_valid_filter], len(x_bins), len(y_bins))
+            _max_idx = _max_idx[_max_idx >= 0]
             # get the global (un-filtered indexes):
             _max_idx = np.arange(len(self.temp_samples))[_valid_filter][_max_idx]
             # set data:
-            _result_logP = tf.gather(self.temp_probs, _max_idx)
-            _flow_full_samples = tf.gather(self.temp_samples, _max_idx, axis=0)
+            _result_logP = self.temp_probs[_max_idx]
+            _flow_full_samples = self.temp_samples[_max_idx]
             
             # feedback:
             t1 = time.time() - t0
@@ -1445,13 +1547,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
         if self.feedback > 1:
             print('    - number of 2D bins', num_points_2D**2)
-            print('    - number of empty/filled 2D bins', num_points_2D**2 - len(_result_logP.numpy()), '/', len(_result_logP.numpy()))
+            print('    - number of empty/filled 2D bins', num_points_2D**2 - len(_result_logP), '/', len(_result_logP))
             
         # prepare mask:
         _mask = np.ones(self.flow.num_params)
         _mask[idx1] = 0
         _mask[idx2] = 0
-        _mask = tf.constant(_mask, dtype=_flow_full_samples.dtype)
 
         # gradient descent polishing:
         if self.pre_polish:
@@ -1468,15 +1569,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _ensemble, temp_probs, num_moving, num_iter = self._masked_gradient_ascent(
                 learning_rate=_learning_rate, num_iterations=_num_iterations, ensemble=_ensemble, mask=_mask)
             _filter = temp_probs > _result_logP
-            _result_logP = tf.where(_filter, temp_probs, _result_logP)
-            _filter2 = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
-            _flow_full_samples = tf.where(_filter2, _ensemble, _flow_full_samples)
+            _result_logP = np.where(_filter, temp_probs, _result_logP)
+            _flow_full_samples = np.where(_filter[:, None], _ensemble, _flow_full_samples)
             # feedback:
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for gradient descents {0:.4g} (s)'.format(t1))
                 print(
-                    '      at the end of descent after', num_iter.numpy(), 'steps', num_moving.numpy(),
+                    '      at the end of descent after', num_iter, 'steps', num_moving,
                     'samples were still beeing optimized.')
                 if np.sum(_filter) < len(_result_logP):
                     print('      gradient descents did not improve', len(_result_logP) - np.sum(_filter), 'points')
@@ -1495,7 +1595,7 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
                 # compute bounds:
                 if self.flow.parameter_ranges is not None:
-                    _temp_ranges = list(self.flow.parameter_ranges.values())
+                    _temp_ranges = [self.flow.parameter_ranges[name] for name in self.flow.param_names]
                     for index in sorted([idx1, idx2], reverse=True):
                         del _temp_ranges[index]
                 else:
@@ -1524,14 +1624,14 @@ class posterior_profile_plotter(mcsamples.MCSamples):
                             _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
                         else:
                             _x = np.insert(x, [idx2, idx1-1], [x0_2, x0_1])
-                        return -self.flow.log_probability(self.flow.cast([_x]))[0].numpy().astype(np.float64)
+                        return tu.to_numpy(-self.flow.log_probability(self.flow.cast([_x]))[0]).astype(np.float64)
 
                     def temp_jac(x):
                         if idx1 < idx2:
                             _x = np.insert(x, [idx1, idx2-1], [x0_1, x0_2])
                         else:
                             _x = np.insert(x, [idx2, idx1-1], [x0_2, x0_1])
-                        _jac = -self.flow.log_probability_jacobian(self.flow.cast([_x]))[0].numpy().astype(np.float64)
+                        _jac = tu.to_numpy(-self.flow.log_probability_jacobian(self.flow.cast([_x]))[0]).astype(np.float64)
                         return np.delete(_jac, [idx1, idx2])
                     
                     if not _use_jac:
@@ -1569,104 +1669,12 @@ class posterior_profile_plotter(mcsamples.MCSamples):
 
             else:
 
-                # polishing with tensorflow minimizer:
+                # polishing with torch minimizer:
                 if self.feedback > 1:
-                    print('    - doing minimization polishing (tensorflow)')
+                    print('    - doing minimization polishing (torch)')
 
-                # sort fixed indexes:
-                idx_min = min(idx1, idx2)
-                idx_max = max(idx1, idx2)
-
-                # get the range bijector and transform initial points:
-                if self.box_prior:
-                    box_bijector = self._get_masked_box_bijector()
-                    _temp_samples = box_bijector.inverse(_flow_full_samples)
-                else:
-                    _temp_samples = _flow_full_samples
-                # get fixed coordinates:
-                _x0_min = _temp_samples[:, idx_min]
-                _x0_min = tf.expand_dims(_x0_min, -1)
-                _x0_max = _temp_samples[:, idx_max]
-                _x0_max = tf.expand_dims(_x0_max, -1)
-                # get indexes of varying coordinates:
-                _idxs = tf.constant([i for i in range(self.flow.num_params) if i != idx_min and i != idx_max])
-                # get initial points:
-                _initial_x = tf.gather(_temp_samples, _idxs, axis=1)
-                # get number of samples:
-                _num_samps = len(_temp_samples)
-
-                # define interfaces:
-                if self.box_prior:
-
-                    @tf.function
-                    def func(x):
-                        # insert fixed coordinate:
-                        left_slice = tf.slice(x, [0, 0], [_num_samps, idx_min])
-                        mid_slice = tf.slice(x, [0, idx_min], [_num_samps, idx_max - idx_min - 1])
-                        right_slice = tf.slice(
-                            x, [0, idx_max - 1], [_num_samps, self.flow.num_params - 2 - idx_max + 1])
-                        _x = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
-                        #
-                        _logP = -self.flow.log_probability(box_bijector(_x))
-                        #
-                        return _logP
-                else:
-
-                    @tf.function
-                    def func(x):
-                        # insert fixed coordinate:
-                        left_slice = tf.slice(x, [0, 0], [_num_samps, idx_min])
-                        mid_slice = tf.slice(x, [0, idx_min], [_num_samps, idx_max - idx_min - 1])
-                        right_slice = tf.slice(
-                            x, [0, idx_max - 1], [_num_samps, self.flow.num_params - 2 - idx_max + 1])
-                        _x = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
-                        #
-                        _logP = -self.flow.log_probability(_x)
-                        #
-                        return _logP
-
-                @tf.function
-                def jac(x):
-                    with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-                        tape.watch(x)
-                        f = func(x)
-                    return tape.gradient(f, x)
-
-                # minimize:
-                _masked_fisher = tf.boolean_mask(tf.boolean_mask(self.temp_inv_cov, _mask, axis=0), _mask, axis=1)
-                _masked_fisher = tf.linalg.inv(_masked_fisher)
-                _tf_results = tfp.optimizer.bfgs_minimize(
-                    value_and_gradients_function=lambda x: [func(x), jac(x)],
-                    initial_position=_initial_x,
-                    initial_inverse_hessian_estimate=0.5 * (_masked_fisher + tf.transpose(_masked_fisher)),
-                    tolerance=kwargs.get('tf_tolerance', self.options.get('tolerance')),
-                    max_iterations=kwargs.get('tf_max_iterations', self.options.get('max_iterations')),
-                    max_line_search_iterations=kwargs.get('tf_max_line_search_iterations', self.options.get('max_line_search_iterations')),
-                )
-
-                _filter = -_tf_results.objective_value > _result_logP
-                # feedback:
-                if np.sum(_tf_results.converged) < len(_tf_results.converged) and self.feedback > 1:
-                    print(
-                        '      Warning minimization failed for ',
-                        len(_tf_results.converged) - np.sum(_tf_results.converged), 'points')
-                    print('      but ', np.sum(_filter.numpy()), 'samples were still better.')
-
-                # get samples:
-                _result_logP = tf.where(_filter, -_tf_results.objective_value, _result_logP)
-                # insert fixed coordinate:
-                x = _tf_results.position
-                left_slice = tf.slice(x, [0, 0], [_num_samps, idx_min])
-                mid_slice = tf.slice(x, [0, idx_min], [_num_samps, idx_max - idx_min - 1])
-                right_slice = tf.slice(x, [0, idx_max - 1], [_num_samps, self.flow.num_params - 2 - idx_max + 1])
-                x = tf.concat([left_slice, _x0_min, mid_slice, _x0_max, right_slice], axis=1)
-                _filter = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
-                _temp_samples = tf.where(_filter, x, _temp_samples)
-                # transform back:
-                if self.box_prior:
-                    _flow_full_samples = box_bijector(_temp_samples)
-                else:
-                    _flow_full_samples = _temp_samples
+                _result_logP, _flow_full_samples = self._torch_polish(
+                    _flow_full_samples, _result_logP, [idx1, idx2], _mask, **kwargs)
 
             # feedback:
             t1 = time.time() - t0
@@ -1679,14 +1687,13 @@ class posterior_profile_plotter(mcsamples.MCSamples):
         t0 = time.time()
 
         # cast to numpy:
-        if tf.is_tensor(_result_logP):
-            _result_logP = _result_logP.numpy()
-        if tf.is_tensor(_flow_full_samples):
-            _flow_full_samples = _flow_full_samples.numpy()
+        _result_logP = tu.to_numpy(_result_logP)
+        _flow_full_samples = tu.to_numpy(_flow_full_samples)
 
         # now interpolate:
+        _max_log_P = np.amax(_result_logP)
         _temp_interp = LinearNDInterpolator(
-            _flow_full_samples[:, [idx1, idx2]], np.exp(_result_logP), fill_value=0.0, rescale=True)
+            _flow_full_samples[:, [idx1, idx2]], np.exp(_result_logP - _max_log_P), fill_value=0.0, rescale=True)
         _temp_x = np.linspace(marge_density.view_ranges[0][0], marge_density.view_ranges[0][1], num_points_2D)
         _temp_y = np.linspace(marge_density.view_ranges[1][0], marge_density.view_ranges[1][1], num_points_2D)
         _temp_P = _temp_interp(*np.meshgrid(_temp_x, _temp_y))
@@ -1712,147 +1719,350 @@ class posterior_profile_plotter(mcsamples.MCSamples):
             _smoothing_sigma_1 = _smooth_scale_2D * len(_temp_x) / (_temp_x[-1] - _temp_x[0]) * par_1.err
             _smoothing_sigma_2 = _smooth_scale_2D * len(_temp_y) / (_temp_y[-1] - _temp_y[0]) * par_2.err
             # do the smoothing:
-            _temp_P = gaussian_filter(_temp_P, [_smoothing_sigma_1, _smoothing_sigma_2], mode='reflect')
+            _temp_P = gaussian_filter(_temp_P, [_smoothing_sigma_2, _smoothing_sigma_1], mode='reflect')
 
             t1 = time.time() - t0
             if self.feedback > 1:
                 print('    - time taken for smoothing {0:.4g} (s)'.format(t1))
 
-        # initialize getdist densities:
-        density2D = Density2D(_temp_x, _temp_y, P=_temp_P, view_ranges=marge_density.view_ranges)
-        density2D_T = Density2D(
-            _temp_y, _temp_x, P=_temp_P.T, view_ranges=[marge_density.view_ranges[1], marge_density.view_ranges[0]])
-        # save out maximum value:
-        density2D.maximum = np.amax(_temp_P)
-        density2D_T.maximum = density2D.maximum
-        # normalize:
-        density2D.normalize('max', in_place=True)
-        density2D_T.normalize('max', in_place=True)
-        # save out the samples:
-        density2D.profile_subspace = _flow_full_samples
-        density2D_T.profile_subspace = _flow_full_samples
+        # initialize and cache the densities:
+        return self._save_2D_profile(idx1, idx2, _temp_x, _temp_y, _temp_P, _max_log_P,
+                                     marge_density.view_ranges, _flow_full_samples)
 
+    def _probability_on_points(self, points):
+        """
+        Flow probability on a set of points, normalized to its maximum.
+
+        Points where the flow log probability is not finite get zero probability.
+
+        :param points: points in parameter space, shape ``(M, D)``.
+        :returns: probability normalized to its maximum, shape ``(M,)``, and maximum log probability.
+        :raises ValueError: if the flow log probability is not finite on any of the points.
+        """
+        _log_P = np.asarray(tu.to_numpy(self.flow.log_probability(self.flow.cast(points))), dtype=np.float64)
+        _log_P[np.logical_not(np.isfinite(_log_P))] = -np.inf
+        _max_log_P = np.amax(_log_P)
+        if not np.isfinite(_max_log_P):
+            raise ValueError('The flow log probability is not finite on the profile grid.')
+        return np.exp(_log_P - _max_log_P), _max_log_P
+
+    def _profile_1D_on_grid(self, idx, marge_density, num_points_1D):
+        """
+        1D profile of a flow with a single parameter, where the profile is the density itself:
+        the flow is evaluated directly on the grid, without random search, polishing or smoothing.
+
+        :param idx: index of the parameter.
+        :param marge_density: getdist marginal density, providing the ``view_ranges`` of the grid.
+        :param num_points_1D: number of grid intervals.
+        :returns: the cached profile ``Density1D`` (see :meth:`get1DDensityGridData`).
+        """
+        _temp_x = np.linspace(marge_density.view_ranges[0], marge_density.view_ranges[1], num_points_1D + 1)
+        _grid_points = _temp_x[:, None]
+        _temp_P, _max_log_P = self._probability_on_points(_grid_points)
+        return self._save_1D_profile(idx, _temp_x, _temp_P, _max_log_P, marge_density.view_ranges,
+                                     _grid_points, None)
+
+    def _profile_2D_on_grid(self, idx1, idx2, marge_density, num_points_2D):
+        """
+        2D profile of a flow with two parameters, where the profile is the density itself:
+        the flow is evaluated directly on the grid, without random search, polishing or smoothing.
+
+        :param idx1: index of the x parameter.
+        :param idx2: index of the y parameter.
+        :param marge_density: getdist marginal density, providing the ``view_ranges`` of the grid.
+        :param num_points_2D: number of grid points per dimension.
+        :returns: the cached profile ``Density2D`` (see :meth:`get2DDensityGridData`).
+        """
+        _temp_x = np.linspace(marge_density.view_ranges[0][0], marge_density.view_ranges[0][1], num_points_2D)
+        _temp_y = np.linspace(marge_density.view_ranges[1][0], marge_density.view_ranges[1][1], num_points_2D)
+        # grid points, with the getdist ``P[y, x]`` layout:
+        _mesh_x, _mesh_y = np.meshgrid(_temp_x, _temp_y)
+        _grid_points = np.zeros((_mesh_x.size, 2))
+        _grid_points[:, idx1] = _mesh_x.ravel()
+        _grid_points[:, idx2] = _mesh_y.ravel()
+        _temp_P, _max_log_P = self._probability_on_points(_grid_points)
+        return self._save_2D_profile(idx1, idx2, _temp_x, _temp_y, _temp_P.reshape(_mesh_x.shape), _max_log_P,
+                                     marge_density.view_ranges, _grid_points)
+
+    def _save_1D_profile(self, idx, x, P, max_log_P, view_ranges, profile_subspace, smoothing_scale):
+        """
+        Build the 1D profile density and cache it in ``profile_density_1D``.
+
+        :param idx: index of the parameter.
+        :param x: grid, shape ``(M,)``.
+        :param P: profile on the grid, shape ``(M,)``.
+        :param max_log_P: maximum log probability of the profile.
+        :param view_ranges: getdist view ranges of the density.
+        :param profile_subspace: profile points, shape ``(N, D)``.
+        :param smoothing_scale: smoothing scale applied to the profile, None if not smoothed.
+        :returns: getdist ``Density1D`` normalized to its maximum.
+        """
+        density1D = Density1D(x, P=P, view_ranges=view_ranges)
+        # save out maximum value:
+        density1D.maximum = max_log_P
+        # normalize:
+        density1D.normalize('max', in_place=True)
+        # save out the samples and the smoothing scale:
+        density1D.profile_subspace = profile_subspace
+        density1D.profile_smoothing_scale_1D = smoothing_scale
+        # cache result:
+        self.profile_density_1D[idx] = density1D
+        #
+        return density1D
+
+    def _save_2D_profile(self, idx1, idx2, x, y, P, max_log_P, view_ranges, profile_subspace):
+        """
+        Build the 2D profile density, and its transpose, and cache them in ``profile_density_2D``.
+
+        :param idx1: index of the x parameter.
+        :param idx2: index of the y parameter.
+        :param x: x grid, shape ``(Mx,)``.
+        :param y: y grid, shape ``(My,)``.
+        :param P: profile on the grid, shape ``(My, Mx)`` (getdist ``P[y, x]`` layout).
+        :param max_log_P: maximum log probability of the profile.
+        :param view_ranges: getdist view ranges of the density.
+        :param profile_subspace: profile points, shape ``(N, D)``.
+        :returns: getdist ``Density2D`` normalized to its maximum.
+        """
+        density2D = Density2D(x, y, P=P, view_ranges=view_ranges)
+        density2D_T = Density2D(y, x, P=P.T, view_ranges=[view_ranges[1], view_ranges[0]])
+        for density in [density2D, density2D_T]:
+            # save out maximum value:
+            density.maximum = max_log_P
+            # normalize:
+            density.normalize('max', in_place=True)
+            # save out the samples:
+            density.profile_subspace = profile_subspace
         # cache results:
         if idx1 not in self.profile_density_2D.keys():
             self.profile_density_2D[idx1] = dict()
         if idx2 not in self.profile_density_2D.keys():
             self.profile_density_2D[idx2] = dict()
-        # save results:
         self.profile_density_2D[idx1][idx2] = density2D
         self.profile_density_2D[idx2][idx1] = density2D_T
         #
         return density2D
 
+    def _minimizer_options(self, kwargs):
+        """
+        Options of the torch minimizer, from ``kwargs`` or the profiler options.
+
+        :param kwargs: keyword arguments that may contain ``torch_tolerance``,
+            ``torch_max_iterations`` and ``torch_max_line_search_iterations``.
+        :returns: dictionary with the options of :func:`~tensiometer.synthetic_probability.optimizers.batched_minimize`.
+        """
+        return {
+            'tolerance': kwargs.get('torch_tolerance', self.options.get('torch_tolerance')),
+            'max_iterations': kwargs.get('torch_max_iterations', self.options.get('torch_max_iterations')),
+            'max_line_search_iterations': kwargs.get(
+                'torch_max_line_search_iterations', self.options.get('torch_max_line_search_iterations')),
+        }
+
+    def _torch_polish(self, samples, logP, fixed_indices, mask, **kwargs):
+        """
+        Maximize the flow probability over the free coordinates of all the points at once,
+        with the batched torch minimizer. Points are updated only if they improve.
+
+        :param samples: profile points, shape ``(B, D)``.
+        :param logP: their log probability, shape ``(B,)``.
+        :param fixed_indices: indices of the coordinates that are kept fixed.
+        :param mask: array ``(D,)`` with 0 on the fixed coordinates and 1 elsewhere.
+        :returns: updated ``logP`` and ``samples`` as numpy arrays.
+        """
+        samples = np.array(tu.to_numpy(samples), dtype=tu.np_prec)
+        logP = np.array(tu.to_numpy(logP), dtype=tu.np_prec)
+        if len(samples) == 0:
+            return logP, samples
+        # get the range bijector and transform initial points:
+        if self.box_prior:
+            box_bijector = self._get_masked_box_bijector()
+            with torch.no_grad():
+                _temp_samples = tu.to_numpy(box_bijector.inverse(self.flow.cast(samples)))
+        else:
+            box_bijector = None
+            _temp_samples = samples
+        # split fixed and free coordinates:
+        free_indices = [i for i in range(self.flow.num_params) if i not in fixed_indices]
+        fixed_values = tu.to_tensor(_temp_samples[:, fixed_indices], device='cpu')
+        initial_x = tu.to_tensor(_temp_samples[:, free_indices], device='cpu')
+
+        def _objective(x):
+            _x = _insert_fixed_columns(x, fixed_indices, fixed_values)
+            if box_bijector is not None:
+                _x = box_bijector(_x)
+            return -tu.to_tensor(self.flow.log_probability(_x))
+
+        def func(x):
+            with torch.no_grad():
+                return _objective(x)
+
+        def jac(x):
+            return autodiff.gradient(_objective, autodiff.prepare_input(x), create_graph=False)
+
+        # initial inverse Hessian from the masked Fisher matrix:
+        _keep = np.asarray(mask) > 0
+        _masked_fisher = np.asarray(self.temp_inv_cov)[np.ix_(_keep, _keep)]
+        try:
+            _inverse_hessian = np.linalg.inv(_masked_fisher)
+        except np.linalg.LinAlgError:
+            _inverse_hessian = np.eye(int(np.sum(_keep)))
+        _inverse_hessian = 0.5 * (_inverse_hessian + _inverse_hessian.T)
+        # minimize:
+        _results = batched_minimize(
+            lambda x: (func(x), jac(x)),
+            initial_x,
+            initial_inverse_hessian=tu.to_tensor(_inverse_hessian, device='cpu'),
+            **self._minimizer_options(kwargs))
+        _new_logP = -tu.to_numpy(_results.objective_value)
+        _filter = _new_logP > logP
+        # feedback:
+        _converged = tu.to_numpy(_results.converged)
+        if np.sum(_converged) < len(_converged) and self.feedback > 1:
+            print('      Warning minimization failed for ', len(_converged) - np.sum(_converged), 'points')
+            print('      but ', np.sum(_filter), 'samples were still better.')
+        # get samples:
+        _new_samples = tu.to_numpy(_insert_fixed_columns(_results.position, fixed_indices, fixed_values))
+        _temp_samples = np.where(_filter[:, None], _new_samples, _temp_samples)
+        logP = np.where(_filter, _new_logP, logP)
+        # transform back:
+        if box_bijector is not None:
+            with torch.no_grad():
+                samples = tu.to_numpy(box_bijector(self.flow.cast(_temp_samples)))
+        else:
+            samples = _temp_samples
+        #
+        return logP, samples
+
     def _masked_gradient_ascent(self, learning_rate, num_iterations, ensemble, mask, atol=0.0):
         """
         Masked gradient ascent for an ensemble of points.
         Mask is a [0, 1] vector that decides which coordinates are updated.
+
+        :param learning_rate: step size in units of the inverse largest eigenvalue of the masked Fisher matrix.
+        :param num_iterations: maximum number of iterations.
+        :param ensemble: points, shape ``(B, D)``.
+        :param mask: array ``(D,)`` of zeros (fixed) and ones (updated).
+        :param atol: tolerance on the probability decrease of accepted steps.
+        :returns: numpy ensemble, numpy log probabilities, number of points still moving at
+            the end and number of iterations.
         """
-        # loop variables:
-        i = tf.constant(0)
-        num_moving = tf.constant(1)
-
-        # loop condition:
-        def while_condition(i, num_moving, dummy_1, dummy_2):
-            return tf.less(i, num_iterations) and num_moving > 0
-
+        _mask = np.asarray(tu.to_numpy(mask), dtype=np.float64)
         # get the prior box bijector:
         if self.box_prior:
 
             box_bijector = self._get_masked_box_bijector()
-            _ensemble = box_bijector.inverse(ensemble)
+            with torch.no_grad():
+                _ensemble = box_bijector.inverse(self.flow.cast(ensemble)).cpu()
 
-            @tf.function
             def _func(x):
-                return self.flow.log_probability(box_bijector(x))
+                with torch.no_grad():
+                    return tu.to_tensor(self.flow.log_probability(box_bijector(x)), device='cpu')
 
-            @tf.function
             def _jacobian(x):
-                with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-                    tape.watch(x)
-                    f = _func(x)
-                return tape.gradient(f, x)
+                return tu.to_tensor(autodiff.gradient(
+                    lambda _x: self.flow.log_probability(box_bijector(_x)), autodiff.prepare_input(x),
+                    create_graph=False), device='cpu')
 
         else:
 
-            _ensemble = ensemble
+            _ensemble = self.flow.cast(ensemble)
 
             def _func(x):
-                return self.flow.log_probability(x)
+                return tu.to_tensor(self.flow.log_probability(x), device='cpu')
 
             def _jacobian(x):
-                return self.flow.log_probability_jacobian(x)
+                return tu.to_tensor(self.flow.log_probability_jacobian(x), device='cpu')
 
         # initialize probability values:
         val = _func(_ensemble)
         # initialize step:
-        _masked_fisher = tf.boolean_mask(tf.boolean_mask(self.temp_inv_cov, mask, axis=0), mask, axis=1)
-        _lambda_max = np.amax(np.abs(np.linalg.eigh(_masked_fisher)[0]))
-        _h = 2. * learning_rate / self.flow.cast(_lambda_max)
-        _h = tf.expand_dims(_h, axis=-1)
-
-        # loop body for Jacobian only optimization:
-        def body_jacobian(i, num_moving, ensemb, val):
-            # compute Jacobian:
-            _jac = _jacobian(ensemb)
-            # apply mask:
-            _jac = mask * _jac
-            # update positions, do not move the mask:
-            ensemb_temp = ensemb + _h * _jac
-            # check new probability values:
-            _val = _func(ensemb_temp)
-            # mask points that did not improve:
-            _filter = _val > val - atol
-            num_moving = tf.reduce_sum(tf.cast(_filter, tf.int32))
-            # update:
-            val = tf.where(_filter, _val, val)
-            _filter = tf.tile(tf.expand_dims(_filter, 1), [1, self.flow.num_params])
-            ensemb = tf.where(_filter, ensemb_temp, ensemb)
-            #
-            return tf.add(i, 1), num_moving, ensemb, val
+        _keep = _mask > 0
+        _masked_fisher = np.asarray(self.temp_inv_cov)[np.ix_(_keep, _keep)]
+        _lambda_max = np.amax(np.abs(np.linalg.eigvalsh(_masked_fisher)))
+        _h = 2. * learning_rate / _lambda_max
+        _mask_tensor = tu.to_tensor(_mask, device='cpu')
 
         # do the loop:
-        num_iter, num_moving, _ensemble, values = tf.while_loop(
-            while_condition, body_jacobian, [i, num_moving, _ensemble, val])
+        num_iter = 0
+        num_moving = 1
+        while num_iter < num_iterations and num_moving > 0:
+            # compute Jacobian and apply mask:
+            _jac = _mask_tensor * _jacobian(_ensemble)
+            # update positions, do not move the mask:
+            _ensemble_temp = _ensemble + _h * _jac
+            # check new probability values:
+            _val = _func(_ensemble_temp)
+            # mask points that did not improve:
+            _filter = _val > val - atol
+            num_moving = int(torch.sum(_filter))
+            # update:
+            val = torch.where(_filter, _val, val)
+            _ensemble = torch.where(_filter[:, None], _ensemble_temp, _ensemble)
+            num_iter += 1
 
         # transform back:
         if self.box_prior:
-            ensemble = box_bijector(_ensemble)
+            with torch.no_grad():
+                ensemble = tu.to_numpy(box_bijector(_ensemble))
         else:
-            ensemble = _ensemble
+            ensemble = tu.to_numpy(_ensemble)
 
         #
-        return ensemble, values, num_moving, num_iter
-    
+        return ensemble, tu.to_numpy(val), num_moving, num_iter
+
     ####################################################################################################
     # methods to save and load the object:
-    
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        del state['flow']  # can't pickle the flow
-        return state
 
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        self.flow = None
-        
     def savePickle(self, filename):
         """
-        Save the current object to a file in pickle format.
-        Note that the flow cannot be pickled so the cached flow would  not have it...
+        Save the profiler, together with its flow, to one file (written with ``torch.save``).
+
+        The file is a pickle: only load it from trusted sources. Profiler files written by
+        the TensorFlow version of tensiometer cannot be loaded.
+
         :param filename: The file to write to
         """
-        with open(filename, 'wb') as output:
-            pickle.dump(self, output)
-    
+        tu.atomic_save(self, filename)
+
     @classmethod
-    def loadPickle(cls, filename, flow=None):
+    def loadPickle(cls, filename, device=None):
         """
-        Load the object from a pickle file.
+        Load a profiler saved with :meth:`savePickle`, including its flow.
+
         :param filename: The file to read from
-        :param flow: The flow to associate with the object, if not None
+        :param device: device of the flow, defaults to the default device.
+        :returns: the profiler.
+        :raises TypeError: if the file does not contain a profiler.
         """
-        with open(filename, 'rb') as input:
-            _profiler = pickle.load(input)
-            _profiler.flow = flow
+        target = tu.check_device(device)
+        _profiler = torch.load(filename, map_location=target, weights_only=False)
+        if not isinstance(_profiler, cls):
+            raise TypeError(str(filename) + ' does not contain a ' + cls.__name__)
         return _profiler
+
+
+###############################################################################
+# helpers for the torch minimizer:
+
+
+def _insert_fixed_columns(x_free, fixed_indices, fixed_values):
+    """
+    Build full points from the free coordinates and the fixed ones.
+
+    :param x_free: tensor ``(B, D - k)`` with the free coordinates.
+    :param fixed_indices: list of the ``k`` fixed coordinate indices.
+    :param fixed_values: tensor ``(B, k)`` with the fixed values, in the order of ``fixed_indices``.
+    :returns: tensor ``(B, D)``.
+    """
+    num_params = x_free.shape[-1] + len(fixed_indices)
+    fixed_values = fixed_values.to(device=x_free.device, dtype=x_free.dtype)
+    columns = []
+    free_position = 0
+    for i in range(num_params):
+        if i in fixed_indices:
+            j = fixed_indices.index(i)
+            columns.append(fixed_values[..., j:j + 1])
+        else:
+            columns.append(x_free[..., free_position:free_position + 1])
+            free_position += 1
+    return torch.cat(columns, dim=-1)

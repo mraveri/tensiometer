@@ -1,5 +1,8 @@
 """
-This file contains learning rate schedulers for tensorflow optimization.
+This file contains learning rate schedulers for the flow training.
+
+The schedulers are :class:`~tensiometer.synthetic_probability.training.Callback` objects and
+change the learning rate of the trainer optimizer (a ``torch.optim`` optimizer).
 """
 
 ###############################################################################
@@ -9,27 +12,32 @@ import logging
 
 import numpy as np
 
-# tensorflow imports:
-import tensorflow as tf
-from tensorflow.keras.callbacks import Callback
+from .training import Callback
 
 ###############################################################################
 # optimizer helpers:
 
 def _get_optimizer_lr(optimizer):
-    """Return the optimizer learning rate value."""
-    lr = getattr(optimizer, "learning_rate", None)
-    if lr is None:
-        lr = optimizer.lr
-    return tf.keras.backend.get_value(lr)
+    """
+    Return the optimizer learning rate value.
+
+    :param optimizer: ``torch.optim`` optimizer.
+    :returns: learning rate of the first parameter group.
+    :raises AttributeError: if the optimizer has no parameter groups (for example None).
+    """
+    return float(optimizer.param_groups[0]['lr'])
 
 
 def _set_optimizer_lr(optimizer, lr_value):
-    """Update the optimizer learning rate."""
-    lr = getattr(optimizer, "learning_rate", None)
-    if lr is None:
-        lr = optimizer.lr
-    tf.keras.backend.set_value(lr, lr_value)
+    """
+    Update the optimizer learning rate.
+
+    :param optimizer: ``torch.optim`` optimizer.
+    :param lr_value: new learning rate, applied to all parameter groups.
+    :raises AttributeError: if the optimizer has no parameter groups (for example None).
+    """
+    for group in optimizer.param_groups:
+        group['lr'] = float(lr_value)
 
 ###############################################################################
 # Exponential decay:
@@ -66,7 +74,7 @@ class ExponentialDecayAnnealer():
 
 
 class ExponentialDecayScheduler(Callback):
-    """Keras callback applying exponential decay to the optimizer learning rate."""
+    """Callback applying exponential decay to the optimizer learning rate."""
 
     def __init__(self, lr_max, lr_min, roll_off_step, steps):
         """
@@ -85,23 +93,37 @@ class ExponentialDecayScheduler(Callback):
         self.lrs = []
 
     def on_train_begin(self, logs=None):
-        """Reset state and set the initial learning rate."""
+        """
+        Reset state and set the initial learning rate.
+
+        :param logs: training logs (the trainer passes an empty dict); unused.
+        """
         self.step = 0
         self.set_lr(self.Annealer.start)
 
     def on_train_batch_begin(self, batch, logs=None):
-        """Record the current learning rate at batch start."""
+        """
+        Record the current learning rate at batch start.
+
+        :param batch: index of the optimization step within the current epoch; unused.
+        :param logs: batch logs (the trainer passes an empty dict); unused.
+        """
         self.lrs.append(self.get_lr())
 
     def on_train_batch_end(self, batch, logs=None):
-        """Update the learning rate at batch end."""
+        """
+        Update the learning rate at batch end.
+
+        :param batch: index of the optimization step within the current epoch; unused.
+        :param logs: batch logs (``{'loss': batch_loss}`` from the trainer); unused.
+        """
         self.step += 1
         self.set_lr(self.Annealer.step())
 
     def get_lr(self):
         """Retrieve the current optimizer learning rate."""
         try:
-            return _get_optimizer_lr(self.model.optimizer)
+            return _get_optimizer_lr(self.trainer.optimizer)
         except AttributeError:
             return None
 
@@ -112,7 +134,7 @@ class ExponentialDecayScheduler(Callback):
         :param lr: learning rate value to assign.
         """
         try:
-            _set_optimizer_lr(self.model.optimizer, lr)
+            _set_optimizer_lr(self.trainer.optimizer, lr)
         except AttributeError:
             pass  # ignore
 
@@ -150,7 +172,7 @@ class PowerLawDecayAnnealer():
 
 
 class PowerLawDecayScheduler(Callback):
-    """Keras callback applying power-law decay to the learning rate."""
+    """Callback applying power-law decay to the learning rate."""
 
     def __init__(self, lr_max, lr_min, power, steps):
         """
@@ -169,23 +191,37 @@ class PowerLawDecayScheduler(Callback):
         self.lrs = []
 
     def on_train_begin(self, logs=None):
-        """Reset state and set the initial learning rate."""
+        """
+        Reset state and set the initial learning rate.
+
+        :param logs: training logs (the trainer passes an empty dict); unused.
+        """
         self.step = 0
         self.set_lr(self.Annealer.start)
 
     def on_train_batch_begin(self, batch, logs=None):
-        """Record the current learning rate at batch start."""
+        """
+        Record the current learning rate at batch start.
+
+        :param batch: index of the optimization step within the current epoch; unused.
+        :param logs: batch logs (the trainer passes an empty dict); unused.
+        """
         self.lrs.append(self.get_lr())
 
     def on_train_batch_end(self, batch, logs=None):
-        """Update the learning rate at batch end."""
+        """
+        Update the learning rate at batch end.
+
+        :param batch: index of the optimization step within the current epoch; unused.
+        :param logs: batch logs (``{'loss': batch_loss}`` from the trainer); unused.
+        """
         self.step += 1
         self.set_lr(self.Annealer.step())
 
     def get_lr(self):
         """Retrieve the current optimizer learning rate."""
         try:
-            return _get_optimizer_lr(self.model.optimizer)
+            return _get_optimizer_lr(self.trainer.optimizer)
         except AttributeError:
             return None
 
@@ -196,7 +232,7 @@ class PowerLawDecayScheduler(Callback):
         :param lr: learning rate value to assign.
         """
         try:
-            _set_optimizer_lr(self.model.optimizer, lr)
+            _set_optimizer_lr(self.trainer.optimizer, lr)
         except AttributeError:
             pass  # ignore
 
@@ -252,7 +288,7 @@ class StepDecayAnnealer():
 
 
 class StepDecayScheduler(Callback):
-    """Keras callback applying step-wise changes to the learning rate."""
+    """Callback applying step-wise changes to the learning rate."""
 
     def __init__(self, lr_max=None, change_every=None, steps=None, steps_per_epoch=None, boundaries=None, values=None):
         """
@@ -273,23 +309,37 @@ class StepDecayScheduler(Callback):
         self.lrs = []
 
     def on_train_begin(self, logs=None):
-        """Reset state and set the initial learning rate."""
+        """
+        Reset state and set the initial learning rate.
+
+        :param logs: training logs (the trainer passes an empty dict); unused.
+        """
         self.step = 0
         self.set_lr(self.Annealer.start)
 
     def on_train_batch_begin(self, batch, logs=None):
-        """Record the current learning rate at batch start."""
+        """
+        Record the current learning rate at batch start.
+
+        :param batch: index of the optimization step within the current epoch; unused.
+        :param logs: batch logs (the trainer passes an empty dict); unused.
+        """
         self.lrs.append(self.get_lr())
 
     def on_train_batch_end(self, batch, logs=None):
-        """Update the learning rate at batch end."""
+        """
+        Update the learning rate at batch end.
+
+        :param batch: index of the optimization step within the current epoch; unused.
+        :param logs: batch logs (``{'loss': batch_loss}`` from the trainer); unused.
+        """
         self.step += 1
         self.set_lr(self.Annealer.step())
 
     def get_lr(self):
         """ """
         try:
-            return _get_optimizer_lr(self.model.optimizer)
+            return _get_optimizer_lr(self.trainer.optimizer)
         except AttributeError:
             return None
 
@@ -300,7 +350,7 @@ class StepDecayScheduler(Callback):
         :param lr: learning rate value to assign.
         """
         try:
-            _set_optimizer_lr(self.model.optimizer, lr)
+            _set_optimizer_lr(self.trainer.optimizer, lr)
         except AttributeError:
             pass  # ignore
 
@@ -332,14 +382,18 @@ class LRAdaptLossSlopeEarlyStop(Callback):
         :param cooldown: epochs to wait after a reduction.
         :param verbose: verbosity level.
         :param min_lr: lower bound for the learning rate.
-        :param threshold: minimum loss change considered improvement.
+        :param threshold: slope threshold (loss change per epoch). A line is fitted to the
+            monitored metric over the last ``patience`` epochs and the learning rate is
+            reduced when the fitted slope exceeds this value (default 0, i.e. the loss is rising).
+        :param kwargs: additional keyword arguments, accepted for API compatibility and ignored.
+        :raises ValueError: if ``factor >= 1``.
         """
 
         super().__init__()
 
         self.monitor = monitor
         if factor >= 1.0:
-            raise ValueError("LRAdaptLossSlopeEarlyStop does not support a factor >= 1.0. Got {factor}")
+            raise ValueError("LRAdaptLossSlopeEarlyStop does not support a factor >= 1.0. Got {}".format(factor))
 
         self.factor = factor
         self.min_lr = min_lr
@@ -357,7 +411,11 @@ class LRAdaptLossSlopeEarlyStop(Callback):
         self.last_losses = []
 
     def on_train_begin(self, logs=None):
-        """Reset scheduler state at the start of training."""
+        """
+        Reset scheduler state at the start of training.
+
+        :param logs: training logs (the trainer passes an empty dict); unused.
+        """
         self._reset()
 
     def on_epoch_end(self, epoch, logs=None):
@@ -368,7 +426,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
         :param logs: training logs containing monitored metrics.
         """
         logs = logs or {}
-        logs["lr"] = _get_optimizer_lr(self.model.optimizer)
+        logs["lr"] = _get_optimizer_lr(self.trainer.optimizer)
         current = logs.get(self.monitor)
         if current is None:
             logging.warning(
@@ -387,13 +445,13 @@ class LRAdaptLossSlopeEarlyStop(Callback):
                 if self.wait >= self.patience:
                     a = np.polyfit(np.arange(self.patience), self.last_losses[-self.patience:], 1)[0] # fits a line to `val_loss` in the last `patience` epochs
                     if a > self.threshold: # tests if val_loss is going up
-                        old_lr = _get_optimizer_lr(self.model.optimizer)
-                        if old_lr > np.float32(self.min_lr):
+                        old_lr = _get_optimizer_lr(self.trainer.optimizer)
+                        if old_lr > self.min_lr:
                             new_lr = old_lr * self.factor
                             new_lr = max(new_lr, self.min_lr)
-                            _set_optimizer_lr(self.model.optimizer, new_lr)
+                            _set_optimizer_lr(self.trainer.optimizer, new_lr)
                             if self.verbose > 0:
-                                tf.print(
+                                print(
                                     f"\nEpoch {epoch +1}: "
                                     "LRAdaptLossSlopeEarlyStop reducing "
                                     f"learning rate to {new_lr}.")
@@ -401,7 +459,7 @@ class LRAdaptLossSlopeEarlyStop(Callback):
                             self.wait = 0
                             self.last_losses = []
                         else:
-                            self.model.stop_training = True
+                            self.trainer.stop_training = True
 
 ###############################################################################
 # Adaptive learning rate (loss slope) with globalization and early stopping:
@@ -432,14 +490,18 @@ class LRSeesawAdaptLossSlopeEarlyStop(Callback):
         :param cooldown: epochs to wait after a reduction.
         :param verbose: verbosity level.
         :param min_lr: lower bound for the learning rate.
-        :param threshold: minimum loss change considered improvement.
+        :param threshold: slope threshold (loss change per epoch). A line is fitted to the
+            monitored metric over the last ``patience`` epochs and the learning rate is
+            reduced when the fitted slope exceeds this value (default 0, i.e. the loss is rising).
+        :param kwargs: additional keyword arguments, accepted for API compatibility and ignored.
+        :raises ValueError: if ``reduction_factor >= 1``.
         """
 
         super().__init__()
 
         self.monitor = monitor
         if reduction_factor >= 1.0:
-            raise ValueError("LRSeesawAdaptLossSlopeEarlyStop does not support a factor >= 1.0. Got {factor}")
+            raise ValueError("LRSeesawAdaptLossSlopeEarlyStop does not support a factor >= 1.0. Got {}".format(reduction_factor))
 
         self.reduction_factor = reduction_factor
         self.increase_factor = increase_factor
@@ -458,13 +520,29 @@ class LRSeesawAdaptLossSlopeEarlyStop(Callback):
         self.last_losses = []
 
     def on_train_begin(self, logs=None):
-        """ """
+        """
+        Reset scheduler state at the start of training.
+
+        :param logs: training logs (the trainer passes an empty dict); unused.
+        """
         self._reset()
 
     def on_epoch_end(self, epoch, logs=None):
-        """ """
+        """
+        Update the learning rate at epoch end.
+
+        If the monitored metric is available, the learning rate is first multiplied by
+        ``1 + increase_factor``. Then, outside cooldown, once ``patience`` epochs have been
+        collected, a line is fitted to the last ``patience`` values of the metric; if its slope
+        exceeds ``threshold`` the learning rate is multiplied by ``reduction_factor`` (clipped at
+        ``min_lr``), or training is stopped if it is already at ``min_lr``.
+
+        :param epoch: current epoch index (only used in the verbose message).
+        :param logs: epoch logs containing the monitored metric; ``logs['lr']`` is set in place
+            to the learning rate at the start of the call.
+        """
         logs = logs or {}
-        logs["lr"] = _get_optimizer_lr(self.model.optimizer)
+        logs["lr"] = _get_optimizer_lr(self.trainer.optimizer)
         current = logs.get(self.monitor)
         if current is None:
             logging.warning(
@@ -475,9 +553,9 @@ class LRSeesawAdaptLossSlopeEarlyStop(Callback):
             )
         else:
             # increase learning rate:
-            old_lr = _get_optimizer_lr(self.model.optimizer)
+            old_lr = _get_optimizer_lr(self.trainer.optimizer)
             new_lr = old_lr * (1.0 + self.increase_factor)
-            _set_optimizer_lr(self.model.optimizer, new_lr)
+            _set_optimizer_lr(self.trainer.optimizer, new_lr)
             # decrease learning rate:
             if self.cooldown_counter > 0:
                 self.cooldown_counter -= 1
@@ -488,19 +566,19 @@ class LRSeesawAdaptLossSlopeEarlyStop(Callback):
                 if self.wait >= self.patience:
                     a = np.polyfit(np.arange(self.patience), self.last_losses[-self.patience:], 1)[0] # fits a line to `val_loss` in the last `patience` epochs
                     if a > self.threshold: # tests if val_loss is going up
-                        old_lr = _get_optimizer_lr(self.model.optimizer)
-                        if old_lr > np.float32(self.min_lr):
+                        old_lr = _get_optimizer_lr(self.trainer.optimizer)
+                        if old_lr > self.min_lr:
                             new_lr = old_lr * self.reduction_factor
                             new_lr = max(new_lr, self.min_lr)
-                            _set_optimizer_lr(self.model.optimizer, new_lr)
+                            _set_optimizer_lr(self.trainer.optimizer, new_lr)
                             if self.verbose > 0:
-                                tf.print(
+                                print(
                                     f"\nEpoch {epoch +1}: "
-                                    "LRAdaptLossSlopeEarlyStop reducing "
+                                    "LRSeesawAdaptLossSlopeEarlyStop reducing "
                                     f"learning rate to {new_lr}.")
                             self.cooldown_counter = self.cooldown
                             self.wait = 0
                             self.last_losses = []
                         else:
-                            self.model.stop_training = True
+                            self.trainer.stop_training = True
                             

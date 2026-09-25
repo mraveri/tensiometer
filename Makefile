@@ -1,6 +1,6 @@
 # Common developer tasks: install, test, docs, release, and cleanup helpers.
 # Use `make test_file file=<name>` to run a single test module.
-.PHONY: install test tests test_file coverage_report test_with_coverage run_examples prepare_examples clean_examples documentation release clean
+.PHONY: install test tests test_file coverage_report test_with_coverage run_examples coalesce_examples prepare_examples clean_examples documentation release clean
 
 ################################################################################
 # Installation
@@ -35,7 +35,23 @@ test_with_coverage:
 
 ################################################################################
 # Examples
-prepare_examples:
+# Execute all notebooks in place, then tidy their outputs and export to HTML.
+run_examples:
+	@cd docs/example_notebooks && \
+	for i in *.ipynb ; do \
+		jupyter nbconvert --to notebook --execute --inplace $$i || exit 1; \
+	done;
+	@$(MAKE) prepare_examples
+
+# Merge fragmented stream outputs (e.g. tqdm progress bars) left by nbconvert --execute.
+# This needs its own pass: nbconvert coalesces streams before executing, not after.
+coalesce_examples:
+	@cd docs/example_notebooks && \
+	for i in *.ipynb ; do \
+		jupyter nbconvert --coalesce-streams --inplace $$i; \
+	done;
+
+prepare_examples: coalesce_examples
 	@cd docs/example_notebooks && \
 	for i in *.ipynb ; do \
 		jupyter nbconvert --to html $$i; \

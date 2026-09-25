@@ -3,7 +3,7 @@
 These conventions apply to all Python code in the project.
 
 ## Python version
-- Target Python 3.9; avoid features added after 3.9.
+- Target Python 3.11; avoid features added after 3.9.
 - Prefer standard library modules; add dependencies only when essential.
 
 ## Typing

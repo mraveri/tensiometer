@@ -68,9 +68,22 @@ Dependencies
 =============
 
 Tensiometer uses mostly standard python packages.
-Notable exceptions are GetDist, Tensorflow and Tensorflow Probability.
-Installing the last two is likely painful and we advice to not delegate that to 
-automatic dependency resolvers...
+Notable exceptions are GetDist and PyTorch (used by the normalizing flows in ``synthetic_probability``).
+
+PyTorch wheels depend on the hardware:
+
+- Linux or Windows without a GPU: install the smaller CPU wheel first::
+
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+- NVIDIA GPU: install the wheel for your CUDA version with the selector at https://pytorch.org;
+- macOS on Apple Silicon: the default ``pip install torch`` includes the Metal (MPS) GPU backend.
+
+The flows run on the CPU in float32 by default. The environment variables
+``TENSIOMETER_DEVICE`` (``cpu``, ``cuda``, ``cuda:N``, ``mps`` or ``auto``) and
+``TENSIOMETER_PRECISION`` (``float32`` or ``float64``) change the defaults; in Python use
+``tensiometer.synthetic_probability.tensor_utilities.set_device`` and ``set_precision``
+(before building any flow), or the ``device`` argument of the flows.
 
 For the full list of requirements see the `requirements.txt` file.
 

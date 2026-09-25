@@ -2,18 +2,15 @@
 GetDist
 IPython
 autograd
-gast==0.4.0
 joblib
 matplotlib
 mpi4py
 numba>=0.53.0
-numdifftools
 numpy
 psutil
 pymanopt==0.2.5
 scipy
-tensorflow>=2.16.0
-tensorflow_probability>=0.24.0
+torch>=2.3
 tqdm
 
 # documentation:

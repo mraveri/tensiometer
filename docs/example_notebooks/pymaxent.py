@@ -83,7 +83,7 @@ def moments(f, k, rndvar=None, bnds=None):
         return moments_c(f,k,bnds)
 
 def integrand(x, lamb, k=0, discrete=False):
-    '''
+    r'''
     Calculates the integrand of the \(k^\mathrm{th}\) moment.
 
     Parameters:

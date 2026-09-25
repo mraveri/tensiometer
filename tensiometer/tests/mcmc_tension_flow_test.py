@@ -3,21 +3,45 @@
 #########################################################################################################
 # Imports
 
+import copy
 import os
+import tempfile
 import unittest
+from unittest.mock import patch
+
+import matplotlib
+matplotlib.use("Agg")
 
 import numpy as np
-import tensorflow as tf
+import torch
 from getdist import loadMCSamples
 
 import tensiometer.mcmc_tension.flow as flow_mod
 import tensiometer.mcmc_tension.param_diff as pd
+from tensiometer.synthetic_probability import synthetic_probability as sp
+from tensiometer.synthetic_probability import tensor_utilities as tu
 
 #########################################################################################################
 # Test configuration
 
-tf.random.set_seed(0)
+torch.manual_seed(0)
 np.random.seed(0)
+
+#########################################################################################################
+# Helper functions
+
+
+def _load_thinned_chain(path):
+    """Load a test chain and thin it by its independent-sample spacing.
+
+    :param path: root of the chain files.
+    :returns: :class:`~getdist.mcsamples.MCSamples`.
+    """
+    chain = loadMCSamples(path)
+    chain.getConvergeTests()
+    chain.weighted_thin(int(chain.indep_thin))
+    return chain
+
 
 #########################################################################################################
 # Test cases
@@ -26,22 +50,20 @@ np.random.seed(0)
 class TestMcmcTensionFlow(unittest.TestCase):
 
     """MCMC tension flow test suite."""
+    @classmethod
+    def setUpClass(cls):
+        """Load the test chains once for the test case."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        cls.chain_1 = _load_thinned_chain(here + "/../../test_chains/DES")
+        cls.chain_2 = _load_thinned_chain(here + "/../../test_chains/Planck18TTTEEE")
+        cls.chain_12 = _load_thinned_chain(here + "/../../test_chains/Planck18TTTEEE_DES")
+        cls.chain_prior = _load_thinned_chain(here + "/../../test_chains/prior")
+        cls.diff_chain = pd.parameter_diff_chain(cls.chain_1, cls.chain_2, boost=1)
+
     def setUp(self):
-        """Set up test fixtures."""
-        self.here = os.path.dirname(os.path.abspath(__file__))
-        self.chain_1 = loadMCSamples(self.here + "/../../test_chains/DES")
-        self.chain_2 = loadMCSamples(self.here + "/../../test_chains/Planck18TTTEEE")
-        self.chain_12 = loadMCSamples(self.here + "/../../test_chains/Planck18TTTEEE_DES")
-        self.chain_prior = loadMCSamples(self.here + "/../../test_chains/prior")
-        self.chain_1.getConvergeTests()
-        self.chain_2.getConvergeTests()
-        self.chain_12.getConvergeTests()
-        self.chain_prior.getConvergeTests()
-        self.chain_1.weighted_thin(int(self.chain_1.indep_thin))
-        self.chain_2.weighted_thin(int(self.chain_2.indep_thin))
-        self.chain_12.weighted_thin(int(self.chain_12.indep_thin))
-        self.chain_prior.weighted_thin(int(self.chain_prior.indep_thin))
-        self.diff_chain = pd.parameter_diff_chain(self.chain_1, self.chain_2, boost=1)
+        """Seed the random generators before each test."""
+        torch.manual_seed(0)
+        np.random.seed(0)
 
     def test_flow_runs(self):
         """Test flow estimation and short training runs."""
@@ -50,25 +72,25 @@ class TestMcmcTensionFlow(unittest.TestCase):
             def __init__(self, chain_samples):
                 """Init."""
                 self.num_params = chain_samples.shape[1]
-                self.chain_samples = chain_samples.astype(np.float32)
+                self.chain_samples = chain_samples.astype(tu.np_prec)
                 self.cov = np.eye(self.num_params)
                 self.inv_cov = np.linalg.inv(self.cov)
                 self.norm_const = -0.5 * np.log(np.linalg.det(2 * np.pi * self.cov))
 
             def log_probability(self, x):
                 """Log probability."""
-                x = np.array(x, dtype=np.float32)
+                x = np.array(x, dtype=tu.np_prec)
                 diff = x[..., : self.num_params]
                 expo = -0.5 * np.einsum("...i,ij,...j->...", diff, self.inv_cov, diff)
                 return self.norm_const + expo
 
             def sample(self, n):
                 """Sample."""
-                return np.random.multivariate_normal(np.zeros(self.num_params), self.cov, size=n).astype(np.float32)
+                return np.random.multivariate_normal(np.zeros(self.num_params), self.cov, size=n).astype(tu.np_prec)
 
             def cast(self, arr):
                 """Cast."""
-                return np.array(arr, dtype=np.float32)
+                return np.array(arr, dtype=tu.np_prec)
 
         dummy_flow = DummyFlow(self.diff_chain.samples)
         p, low, up = flow_mod.estimate_shift(dummy_flow, tol=0.5, max_iter=1, step=1000)
@@ -77,6 +99,51 @@ class TestMcmcTensionFlow(unittest.TestCase):
         self.assertGreaterEqual(p2, 0.0)
         res, trained_flow = flow_mod.flow_parameter_shift(self.diff_chain, epochs=1, pop_size=1, feedback=0)
         self.assertEqual(len(res), 3)
+        self.assertIsInstance(trained_flow, sp.FlowCallback)
+        prob, low3, up3 = res
+        self.assertGreaterEqual(prob, 0.0)
+        self.assertLessEqual(prob, 1.0)
+        self.assertLessEqual(low3, up3)
+
+    def test_flow_parameter_shift_on_torch_flow(self):
+        """Test that the shift estimators accept the tensors returned by a real flow."""
+        flow = sp.FlowCallback(self.diff_chain, feedback=0, trainable_bijector=None)
+        prob, low, up = flow_mod.estimate_shift(flow, tol=0.5, max_iter=1, step=500)
+        self.assertGreaterEqual(prob, 0.0)
+        self.assertLessEqual(low, up)
+        prob2, low2, up2 = flow_mod.estimate_shift_from_samples(flow)
+        self.assertGreaterEqual(prob2, 0.0)
+        self.assertLessEqual(low2, up2)
+
+    def test_flow_parameter_shift_cache(self):
+        """Test the cache round trip of flow_parameter_shift."""
+        options = {"epochs": 1, "pop_size": 1, "feedback": 0, "tol": 0.5, "max_iter": 1, "step": 500}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_file = os.path.join(tmp_dir, "diff_flow.pt")
+            res, trained_flow = flow_mod.flow_parameter_shift(self.diff_chain, cache_file=cache_file, **options)
+            self.assertTrue(os.path.isfile(cache_file))
+            self.assertEqual(len(res), 3)
+            # the second call loads the cache without training:
+            with patch.object(sp.FlowCallback, "global_train",
+                              side_effect=AssertionError("the cached flow should not be trained")):
+                res_2, loaded_flow = flow_mod.flow_parameter_shift(self.diff_chain, cache_file=cache_file, **options)
+            self.assertEqual(len(res_2), 3)
+            coords = self.diff_chain.samples[:10, :trained_flow.num_params]
+            np.testing.assert_allclose(tu.to_numpy(loaded_flow.log_probability(coords)),
+                                       tu.to_numpy(trained_flow.log_probability(coords)),
+                                       rtol=1e-6, atol=1e-6)
+            # a different chain is rejected:
+            other_chain = copy.deepcopy(self.diff_chain)
+            other_chain.samples[:, 0] = other_chain.samples[:, 0] + 0.1
+            with self.assertRaises(ValueError):
+                flow_mod.flow_parameter_shift(other_chain, cache_file=cache_file, **options)
+
+    def test_removed_cache_arguments_raise(self):
+        """Test that the removed cache_dir and root_name arguments raise."""
+        with self.assertRaises(ValueError):
+            flow_mod.flow_parameter_shift(self.diff_chain, cache_dir="unused", epochs=1, pop_size=1, feedback=0)
+        with self.assertRaises(ValueError):
+            flow_mod.flow_parameter_shift(self.diff_chain, root_name="unused", epochs=1, pop_size=1, feedback=0)
 
     def test_estimate_shift_with_prior_flow(self):
         """Test estimate_shift with prior flow inputs."""

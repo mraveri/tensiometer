@@ -18,27 +18,24 @@ jobs:
 
       matrix:
 
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
-        tensorflow-version: ["2.16.1", "2.17.0", "2.18.0", "2.19.0"]
-        tfp-version: ["0.24.0", "0.25.0"]
+        python-version: ["3.11", "3.12", "3.13"]
+        # "oldest" installs the oldest supported torch, "latest" the newest wheel for the Python version:
+        torch-version: ["oldest", "latest"]
+        precision: ["float32"]
 
         exclude:
+          # torch 2.3 has no Python 3.13 wheels:
+          - python-version: "3.13"
+            torch-version: "oldest"
+
+        include:
+          # full test suite in float64:
           - python-version: "3.12"
-            tensorflow-version: "2.16.1"
-          - python-version: "3.12"
-            tensorflow-version: "2.17.0"
-          - python-version: "3.12"
-            tensorflow-version: "2.18.0"
-          - tensorflow-version: "2.16.1"
-            tfp-version: "0.25.0"
-          - tensorflow-version: "2.17.0"
-            tfp-version: "0.25.0"
-          - tensorflow-version: "2.17.0"
-            tfp-version: "0.24.0"
-          - tensorflow-version: "2.18.0"
-            tfp-version: "0.24.0"
-          - tensorflow-version: "2.19.0"
-            tfp-version: "0.24.0"
+            torch-version: "latest"
+            precision: "float64"
+
+    env:
+      TENSIOMETER_PRECISION: ${{ matrix.precision }}
 
     steps:
 
@@ -52,30 +49,31 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          cat > constraints.txt <<EOF
-          tensorflow==${{ matrix.tensorflow-version }}
-          tensorflow-probability==${{ matrix.tfp-version }}
-          EOF
-          PIP_CONSTRAINT=constraints.txt pip install -r requirements.txt
-          PIP_CONSTRAINT=constraints.txt pip install tf-keras
+          if [ "${{ matrix.torch-version }}" = "oldest" ]; then
+            # oldest torch built against numpy 2 (numdifftools needs numpy >= 2):
+            pip install "torch==2.3.1" --index-url https://download.pytorch.org/whl/cpu
+          else
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+          fi
+          pip install -r requirements.txt
           pip install coveralls
 
       - name: Software versions
         run: |
           python -c "import sys; \
                      print('Python version: ', sys.version); \
-                     import tensorflow as tf; \
-                     import tensorflow_probability as tfp; \
-                     print('Tensorflow version             =', tf.__version__); \
-                     print('Tensorflow Probability version =', tfp.__version__); \
+                     import torch; \
+                     import numpy; \
+                     print('PyTorch version =', torch.__version__); \
+                     print('Numpy version   =', numpy.__version__); \
                      "
 
       - name: Run unit tests
         run: |
-          export TF_USE_LEGACY_KERAS=1
           make test_with_coverage
 
       - name: Upload coverage to coveralls
+        if: matrix.precision == 'float32'
         run: coveralls --service=github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,8 +81,36 @@ jobs:
       - name: Build documentation
         run: |
           make documentation
-      
+
       - name: Test installation
         run: |
           make install
           make install_dev
+
+  apple-silicon:
+
+    # Apple Silicon runner: runs the suite on the MPS device when the runner exposes it.
+    runs-on: macos-14
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          if python -c "import torch, sys; sys.exit(0 if torch.backends.mps.is_available() else 1)"; then
+            export TENSIOMETER_DEVICE=mps
+          fi
+          echo "TENSIOMETER_DEVICE=${TENSIOMETER_DEVICE:-cpu}"
+          make test

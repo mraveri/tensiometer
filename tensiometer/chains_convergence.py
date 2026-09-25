@@ -49,7 +49,7 @@ def _helper_chains_to_chainlist(chains):
 
 
 def GR_test(chains, param_names=None):
-    """
+    r"""
     Function performing the Gelman Rubin (GR) test
     (described in
     `Gelman and Rubin 92 <http://www.stat.columbia.edu/~gelman/research/published/itsim.pdf>`_
@@ -63,18 +63,18 @@ def GR_test(chains, param_names=None):
     If we define the covariance of the mean as:
 
     .. math::
-        C_{ij} \\equiv {\\rm Cov}_c({\\rm Mean}_s(\\theta))_{ij}
+        C_{ij} \equiv {\rm Cov}_c({\rm Mean}_s(\theta))_{ij}
 
     and the mean covariance as:
 
     .. math::
-        M_{ij} \\equiv {\\rm Mean}_c[{\\rm Cov}_s(\\theta)_{ij}]
+        M_{ij} \equiv {\rm Mean}_c[{\rm Cov}_s(\theta)_{ij}]
 
     then we seek to maximize:
 
     .. math::
-        R-1 = {\\rm max_{\\theta}}\\frac{C_{ij} \\theta^i \\theta^j}
-              {M_{ij}\\theta^i \\theta^j}
+        R-1 = {\rm max_{\theta}}\frac{C_{ij} \theta^i \theta^j}
+              {M_{ij}\theta^i \theta^j}
 
     where the subscript :math:`c` means that the statistics is computed across
     chains while the subscrit :math:`s` indicates that it is computed across
@@ -139,7 +139,7 @@ def GR_test_from_samples(samples, weights):
 
 
 def GRn_test_1D(chains, n, param_name, theta0=None):
-    """
+    r"""
     One dimensional higher moments test. Compares the variation of a given
     moment among the population of chains with the expected variation
     of that quantity from the samples pdf.
@@ -147,9 +147,9 @@ def GRn_test_1D(chains, n, param_name, theta0=None):
     This test is defined by:
 
     .. math::
-        R_n(\\theta_0)-1 = \\frac{{\\rm Var}_c
-        ({\\rm Mean}_s(\\theta-\\theta_0)^n)}{{\\rm Mean}_c
-        ({\\rm Var}_s(\\theta-\\theta_0)^n) }
+        R_n(\theta_0)-1 = \frac{{\rm Var}_c
+        ({\rm Mean}_s(\theta-\theta_0)^n)}{{\rm Mean}_c
+        ({\rm Var}_s(\theta-\theta_0)^n) }
 
     where the subscript :math:`c` means that the statistics is computed across
     chains while the subscrit :math:`s` indicates that it is computed across
@@ -257,7 +257,7 @@ def _helper_2(wh, samps, n, temp_VQ, temp_EQ):
 
 def GRn_test(chains, n, theta0=None, param_names=None, feedback=0,
              optimizer='ParticleSwarm', **kwargs):
-    """
+    r"""
     Multi dimensional higher order moments convergence test.
     Compares the variation of a given
     moment among the population of chains with the expected variation
@@ -265,34 +265,34 @@ def GRn_test(chains, n, theta0=None, param_names=None, feedback=0,
 
 
     We first build the :math:`k` order tensor of parameter differences around a
-    point :math:`\\tilde{\\theta}`:
+    point :math:`\tilde{\theta}`:
 
     .. math::
-        Q^{(k)} \\equiv Q_{i_1, \\dots, i_k} \\equiv (\\theta_{i_1}
-        -\\tilde{\\theta}_{i_1}) \\cdots (\\theta_{i_k}
-        -\\tilde{\\theta}_{i_k})
+        Q^{(k)} \equiv Q_{i_1, \dots, i_k} \equiv (\theta_{i_1}
+        -\tilde{\theta}_{i_1}) \cdots (\theta_{i_k}
+        -\tilde{\theta}_{i_k})
 
     then we build the tensor encoding its covariance across chains
 
     .. math::
-        V_M = {\\rm Var}_c (E_s [Q^{(k)}])
+        V_M = {\rm Var}_c (E_s [Q^{(k)}])
 
     which is a :math:`2k`rank tensor of dimension :math:`n` and then
     build the second tensor encoding the mean in chain moment:
 
     .. math::
-        M_V = {\\rm Mean}_c (E_s[(Q^{(k)}-E_s[Q^{(k)}])
-        \\otimes(Q^{(k)}-E_s[Q^{(k)}])])
+        M_V = {\rm Mean}_c (E_s[(Q^{(k)}-E_s[Q^{(k)}])
+        \otimes(Q^{(k)}-E_s[Q^{(k)}])])
 
     where we have suppressed all indexes to not crowd the notation.
 
     Then we maximize over parameters:
 
     .. math::
-        R_n -1 \\equiv {\\rm max}_\\theta
-        \\frac{V_M \\theta^{2k}}{M_V \\theta^{2k}}
+        R_n -1 \equiv {\rm max}_\theta
+        \frac{V_M \theta^{2k}}{M_V \theta^{2k}}
 
-    where :math:`\\theta^{2k}` is the tensor product of :math:`\\theta` for
+    where :math:`\theta^{2k}` is the tensor product of :math:`\theta` for
     :math:`2k` times.
 
     Differently from the 2D case this problem has no solution in terms of

@@ -1,965 +1,661 @@
-"""Tests for trainable bijectors."""
+"""Tests for the trainable bijectors: networks, splines, ScaleRotoShift and AutoregressiveFlow."""
 
 #########################################################################################################
 # Imports
 
-import os
-import tempfile
+import contextlib
+import io
+import math
 import unittest
 
 import numpy as np
-import tensorflow as tf
-import tensorflow_probability as tfp
+import torch
 
+from tensiometer.synthetic_probability import autodiff
+from tensiometer.synthetic_probability import bijectors as bj
+from tensiometer.synthetic_probability import tensor_utilities as tu
 from tensiometer.synthetic_probability import trainable_bijectors as tb
 
 #########################################################################################################
-# TensorFlow Probability aliases
+# Helper functions
 
-tfb = tfp.bijectors
+
+def _tolerance():
+    """Absolute and relative tolerance for the active precision.
+
+    :returns: 1e-10 in float64, 1e-4 in float32.
+    """
+    if tu.get_precision() == torch.float64:
+        return 1e-10
+    return 1e-4
+
+
+def _assert_close(actual, expected, tolerance=None):
+    """Compare two tensors or arrays on the host.
+
+    :param actual: computed value.
+    :param expected: reference value.
+    :param tolerance: absolute and relative tolerance, defaults to :func:`_tolerance`.
+    """
+    if tolerance is None:
+        tolerance = _tolerance()
+    np.testing.assert_allclose(tu.to_numpy(actual), tu.to_numpy(expected), rtol=tolerance, atol=tolerance)
+
+
+def _constant_half(weight):
+    """Custom initializer setting every entry to 0.5."""
+    torch.nn.init.constant_(weight, 0.5)
+
+
+def _randomize_parameters(module, scale=0.1):
+    """Overwrite all the parameters of a module with small Gaussian values.
+
+    :param module: ``torch.nn.Module``.
+    :param scale: standard deviation of the values.
+    """
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.copy_(scale * torch.randn_like(parameter))
+
+
+def _mafs(flow):
+    """Masked autoregressive flows of an :class:`AutoregressiveFlow` in chain order.
+
+    :param flow: :class:`AutoregressiveFlow`.
+    :returns: list of :class:`MaskedAutoregressiveFlow`.
+    """
+    return [_b for _b in flow.bijector.bijectors if isinstance(_b, tb.MaskedAutoregressiveFlow)]
+
+
+def _count(flow, bijector_type):
+    """Number of bijectors of a given type in the chain of a flow.
+
+    :param flow: :class:`AutoregressiveFlow`.
+    :param bijector_type: bijector class.
+    :returns: integer count.
+    """
+    return sum(1 for _b in flow.bijector.bijectors if isinstance(_b, bijector_type))
+
+
+def _small_flow(num_params=2, **kwargs):
+    """Small :class:`AutoregressiveFlow` for structure tests.
+
+    :param num_params: number of parameters.
+    :param kwargs: options overriding the defaults (one affine layer, no permutations).
+    :returns: :class:`AutoregressiveFlow`.
+    """
+    options = {'transformation_type': 'affine', 'n_transformations': 1, 'hidden_units': [4], 'permutations': False}
+    options.update(kwargs)
+    return tb.AutoregressiveFlow(num_params, **options)
 
 #########################################################################################################
-# Test cases
+# Trainable transformation base class
 
 
-class TestTrainableBijectors(unittest.TestCase):
-    """Trainable bijectors test suite."""
-    def test_trainable_transformation_interface(self):
-        """Test TrainableTransformation abstract interface."""
+class TestTrainableTransformation(unittest.TestCase):
+    """TrainableTransformation interface."""
+
+    def test_base_class_raises(self):
+        """Test that the base class without bijector raises NotImplementedError."""
         base = tb.TrainableTransformation()
         with self.assertRaises(NotImplementedError):
-            base.save("dummy")
+            base.parameters()
         with self.assertRaises(NotImplementedError):
-            base.load("dummy")
+            base.reset_parameters()
 
-    def test_toggle_str_eq_fallbacks(self):
-        """Test ToggleStr eq fallback branches."""
-        class ToggleStr(str):
-            """Toggle Str test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.calls = 0
-                return obj
+    def test_subclass_with_bijector(self):
+        """Test the parameters passthrough of a subclass."""
+        class _Single(tb.TrainableTransformation):
+            """Transformation holding one ScaleRotoShift."""
 
-            def __eq__(self, other):
-                """Eq."""
-                self.calls += 1
-                if other == "spline":
-                    return self.calls == 1
-                if other == "affine":
-                    return True
-                return super().__eq__(other)
+            def __init__(self):
+                """Build the bijector."""
+                self.bijector = tb.ScaleRotoShift(3)
 
-        toggled = ToggleStr("affine")
-        self.assertTrue(toggled == "spline")
-        self.assertTrue(toggled == "affine")
-        self.assertFalse(toggled == "other")
+        transformation = _Single()
+        self.assertEqual(len(list(transformation.parameters())), 3)
+        before = [_p.detach().clone() for _p in transformation.parameters()]
+        torch.manual_seed(0)
+        transformation.reset_parameters()
+        after = list(transformation.parameters())
+        self.assertFalse(all(torch.equal(_b, _a) for _b, _a in zip(before, after)))
 
-        class NonAffineStr(str):
-            """Non Affine test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.spline_calls = 0
-                return obj
+#########################################################################################################
+# ScaleRotoShift
 
-            def __eq__(self, other):
-                """Eq."""
-                if other == "spline":
-                    self.spline_calls += 1
-                    return self.spline_calls != 3
-                if other == "affine":
-                    return False
-                return super().__eq__(other)
 
-        non_affine = NonAffineStr("spline")
-        self.assertTrue(non_affine == "spline")
-        self.assertFalse(non_affine == "affine")
-        self.assertFalse(non_affine == "other")
+class TestScaleRotoShift(unittest.TestCase):
+    """Trainable affine bijector."""
 
-        class FlakySpline(str):
-            """Flaky Spline test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.calls = 0
-                return obj
+    def setUp(self):
+        """Seed and inputs."""
+        torch.manual_seed(0)
+        self.x = tu.to_tensor(np.random.default_rng(0).standard_normal((6, 3)))
 
-            def __eq__(self, other):
-                """Eq."""
-                if other == "affine":
-                    return False
-                if other == "spline":
-                    self.calls += 1
-                    return self.calls <= 2
-                return super().__eq__(other)
+    def test_identity_with_zeros_initializer(self):
+        """Test that the zeros initializer gives the identity map."""
+        bijector = tb.ScaleRotoShift(3, initializer='zeros')
+        self.assertEqual(bijector.name, 'Affine')
+        self.assertEqual(bijector.min_event_ndims, 1)
+        y = bijector.forward(self.x)
+        self.assertEqual(y.dtype, tu.get_precision())
+        _assert_close(y, self.x)
+        _assert_close(bijector.inverse(y), self.x)
+        fldj = bijector.forward_log_det_jacobian(self.x, event_ndims=1)
+        self.assertEqual(tuple(fldj.shape), (6,))
+        _assert_close(fldj, np.zeros(6))
+        _assert_close(bijector.inverse_log_det_jacobian(y, event_ndims=1), np.zeros(6))
 
-        flaky = FlakySpline("spline")
-        self.assertFalse(flaky == "affine")
-        self.assertTrue(flaky == "spline")
-        self.assertFalse(flaky == "other")
-    def test_scale_roto_shift_identity(self):
-        """Test Scale roto shift identity."""
-        bij = tb.ScaleRotoShift(2, initializer="zeros")
-        x = tf.constant([[1.0, -1.0], [0.5, 0.25]], dtype=tf.float32)
-        y = bij.forward(x)
-        self.assertTrue(np.allclose(y.numpy(), x.numpy()))
-        self.assertTrue(np.allclose(bij.inverse(y).numpy(), x.numpy()))
+    def test_parameters(self):
+        """Test the parameter shapes and dtypes."""
+        bijector = tb.ScaleRotoShift(4)
+        shapes = {name: tuple(parameter.shape) for name, parameter in bijector.named_parameters()}
+        self.assertEqual(shapes, {'shift': (4,), 'log_scale': (4,), 'rotation': (6,)})
+        for parameter in bijector.parameters():
+            self.assertEqual(parameter.dtype, tu.get_precision())
 
-        fldj = bij.forward_log_det_jacobian(x, event_ndims=0)
-        ildj = bij.inverse_log_det_jacobian(y, event_ndims=0)
-        self.assertAlmostEqual(float(fldj.numpy()), 0.0, places=5)
-        self.assertAlmostEqual(float(ildj.numpy()), 0.0, places=5)
-        self.assertTrue(bij._is_increasing())
-        self.assertIn("shift", tb.ScaleRotoShift._parameter_properties(tf.float32))
+    def test_random_parameters_invertible(self):
+        """Test round trip and log determinants with random (glorot) parameters."""
+        bijector = tb.ScaleRotoShift(3)
+        self.assertFalse(torch.all(bijector.log_scale == 0.))
+        self.assertFalse(torch.all(bijector.rotation == 0.))
+        y = bijector.forward(self.x)
+        _assert_close(bijector.inverse(y), self.x)
+        fldj = bijector.forward_log_det_jacobian(self.x)
+        _assert_close(fldj, float(bijector.log_scale.detach().sum()) * np.ones(6))
+        _assert_close(bijector.inverse_log_det_jacobian(y), -fldj)
+        jacobian = autodiff.batch_jacobian(bijector.forward, autodiff.prepare_input(self.x))
+        _assert_close(torch.linalg.slogdet(jacobian)[1], fldj)
 
-    def test_scale_roto_shift_disabled_components(self):
-        """Test Scale roto shift disabled components."""
-        bij = tb.ScaleRotoShift(3, shift=False, scale=False, roto=False, initializer="zeros")
-        _ = bij.shift  # property coverage
-        x = tf.constant([[1.0, 2.0, 3.0]], dtype=tf.float32)
-        y = bij._forward(x)
-        self.assertTrue(np.allclose(y.numpy(), x.numpy()))
-        inv = bij._inverse(y)
-        self.assertTrue(np.allclose(inv.numpy(), x.numpy()))
-        ildj = bij._inverse_log_det_jacobian(y)
-        self.assertAlmostEqual(float(ildj.numpy()), 0.0, places=5)
+    def test_matrix_is_symmetric_with_scale_eigenvalues(self):
+        """Test that the affine matrix is symmetric with eigenvalues exp(log_scale)."""
+        bijector = tb.ScaleRotoShift(3)
+        jacobian = autodiff.batch_jacobian(bijector.forward, autodiff.prepare_input(self.x))[0]
+        matrix = tu.to_numpy(jacobian).astype(np.float64)
+        _assert_close(matrix, matrix.T)
+        _assert_close(np.sort(np.linalg.eigvalsh(matrix)), np.sort(np.exp(tu.to_numpy(bijector.log_scale))))
 
-    def test_circular_rational_quadratic_spline_bounds_and_inverse(self):
-        """Test Circular rational quadratic spline bounds and inverse."""
-        bin_widths = tf.constant([0.4, 0.6], dtype=tf.float32)
-        bin_heights = tf.constant([0.5, 0.5], dtype=tf.float32)
-        knot_slopes = tf.constant([1.0], dtype=tf.float32)
-        boundary = tf.constant(1.5, dtype=tf.float32)
+    def test_disabled_components(self):
+        """Test that disabled components are zero buffers."""
+        bijector = tb.ScaleRotoShift(3, scale=False, roto=False, shift=False)
+        self.assertEqual(len(list(bijector.parameters())), 0)
+        _assert_close(bijector.forward(self.x), self.x)
+        _assert_close(bijector.forward_log_det_jacobian(self.x), np.zeros(6))
+        only_shift = tb.ScaleRotoShift(3, scale=False, roto=False)
+        self.assertEqual([name for name, _ in only_shift.named_parameters()], ['shift'])
+        _assert_close(only_shift.forward(self.x), self.x + only_shift.shift)
 
-        spline = tb.CircularRationalQuadraticSpline(
-            bin_widths=bin_widths,
-            bin_heights=bin_heights,
-            knot_slopes=knot_slopes,
-            boundary_knot_slope=boundary,
-            range_min=-1.0,
-            range_max=1.0,
-        )
+    def test_callable_initializer(self):
+        """Test a custom callable initializer."""
+        bijector = tb.ScaleRotoShift(2, initializer=_constant_half)
+        for parameter in bijector.parameters():
+            _assert_close(parameter, 0.5 * np.ones(parameter.shape), tolerance=0.)
+        with self.assertRaises(ValueError):
+            tb.ScaleRotoShift(2, initializer='not_an_initializer')
 
-        x = tf.constant([0.0], dtype=tf.float32)
-        y = spline.forward(x)
-        x_back = spline.inverse(y)
-        self.assertTrue(np.allclose(x.numpy(), x_back.numpy(), atol=1e-5))
+    def test_reset_parameters(self):
+        """Test that reset_parameters draws new values."""
+        bijector = tb.ScaleRotoShift(3)
+        before = [_p.detach().clone() for _p in bijector.parameters()]
+        bijector.reset_parameters()
+        for old, new in zip(before, bijector.parameters()):
+            self.assertFalse(torch.equal(old, new))
 
-        x_upper = tf.constant([1.5], dtype=tf.float32)
-        y_upper = spline.forward(x_upper)
-        expected_upper = boundary.numpy().item() * (x_upper.numpy() - 1.0) + 1.0
-        self.assertAlmostEqual(
-            float(y_upper.numpy().item()), float(expected_upper.squeeze()), places=5
-        )
+    def test_one_dimension(self):
+        """Test the one dimensional case without rotation."""
+        bijector = tb.ScaleRotoShift(1)
+        self.assertEqual(bijector.rotation.numel(), 0)
+        x = self.x[:, :1]
+        _assert_close(bijector.forward(x), x * torch.exp(bijector.log_scale) + bijector.shift)
 
-        fldj_upper = spline.forward_log_det_jacobian(x_upper, event_ndims=0)
-        self.assertAlmostEqual(
-            float(fldj_upper.numpy().item()), np.log(boundary.numpy().item()), places=5
-        )
+#########################################################################################################
+# Circular rational quadratic spline
 
-        # Exercise inverse on out-of-bounds value to trigger boundary handling.
-        y_upper_val = tf.constant([2.0], dtype=tf.float32)
-        x_from_y = spline.inverse(y_upper_val)
-        self.assertGreater(float(x_from_y.numpy().item()), 1.0)
-        # Force invalid rank to hit gather_squeeze error
-        original_rank = tb.tensorshape_util.rank
-        try:
-            tb.tensorshape_util.rank = lambda shape: None
-            with self.assertRaises(ValueError):
-                spline._compute_shared(x=tf.constant([0.0], dtype=tf.float32))
-        finally:
-            tb.tensorshape_util.rank = original_rank
 
-    def test_spline_helper_parameterization_variants(self):
-        """Test Spline helper parameterization variants."""
+class TestCircularSpline(unittest.TestCase):
+    """Rational quadratic spline with linear tails."""
+
+    def setUp(self):
+        """Two bins on [-1, 1] with boundary slope 1.5."""
+        self.boundary = 1.5
+        self.spline = tb.RationalQuadraticSpline(
+            bin_widths=[0.8, 1.2], bin_heights=[1.0, 1.0], knot_slopes=[1.0],
+            range_min=-1., boundary_knot_slope=self.boundary)
+
+    def test_round_trip(self):
+        """Test inverse(forward(x)) inside and outside the domain."""
+        x = np.linspace(-3., 3., 25)
+        y = self.spline.forward(x)
+        _assert_close(self.spline.inverse(y), x, tolerance=max(_tolerance(), 1e-5))
+
+    def test_tails(self):
+        """Test the linear tails and the tail log determinant."""
+        x = np.array([-2.5, -1.2, 1.5, 3.])
+        expected = np.where(x > 1., self.boundary * (x - 1.) + 1., self.boundary * (x + 1.) - 1.)
+        _assert_close(self.spline.forward(x), expected)
+        _assert_close(self.spline.forward_log_det_jacobian(x, event_ndims=0), np.full(4, math.log(self.boundary)))
+        _assert_close(self.spline.inverse(np.array([2.])), np.array([1. + 1. / self.boundary]))
+        _assert_close(self.spline.inverse_log_det_jacobian(np.array([2.]), event_ndims=0),
+                      np.array([-math.log(self.boundary)]))
+
+    def test_boundary_values(self):
+        """Test that the domain bounds are fixed points."""
+        _assert_close(self.spline.forward(np.array([-1., 1.])), np.array([-1., 1.]))
+        _assert_close(self.spline.forward(np.array([0.])), self.spline.forward(np.array([0.])), tolerance=0.)
+
+#########################################################################################################
+# Spline transformer options
+
+
+class TestSplineTransformer(unittest.TestCase):
+    """Spline parametrization options and errors."""
+
+    def _random_params(self, transformer, scale=1.):
+        """Random unconstrained parameters of shape ``(5, 2, num_params)``."""
+        torch.manual_seed(1)
+        return scale * torch.randn(5, 2, transformer.num_params, dtype=tu.get_precision())
+
+    def test_number_of_parameters(self):
+        """Test the number of parameters for every option."""
         knots = 3
+        self.assertEqual(tb.SplineTransformer(spline_knots=knots).num_params, 3 * knots - 1)
+        self.assertEqual(tb.SplineTransformer(spline_knots=knots, circular=True).num_params, 3 * knots)
+        self.assertEqual(tb.SplineTransformer(spline_knots=knots, equispaced_x_knots=True).num_params, 2 * knots - 1)
+        self.assertEqual(tb.SplineTransformer(spline_knots=knots, equispaced_y_knots=True).num_params, 2 * knots - 1)
+        self.assertEqual(tb.SplineTransformer(spline_knots=knots, equispaced_x_knots=True, circular=True).num_params,
+                         2 * knots)
+        self.assertEqual(tb.AffineTransformer.num_params, 2)
+
+    def test_range(self):
+        """Test the default and explicit domain."""
+        transformer = tb.SplineTransformer(range_max=2.)
+        self.assertEqual(transformer.range_min, -2.)
+        self.assertEqual(transformer.interval_width, 4.)
+        transformer = tb.SplineTransformer(range_min=-0.5, range_max=1.5)
+        self.assertEqual(transformer.range_min, -0.5)
+        widths, heights, _, _ = transformer.spline_parameters(self._random_params(transformer))
+        _assert_close(widths.sum(-1), 2. * np.ones((5, 2)))
+        _assert_close(heights.sum(-1), 2. * np.ones((5, 2)))
+
+    def test_equispaced_knots(self):
+        """Test fixed bin widths or heights."""
+        for option in ('equispaced_x_knots', 'equispaced_y_knots'):
+            with self.subTest(option=option):
+                transformer = tb.SplineTransformer(spline_knots=4, range_max=2., **{option: True})
+                widths, heights, slopes, boundary = transformer.spline_parameters(self._random_params(transformer))
+                fixed = widths if option == 'equispaced_x_knots' else heights
+                free = heights if option == 'equispaced_x_knots' else widths
+                _assert_close(fixed, np.ones((5, 2, 4)))
+                self.assertFalse(torch.allclose(free, torch.ones_like(free)))
+                self.assertEqual(tuple(slopes.shape), (5, 2, 3))
+                self.assertIsNone(boundary)
+
+    def test_slope_std(self):
+        """Test slopes built from the average bin slope."""
+        transformer = tb.SplineTransformer(spline_knots=4, range_max=2., equispaced_x_knots=True, slope_std=0.25)
+        zeros = torch.zeros(5, 2, transformer.num_params, dtype=tu.get_precision())
+        _, _, slopes, _ = transformer.spline_parameters(zeros)
+        expected = math.log1p(math.exp(10.)) / 10.
+        _assert_close(slopes, expected * np.ones((5, 2, 3)), tolerance=max(_tolerance(), 1e-6))
+        params = self._random_params(transformer, scale=3.)
+        widths, heights, slopes, _ = transformer.spline_parameters(params)
+        average = (heights[..., 1:] + heights[..., :-1]) / (widths[..., 1:] + widths[..., :-1])
+        self.assertTrue(torch.all(slopes > 0.))
+        self.assertTrue(torch.all(slopes >= average - 0.25 - 1e-6))
+        self.assertTrue(torch.all(slopes <= average + 0.25 + 0.1))
+
+    def test_min_bin_width_and_height(self):
+        """Test the minimum bin sizes for extreme parameters."""
+        transformer = tb.SplineTransformer(spline_knots=4, range_max=2., min_bin_width=0.05, min_bin_height=0.1)
+        params = self._random_params(transformer, scale=50.)
+        widths, heights, _, _ = transformer.spline_parameters(params)
+        self.assertTrue(torch.all(widths >= 0.05 * 4. * (1. - 1e-5)))
+        self.assertTrue(torch.all(heights >= 0.1 * 4. * (1. - 1e-5)))
+        _assert_close(widths.sum(-1), 4. * np.ones((5, 2)), tolerance=max(_tolerance(), 1e-5))
+        unconstrained = tb.SplineTransformer(spline_knots=4, range_max=2.)
+        widths, _, _, _ = unconstrained.spline_parameters(params)
+        self.assertLess(float(widths.min()), 0.05 * 4.)
+
+    def test_errors(self):
+        """Test the invalid option combinations."""
         with self.assertRaises(ValueError):
-            tb.SplineHelper(
-                shift_and_log_scale_fn=lambda x: x,
-                spline_knots=knots,
-                equispaced_x_knots=True,
-                equispaced_y_knots=True,
-            )
-
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            return tf.ones((batch, 3 * knots - 1), dtype=tf.float32)
-
-        helper = tb.SplineHelper(
-            shift_and_log_scale_fn=shift_fn,
-            spline_knots=knots,
-            range_min=-2.0,
-            range_max=2.0,
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        forward_val = bij.forward(tf.constant([0.1], dtype=tf.float32))
-        self.assertEqual(forward_val.shape, (1,))
-
-        def shift_fn_equispaced(x):
-            """Shift fn equispaced."""
-            batch = tf.shape(x)[0]
-            return tf.ones((batch, knots + 2), dtype=tf.float32)
-
-        helper_eq = tb.SplineHelper(
-            shift_and_log_scale_fn=shift_fn_equispaced,
-            spline_knots=knots,
-            equispaced_x_knots=True,
-            slope_std=0.25,
-        )
-        bij_eq = helper_eq._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertIsInstance(bij_eq, tfb.RationalQuadraticSpline)
-        self.assertTrue(tf.reduce_all(bij_eq.bin_widths > 0))
-
-        def shift_fn_equispaced_y(x):
-            """Shift fn equispaced y."""
-            batch = tf.shape(x)[0]
-            return tf.ones((batch, 2 * knots - 1), dtype=tf.float32)
-
-        helper_eq_y = tb.SplineHelper(
-            shift_and_log_scale_fn=shift_fn_equispaced_y,
-            spline_knots=knots,
-            equispaced_y_knots=True,
-            min_bin_height=0.1,
-        )
-        bij_eq_y = helper_eq_y._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertTrue(tf.reduce_all(bij_eq_y.bin_heights > 0))
-
+            tb.SplineTransformer(equispaced_x_knots=True, equispaced_y_knots=True)
         with self.assertRaises(ValueError):
-            tb.SplineHelper(bijector_fn=tfb.Identity(), shift_and_log_scale_fn=lambda x: x)
+            tb.SplineTransformer(range_max=-1.)
         with self.assertRaises(ValueError):
-            tb.SplineHelper()
-
-        # direct bijector_fn path
-        helper_direct = tb.SplineHelper(bijector_fn=lambda x, **_: tfb.Identity())
-        self.assertIsInstance(helper_direct._bijector_fn(None), tfb.Identity)
-
-    def test_circular_spline_helper_boundary_slopes(self):
-        """Test Circular spline helper boundary slopes."""
-        knots = 3
-
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            total = 2 * knots + knots
-            return tf.ones((batch, total), dtype=tf.float32)
-
-        helper = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=shift_fn, spline_knots=knots, range_max=2.0
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertIsInstance(bij, tb.CircularRationalQuadraticSpline)
-
-        outside = bij.forward(tf.constant([2.5], dtype=tf.float32))
-        self.assertGreater(outside.numpy()[0], 2.0)
-
+            tb.SplineTransformer(spline_knots=4, min_bin_width=0.25)
+        with self.assertRaises(ValueError):
+            tb.SplineTransformer(spline_knots=4, min_bin_height=0.3)
         with self.assertRaises(NotImplementedError):
-            helper_ni = tb.CircularSplineHelper(
-                shift_and_log_scale_fn=shift_fn,
-                spline_knots=knots,
-                range_max=2.0,
-                slope_std=0.5,
-            )
-            helper_ni._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
+            tb.SplineTransformer(circular=True, slope_std=0.5)
 
+    def test_transformer_round_trip_and_log_det(self):
+        """Test the transformer round trip and elementwise log derivative."""
+        for circular in (False, True):
+            with self.subTest(circular=circular):
+                transformer = tb.SplineTransformer(spline_knots=5, range_max=2., circular=circular)
+                params = self._random_params(transformer)
+                x = tu.to_tensor(np.random.default_rng(2).uniform(-3., 3., (5, 2)))
+                y = transformer.forward(x, params)
+                _assert_close(transformer.inverse(y, params), x)
+                derivative = autodiff.gradient(lambda _x: transformer.forward(_x, params), autodiff.prepare_input(x))
+                _assert_close(transformer.inverse_log_det_jacobian(y, params), -torch.log(derivative))
+
+    def test_affine_transformer(self):
+        """Test the affine transformer convention (shift, log_scale)."""
+        transformer = tb.AffineTransformer()
+        x = tu.to_tensor(np.array([[1., -2.]]))
+        params = tu.to_tensor(np.array([[[0.5, math.log(2.)], [-1., 0.]]]))
+        y = transformer.forward(x, params)
+        _assert_close(y, np.array([[2.5, -3.]]))
+        _assert_close(transformer.inverse(y, params), x)
+        _assert_close(transformer.inverse_log_det_jacobian(y, params), np.array([[-math.log(2.), 0.]]))
+
+#########################################################################################################
+# Autoregressive networks
+
+
+class TestNetworks(unittest.TestCase):
+    """MADE and flex autoregressive networks."""
+
+    def test_flex_network_shapes_and_identity_dims(self):
+        """Test the flex network output shape, identity dimensions and bias-only first dimension."""
+        torch.manual_seed(0)
+        network = tb.FlexAutoregressiveNetwork(3, 2, hidden_units=[4, 2], identity_dims=[1])
+        _randomize_parameters(network, scale=0.5)
+        x = tu.to_tensor(np.random.default_rng(0).standard_normal((5, 3)))
+        output = network(x)
+        self.assertEqual(tuple(output.shape), (5, 3, 2))
+        self.assertEqual(output.dtype, tu.get_precision())
+        _assert_close(output[:, 1, :], np.zeros((5, 2)), tolerance=0.)
+        _assert_close(output[:, 0, :], output[:1, 0, :].expand(5, 2), tolerance=0.)
+        self.assertIsInstance(network.networks[0], tb.BiasOnly)
+        self.assertEqual(len(network.networks), 2)
+
+    def test_flex_network_hidden_sizes(self):
+        """Test the scaling of the hidden sizes with the dimension."""
+        scaled = tb.FlexAutoregressiveNetwork(3, 2, hidden_units=[6, 3])
+        fixed = tb.FlexAutoregressiveNetwork(3, 2, hidden_units=[6, 3], scale_with_dim=False)
+        scaled_sizes = [[_l.out_features for _l in scaled.networks[i].layers] for i in (1, 2)]
+        fixed_sizes = [[_l.out_features for _l in fixed.networks[i].layers] for i in (1, 2)]
+        self.assertEqual(scaled_sizes, [[4, 2, 2], [6, 3, 2]])
+        self.assertEqual(fixed_sizes, [[6, 3, 2], [6, 3, 2]])
+        self.assertEqual([_l.in_features for _l in fixed.networks[2].layers], [2, 6, 3])
+
+    def test_flex_network_is_autoregressive(self):
+        """Test that flex output d depends only on inputs < d."""
+        torch.manual_seed(1)
+        network = tb.FlexAutoregressiveNetwork(4, 3, hidden_units=[5])
+        _randomize_parameters(network, scale=0.5)
+        x = autodiff.prepare_input(np.random.default_rng(1).standard_normal((4, 4)))
+        jacobian = tu.to_numpy(autodiff.batch_jacobian(network, x))
+        for d in range(4):
+            np.testing.assert_array_equal(jacobian[:, d, :, d:], 0.)
+            if d > 0:
+                self.assertTrue(np.any(jacobian[:, d, :, :d] != 0.))
+
+    def test_made_shapes_and_initializers(self):
+        """Test MADE shapes, activations and initializer options."""
+        x = tu.to_tensor(np.random.default_rng(2).standard_normal((3, 4)))
+        network = tb.MaskedAutoregressiveNetwork(4, 5, [8, 8], activation='tanh')
+        self.assertEqual(tuple(network(x).shape), (3, 4, 5))
+        self.assertEqual(len(network.layers), 3)
+        zeros = tb.MaskedAutoregressiveNetwork(4, 2, [8], kernel_initializer='zeros')
+        _assert_close(zeros(x), np.zeros((3, 4, 2)), tolerance=0.)
         with self.assertRaises(ValueError):
-            tb.CircularSplineHelper(
-                bijector_fn=tfb.Identity(), shift_and_log_scale_fn=lambda x: x
-            )
+            tb.MaskedAutoregressiveNetwork(4, 2, [8], kernel_initializer='bad')
         with self.assertRaises(ValueError):
-            tb.CircularSplineHelper()
+            tb.MaskedAutoregressiveNetwork(4, 2, [8], activation='bad')
 
-        # direct bijector_fn path and equispaced knots handling
-        direct = tb.CircularSplineHelper(
-            bijector_fn=lambda x, **_: tfb.Identity(),
-            equispaced_x_knots=True,
-            equispaced_y_knots=False,
-            spline_knots=2,
-            range_max=1.5,
-        )
-        self.assertIsInstance(direct._bijector_fn(None), tfb.Identity)
+    def test_initializer_and_activation_specifications(self):
+        """Test the conversion of initializer and activation specifications."""
+        self.assertIsInstance(tb.get_initializer(None), tb.GlorotUniform)
+        self.assertIsInstance(tb.get_initializer('zeros'), tb.Zeros)
+        self.assertIs(tb.get_initializer(_constant_half), _constant_half)
+        with self.assertRaises(ValueError):
+            tb.get_initializer(3.)
+        self.assertIsNone(tb.get_activation(None))
+        self.assertIsNone(tb.get_activation('linear'))
+        self.assertIs(tb.get_activation('tanh'), torch.tanh)
+        self.assertIs(tb.get_activation(torch.relu), torch.relu)
+        with self.assertRaises(ValueError):
+            tb.get_activation(3)
 
-    def test_build_nn_and_ar_model(self):
-        """Test Build nn and ar model."""
-        nn = tb.build_nn(0, 2, hidden_units=[1, 1])
-        nn_out = nn(tf.zeros((1, 0), dtype=tf.float32))
-        self.assertEqual(nn_out.shape, (1, 2))
+    def test_masked_linear_mask_and_repr(self):
+        """Test the mask shape validation and the representation of MaskedLinear."""
+        with self.assertRaises(ValueError):
+            tb.MaskedLinear(3, 2, mask=np.ones((3, 2)))
+        masked = tb.MaskedLinear(3, 2, mask=np.tril(np.ones((2, 3))))
+        plain = tb.MaskedLinear(3, 2)
+        self.assertEqual(masked.extra_repr(), 'in_features=3, out_features=2, masked=True')
+        self.assertIn('masked=False', repr(plain))
 
-        x = tf.ones((2, 3), dtype=tf.float32)
-        ar_model = tb.build_AR_model(
-            num_params=3,
-            transf_params=2,
-            hidden_units=[4, 2],
-            identity_dims=[1],
-            scale_with_dim=True,
-        )
-        params = ar_model(x)
-        self.assertEqual(params.shape, (2, 3, 2))
-        self.assertTrue(np.allclose(params.numpy()[:, 1, :], 0.0))
-
-    def test_const_zeros_python_function(self):
-        """Test Const zeros python function."""
-        x = tf.ones((2, 1), dtype=tf.float32)
-        zeros = tb.const_zeros.python_function(x, 3)
-        self.assertEqual(zeros.shape, (2, 3))
-        self.assertTrue(np.allclose(zeros.numpy(), 0.0))
+    def test_networks_without_hidden_layers(self):
+        """Test that networks built without hidden units are single linear layers."""
+        x = tu.to_tensor(np.random.default_rng(3).standard_normal((5, 3)))
+        made = tb.MaskedAutoregressiveNetwork(3, 2)
+        self.assertEqual(len(made.layers), 1)
+        self.assertEqual(tuple(made(x).shape), (5, 3, 2))
+        feed_forward = tb.FeedForward(3, 4, kernel_initializer='zeros')
+        self.assertEqual(len(feed_forward.layers), 1)
+        # without hidden layers the kernel initializer is ignored and the default one is used:
+        self.assertIsInstance(feed_forward.layers[0].kernel_initializer, tb.GlorotUniform)
+        self.assertTrue(bool((feed_forward.layers[0].weight != 0.).any()))
+        _assert_close(feed_forward(x), x @ feed_forward.layers[0].weight.T)
+        flex = tb.FlexAutoregressiveNetwork(3, 2)
+        self.assertEqual([len(_n.layers) for _n in flex.networks[1:]], [1, 1])
+        self.assertEqual(tuple(flex(x).shape), (5, 3, 2))
 
     def test_min_var_permutations(self):
-        """Test Min var permutations."""
+        """Test min_var_permutations returns non identity permutations."""
         np.random.seed(0)
-        perms = tb.min_var_permutations(d=3, n=2, min_number=20)
-        self.assertEqual(len(perms), 2)
-        identity = np.arange(3)
-        for p in perms:
-            self.assertEqual(len(p), 3)
-            self.assertFalse(np.all(p == identity))
+        permutations = tb.min_var_permutations(d=4, n=3, min_number=50)
+        self.assertEqual(len(permutations), 3)
+        for permutation in permutations:
+            np.testing.assert_array_equal(np.sort(permutation), np.arange(4))
+            self.assertFalse(np.all(permutation == np.arange(4)))
 
-    def test_autoregressive_flow_range_and_periodic_handling(self):
-        """Test Autoregressive flow range and periodic handling."""
-        flow = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[4],
-            parameters_min=np.array([-5.0, -6.0], dtype=np.float32),
-            parameters_max=np.array([9.0, 6.0], dtype=np.float32),
-            periodic_params=np.array([False, False]),
-            permutations=False,
-        )
-        self.assertGreater(float(tf.convert_to_tensor(flow.range_max)), 9.0)
+#########################################################################################################
+# AutoregressiveFlow construction
 
-        with self.assertRaises(AssertionError):
-            tb.AutoregressiveFlow(
-                num_params=1,
-                transformation_type="affine",
-                map_to_unitcube=True,
-                permutations=False,
-            )
 
-        # periodic preprocessing path with permutations inserted after first layer
-        periodic_flow = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type="spline",
-            n_transformations=2,
-            hidden_units=[3],
-            periodic_params=np.array([True, False]),
-            permutations=True,
-        )
-        sample = tf.constant([[0.1, 0.2]], dtype=tf.float32)
-        self.assertEqual(periodic_flow.bijector.forward(sample).shape, sample.shape)
+class TestAutoregressiveFlow(unittest.TestCase):
+    """AutoregressiveFlow constructor semantics."""
 
-        # map-to-unit-cube branch with custom permutations sequence
-        unit_flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            map_to_unitcube=True,
-            permutations=[np.array([0], dtype=np.int32)],
-        )
-        val = unit_flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(val.shape, (1, 1))
+    def setUp(self):
+        """Seed the random generators."""
+        torch.manual_seed(0)
+        np.random.seed(0)
 
-    def test_autoregressive_flow_variants_and_logging(self):
-        """Test Autoregressive flow variants and logging."""
-        flow = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type=["affine", "spline"],
-            autoregressive_type=["masked", "flex"],
-            n_transformations=2,
-            hidden_units=[3],
-            equispaced_x_knots=True,
-            equispaced_y_knots=False,
-            scale_roto_shift=True,
-            permutations=None,
-            feedback=2,
-        )
-        sample = tf.constant([[0.0, 0.1]], dtype=tf.float32)
-        out = flow.bijector.forward(sample)
-        self.assertEqual(out.shape, sample.shape)
+    def test_defaults(self):
+        """Test the default number of layers and hidden units."""
+        flow = tb.AutoregressiveFlow(4, permutations=False)
+        self.assertEqual(len(_mafs(flow)), 6)
+        self.assertEqual([_l.out_features for _l in _mafs(flow)[0].conditioner.layers], [12, 12, 8])
+        self.assertIsNone(flow.range_max)
+        self.assertIsInstance(flow.bijector, bj.Chain)
+        self.assertEqual(flow.device, tu.check_device(None))
+        for parameter in flow.parameters():
+            self.assertEqual(parameter.device.type, flow.device.type)
+            self.assertEqual(parameter.dtype, tu.get_precision())
+        initializer = _mafs(flow)[0].conditioner.layers[0].kernel_initializer
+        self.assertIsInstance(initializer, tb.VarianceScaling)
+        self.assertAlmostEqual(initializer.scale, 1. / 6.)
 
-    def test_autoregressive_flow_save_and_load(self):
-        """Test Autoregressive flow save and load."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="affine",
-            n_transformations=1,
-            hidden_units=[2],
-            permutations=[np.array([0], dtype=np.int32)],
-        )
-        x = tf.constant([[0.1]], dtype=tf.float32)
-        original = flow.bijector.forward(x)
+    def test_round_trip(self):
+        """Test the round trip of a default spline flow."""
+        flow = tb.AutoregressiveFlow(3, transformation_type='spline', n_transformations=2, hidden_units=[8])
+        x = tu.to_tensor(np.random.default_rng(0).uniform(-3., 3., (10, 3)))
+        y = flow.bijector.forward(x)
+        _assert_close(flow.bijector.inverse(y), x)
+        _assert_close(flow.bijector.forward_log_det_jacobian(x), -flow.bijector.inverse_log_det_jacobian(y))
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "flow")
-            flow.save(path)
-            restored = tb.AutoregressiveFlow.load(
-                path,
-                transformation_type="affine",
-                n_transformations=1,
-                hidden_units=[2],
-            )
-            restored_val = restored.bijector.forward(x)
-            self.assertTrue(np.allclose(original.numpy(), restored_val.numpy()))
-
-    def test_bijector_layer_wraps_forward(self):
-        """Test Bijector layer wraps forward."""
-        layer = tb.BijectorLayer(bijector=tfb.Tanh())
-        x = tf.constant([[0.0, 1.0]], dtype=tf.float32)
-        y = layer(x)
-        self.assertTrue(np.allclose(y.numpy(), np.tanh(x.numpy())))
-
-    def test_circular_spline_helper_auto_range_min(self):
-        """Test Circular spline helper auto range min."""
-        knots = 3
-
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            # plenty of parameters for non-equispaced setup
-            return tf.ones((batch, 3 * knots), dtype=tf.float32)
-
-        helper = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=shift_fn, spline_knots=knots, range_min=None, range_max=2.0
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        # range_min should have been set to -range_max
-        self.assertEqual(float(bij.range_min.numpy()), -2.0)
-        _ = bij.forward(tf.constant([0.1], dtype=tf.float32))
-
-    def test_circular_spline_helper_equispaced_knots_error(self):
-        """Test Circular spline helper equispaced knots error."""
-        with self.assertRaises(ValueError):
-            tb.CircularSplineHelper(
-                shift_and_log_scale_fn=lambda x: x,
-                spline_knots=2,
-                equispaced_x_knots=True,
-                equispaced_y_knots=True,
-            )
-
-    def test_circular_spline_helper_equispaced_x_branch(self):
-        """Test Circular spline helper equispaced x branch."""
-        knots = 3
-
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            # parameters sized to give two interior slopes
-            return tf.ones((batch, 5), dtype=tf.float32)
-
-        helper = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=shift_fn,
-            spline_knots=knots,
-            equispaced_x_knots=True,
-            equispaced_y_knots=False,
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertTrue(tf.reduce_all(bij.bin_widths > 0))
-
-    def test_circular_spline_helper_equispaced_y_branch(self):
-        """Test Circular spline helper equispaced y branch."""
-        knots = 3
-
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            return tf.ones((batch, 5), dtype=tf.float32)
-
-        helper = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=shift_fn,
-            spline_knots=knots,
-            equispaced_x_knots=False,
-            equispaced_y_knots=True,
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertTrue(tf.reduce_all(bij.bin_heights > 0))
-
-    def test_circular_spline_helper_with_range_min(self):
-        """Test Circular spline helper with range min."""
-        knots = 2
-
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            return tf.ones((batch, 3 * knots), dtype=tf.float32)
-
-        helper = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=shift_fn,
-            spline_knots=knots,
-            range_min=-0.5,
-            range_max=1.5,
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertEqual(float(bij.range_min.numpy()), -0.5)
-
-    def test_build_ar_model_no_dim_scaling(self):
-        """Test Build ar model no dim scaling."""
-        model = tb.build_AR_model(
-            num_params=2, transf_params=1, hidden_units=[3], scale_with_dim=False
-        )
-        out = model(tf.ones((1, 2), dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 2, 1))
-
-    def test_autoregressive_flow_permutations_bool(self):
-        """Test Autoregressive flow permutations bool."""
-        called = {}
-
-        def fake_min_var_permutations(d, n, min_number=10000):
-            """Fake min var permutations."""
-            called["d"] = d
-            called["n"] = n
-            return [np.arange(d), np.arange(d)[::-1]]
-
-        original = tb.min_var_permutations
-        tb.min_var_permutations = fake_min_var_permutations
-        try:
-            flow_true = tb.AutoregressiveFlow(
-                num_params=2,
-                transformation_type="affine",
-                n_transformations=2,
-                hidden_units=[2],
-                permutations=True,
-            )
-            self.assertIn("d", called)
-            self.assertEqual(len(flow_true.permutations), 2)
-
-            flow_false = tb.AutoregressiveFlow(
-                num_params=1,
-                transformation_type="affine",
-                n_transformations=1,
-                hidden_units=[1],
-                permutations=False,
-            )
-            self.assertFalse(flow_false.permutations)
-        finally:
-            tb.min_var_permutations = original
-
-    def test_autoregressive_flow_range_adjustment_and_kernel_default(self):
-        """Test Autoregressive flow range adjustment and kernel default."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            parameters_min=np.array([-10.0], dtype=np.float32),
-            parameters_max=np.array([10.0], dtype=np.float32),
-            permutations=False,
-        )
-        self.assertGreater(float(tf.convert_to_tensor(flow.range_max)), 5.0)
-        # default kernel initializer branch still builds a working bijector
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
-
-    def test_autoregressive_flow_affine_params_range_skip(self):
-        """Test Autoregressive flow affine params range skip."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="affine",
-            n_transformations=1,
-            hidden_units=[1],
-            parameters_min=np.array([-2.0], dtype=np.float32),
-            parameters_max=np.array([2.0], dtype=np.float32),
-            permutations=False,
-        )
+    def test_range_max_adjustment(self):
+        """Test the range_max adjustment for splines."""
+        flow = _small_flow(transformation_type='spline', parameters_min=np.array([-5., -6.]),
+                           parameters_max=np.array([9., 6.]))
+        self.assertIsInstance(flow.range_max, float)
+        self.assertEqual(flow.range_max, 10.)
+        self.assertEqual(_mafs(flow)[0].transformer.range_max, 10.)
+        self.assertEqual(_mafs(flow)[0].transformer.range_min, -10.)
+        flow = _small_flow(1, transformation_type='spline', parameters_min=np.array([-20.]),
+                           parameters_max=np.array([3.]), range_max=1.)
+        self.assertEqual(flow.range_max, 21.)
+        flow = _small_flow(1, transformation_type='spline', parameters_min=np.array([-1.]),
+                           parameters_max=np.array([1.]), range_max=5.)
+        self.assertEqual(flow.range_max, 5.)
+        flow = _small_flow(1, parameters_min=np.array([-20.]), parameters_max=np.array([20.]))
         self.assertIsNone(flow.range_max)
 
-    def test_autoregressive_flow_invalid_transformation_type(self):
-        """Test Autoregressive flow invalid transformation type."""
+    def test_range_max_adjustment_feedback(self):
+        """Test the feedback printed by the range adjustment and the construction."""
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _small_flow(1, transformation_type='spline', parameters_min=np.array([-50.]),
+                        parameters_max=np.array([60.]), range_max=1., feedback=2)
+        text = output.getvalue()
+        self.assertIn('range_max', text)
+        self.assertIn('new range_max: 61.0', text)
+        self.assertIn('Building Autoregressive Flow', text)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _small_flow(1, transformation_type='spline', parameters_min=np.array([-50.]),
+                        parameters_max=np.array([60.]), range_max=1., feedback=0)
+        self.assertEqual(output.getvalue(), '')
+
+    def test_map_to_unitcube(self):
+        """Test the unit cube option and its spline requirement."""
         with self.assertRaises(ValueError):
-            tb.AutoregressiveFlow(
-                num_params=1,
-                transformation_type="invalid",
-                n_transformations=1,
-                hidden_units=[1],
-                permutations=False,
-            )
+            _small_flow(1, map_to_unitcube=True)
+        flow = _small_flow(2, transformation_type='spline', map_to_unitcube=True)
+        layers = list(flow.bijector.bijectors)
+        self.assertEqual(len(layers), 3)
+        self.assertIsInstance(layers[0], bj.Invert)
+        self.assertIsInstance(layers[0].bijector, bj.NormalCDF)
+        self.assertIsInstance(layers[2], bj.NormalCDF)
+        transformer = layers[1].transformer
+        self.assertEqual((transformer.range_min, transformer.range_max), (0., 1.))
+        x = tu.to_tensor(np.random.default_rng(1).uniform(-2., 2., (6, 2)))
+        _assert_close(flow.bijector.inverse(flow.bijector.forward(x)), x, tolerance=max(_tolerance(), 1e-4))
 
-    def test_autoregressive_flow_invalid_autoregressive_type(self):
-        """Test Autoregressive flow invalid autoregressive type."""
+    def test_periodic_preprocessing(self):
+        """Test the periodic preprocessing layer and circular splines."""
+        flow = _small_flow(2, transformation_type='spline', n_transformations=2, permutations=True,
+                           periodic_params=np.array([True, False]), range_max=2.)
+        layers = list(flow.bijector.bijectors)
+        self.assertIsInstance(layers[0], bj.Blockwise)
+        self.assertEqual(layers[0].name, 'PeriodicPreprocessing')
+        self.assertIsInstance(layers[0].bijectors[0], bj.Scale)
+        _assert_close(layers[0].bijectors[0].scale, 0.5, tolerance=0.)
+        self.assertIsInstance(layers[0].bijectors[1], bj.Identity)
+        self.assertEqual(_count(flow, bj.Permute), 1)
+        self.assertNotIsInstance(layers[1], bj.Permute)
+        for maf in _mafs(flow):
+            self.assertTrue(maf.transformer.circular)
+        x = tu.to_tensor(np.random.default_rng(2).uniform(-1.5, 1.5, (6, 2)))
+        y = flow.bijector.forward(x)
+        self.assertEqual(tuple(y.shape), (6, 2))
+        _assert_close(flow.bijector.inverse(y), x)
+
+    def test_periodic_options(self):
+        """Test all-false periodic parameters and the spline requirement."""
+        flow = _small_flow(2, transformation_type='spline', periodic_params=[False, False])
+        self.assertEqual(_count(flow, bj.Blockwise), 0)
+        self.assertFalse(_mafs(flow)[0].transformer.circular)
         with self.assertRaises(ValueError):
-            tb.AutoregressiveFlow(
-                num_params=1,
-                transformation_type="affine",
-                autoregressive_type="bad",
-                n_transformations=1,
-                hidden_units=[1],
-                permutations=False,
-            )
+            _small_flow(2, periodic_params=[True, False])
 
-    def test_autoregressive_flow_periodic_affine_branch(self):
-        """Test Autoregressive flow periodic affine branch."""
-        class ToggleStr(str):
-            """Toggle Str test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.calls = 0
-                return obj
+    def test_mixed_transformation_types(self):
+        """Test per-layer transformation and autoregressive types."""
+        flow = _small_flow(2, transformation_type=['affine', 'spline'], autoregressive_type=['masked', 'flex'],
+                           n_transformations=2, equispaced_x_knots=True, scale_roto_shift=True)
+        mafs = _mafs(flow)
+        self.assertIsInstance(mafs[0].transformer, tb.AffineTransformer)
+        self.assertIsInstance(mafs[0].conditioner, tb.MaskedAutoregressiveNetwork)
+        self.assertIsInstance(mafs[1].transformer, tb.SplineTransformer)
+        self.assertTrue(mafs[1].transformer.equispaced_x_knots)
+        self.assertIsInstance(mafs[1].conditioner, tb.FlexAutoregressiveNetwork)
+        self.assertEqual([_m.name for _m in mafs], ['affine_maf_0', 'spline_maf_1'])
+        affine_names = [_b.name for _b in flow.bijector.bijectors if isinstance(_b, tb.ScaleRotoShift)]
+        self.assertEqual(affine_names, ['affine_0', 'affine_1'])
+        self.assertIsNotNone(flow.range_max)
+        x = tu.to_tensor(np.array([[0., 0.1], [1., -1.]]))
+        _assert_close(flow.bijector.inverse(flow.bijector.forward(x)), x)
+        with self.assertRaises(ValueError):
+            _small_flow(2, transformation_type=['affine'], n_transformations=2)
+        with self.assertRaises(ValueError):
+            _small_flow(2, autoregressive_type=['masked', 'flex', 'flex'], n_transformations=2)
 
-            def __eq__(self, other):
-                # first comparison behaves as 'spline' to pass assertions,
-                # later comparisons act as 'affine' to reach the Tanh branch.
-                """Eq."""
-                if other == "spline":
-                    self.calls += 1
-                    return self.calls == 1
-                if other == "affine":
-                    return True
-                return super().__eq__(other)
+    def test_permutations_variants(self):
+        """Test the permutations argument."""
+        flow = _small_flow(3, n_transformations=2, permutations=True)
+        self.assertIsInstance(flow.permutations, list)
+        self.assertEqual(len(flow.permutations), 2)
+        self.assertEqual(_count(flow, bj.Permute), 2)
+        for value in (False, None):
+            flow = _small_flow(3, n_transformations=2, permutations=value)
+            self.assertFalse(flow.permutations)
+            self.assertEqual(_count(flow, bj.Permute), 0)
+        permutations = [np.array([2, 0, 1]), np.array([1, 2, 0])]
+        flow = _small_flow(3, n_transformations=2, permutations=permutations)
+        layers = [_b for _b in flow.bijector.bijectors if isinstance(_b, bj.Permute)]
+        for layer, permutation in zip(layers, permutations):
+            np.testing.assert_array_equal(tu.to_numpy(layer.permutation), permutation)
+        for invalid in (np.bool_(True), 'abc', 3, [np.array([0, 1, 2])]):
+            with self.subTest(permutations=invalid):
+                with self.assertRaises(ValueError):
+                    _small_flow(3, n_transformations=2, permutations=invalid)
 
-        toggled = ToggleStr("affine")
-        self.assertTrue(toggled == "spline")
-        self.assertTrue(toggled == "affine")
-        self.assertFalse(toggled == "other")
+    def test_invalid_types(self):
+        """Test invalid transformation and autoregressive types."""
+        with self.assertRaises(ValueError):
+            _small_flow(1, transformation_type='invalid')
+        with self.assertRaises(ValueError):
+            _small_flow(1, autoregressive_type='bad')
 
-        flow_type = ToggleStr("affine")
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type=flow_type,
-            n_transformations=1,
-            hidden_units=[1],
-            periodic_params=np.array([True]),
-            permutations=False,
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
+    def test_kernel_initializer(self):
+        """Test custom, string and invalid kernel initializers."""
+        flow = _small_flow(2, kernel_initializer=_constant_half)
+        for layer in _mafs(flow)[0].conditioner.layers:
+            _assert_close(layer.weight, 0.5 * tu.to_numpy(layer.mask), tolerance=0.)
+        flow = _small_flow(2, kernel_initializer='zeros')
+        x = tu.to_tensor(np.array([[0.3, -0.7]]))
+        _assert_close(flow.bijector.forward(x), x, tolerance=0.)
+        with self.assertRaises(ValueError):
+            _small_flow(2, kernel_initializer='bad')
 
-    def test_autoregressive_flow_equispaced_y_knots(self):
-        """Test Autoregressive flow equispaced y knots."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            equispaced_y_knots=True,
-            permutations=False,
-        )
-        sample = tf.constant([[0.0]], dtype=tf.float32)
-        self.assertEqual(flow.bijector.forward(sample).shape, sample.shape)
+    def test_unsupported_keras_kwargs(self):
+        """Test that Keras only options raise and unknown options are ignored."""
+        for key in ('kernel_regularizer', 'bias_constraint', 'use_bias', 'input_order', 'validate_args', 'dtype'):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    _small_flow(2, **{key: None})
+        flow = _small_flow(2, some_unrelated_option=1)
+        self.assertEqual(len(_mafs(flow)), 1)
 
-    def test_autoregressive_flow_map_to_unitcube_branch(self):
-        """Test Autoregressive flow map to unitcube branch."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            map_to_unitcube=True,
-            permutations=[np.array([0], dtype=np.int32)],
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
+    def test_forwarded_kwargs(self):
+        """Test that spline and ScaleRotoShift options are forwarded."""
+        flow = _small_flow(2, transformation_type='spline', slope_min=1e-2, min_bin_width=0.01,
+                           scale_roto_shift=True, initializer='zeros', roto=False)
+        transformer = _mafs(flow)[0].transformer
+        self.assertEqual(transformer.slope_min, 1e-2)
+        self.assertEqual(transformer.min_bin_width, 0.01)
+        affine = flow.bijector.bijectors[-1]
+        self.assertIsInstance(affine, tb.ScaleRotoShift)
+        self.assertEqual([name for name, _ in affine.named_parameters()], ['shift', 'log_scale'])
+        _assert_close(affine.log_scale, np.zeros(2), tolerance=0.)
 
-    def test_autoregressive_flow_kernel_initializer_default(self):
-        """Test Autoregressive flow kernel initializer default."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="affine",
-            n_transformations=2,
-            hidden_units=[2],
-            permutations=False,
-        )
-        self.assertIsNotNone(flow.bijector)
-
-    def test_autoregressive_flow_range_adjustment_trigger(self):
-        """Test Autoregressive flow range adjustment trigger."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            parameters_min=np.array([-20.0], dtype=np.float32),
-            parameters_max=np.array([3.0], dtype=np.float32),
-            range_max=1.0,
-            permutations=False,
-        )
-        self.assertGreater(float(tf.convert_to_tensor(flow.range_max)), 1.0)
-
-    def test_circular_spline_helper_range_min_set_and_delta(self):
-        """Test Circular spline helper range min set and delta."""
-        def shift_fn(x):
-            """Shift fn."""
-            batch = tf.shape(x)[0]
-            return tf.ones((batch, 4), dtype=tf.float32)
-
-        helper = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=shift_fn,
-            spline_knots=2,
-            range_min=None,
-            range_max=1.5,
-            equispaced_x_knots=True,
-        )
-        bij = helper._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertEqual(float(bij.range_min.numpy()), -1.5)
-        # additional coverage for range_min auto-setup without equispaced knots
-        helper_non_equi = tb.CircularSplineHelper(
-            shift_and_log_scale_fn=lambda x: tf.ones((tf.shape(x)[0], 6), dtype=tf.float32),
-            spline_knots=2,
-            range_min=None,
-            range_max=2.0,
-        )
-        bij2 = helper_non_equi._bijector_fn(tf.zeros((1, 1), dtype=tf.float32))
-        self.assertEqual(float(bij2.range_min.numpy()), -2.0)
-
-    def test_circular_spline_helper_range_min_assertion(self):
-        """Test Circular spline helper range min assertion."""
-        with self.assertRaises(AssertionError):
-            tb.CircularSplineHelper(
-                shift_and_log_scale_fn=lambda x: tf.ones((tf.shape(x)[0], 4), dtype=tf.float32),
-                spline_knots=2,
-                range_min=None,
-                range_max=-1.0,
-            )
-
-    def test_autoregressive_flow_permutation_bool_branches(self):
-        """Test Autoregressive flow permutation bool branches."""
-        flow_true = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type="affine",
-            n_transformations=2,
-            hidden_units=[2],
-            permutations=True,
-        )
-        self.assertIsInstance(flow_true.permutations, list)
-
-        flow_false = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type="affine",
-            n_transformations=1,
-            hidden_units=[2],
-            permutations=False,
-        )
-        self.assertFalse(flow_false.permutations)
-
-    def test_autoregressive_flow_permutation_none_branch(self):
-        """Test Autoregressive flow permutation none branch."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            permutations=None,
-        )
-        self.assertFalse(flow.permutations)
-
-    def test_autoregressive_flow_range_adjustment_feedback(self):
-        """Test Autoregressive flow range adjustment feedback."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            parameters_min=np.array([-50.0], dtype=np.float32),
-            parameters_max=np.array([60.0], dtype=np.float32),
-            range_max=1.0,
-            permutations=False,
-            feedback=2,
-        )
-        self.assertGreater(float(tf.convert_to_tensor(flow.range_max)), 1.0)
-        self.assertIsNotNone(flow.bijector)
-
-    def test_autoregressive_flow_spline_branch_nonperiodic(self):
-        """Test Autoregressive flow spline branch nonperiodic."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            permutations=False,
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
-
-    def test_autoregressive_flow_periodic_affine_tanh_branch(self):
-        """Test Autoregressive flow periodic affine tanh branch."""
-        class ToggleStr(str):
-            """Toggle Str test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.calls = 0
-                return obj
-
-            def __eq__(self, other):
-                """Eq."""
-                self.calls += 1
-                if other == "spline":
-                    return self.calls == 1  # only pass the initial assertion
-                if other == "affine":
-                    return True
-                return super().__eq__(other)
-
-        toggled = ToggleStr("affine")
-        self.assertTrue(toggled == "spline")
-        self.assertTrue(toggled == "affine")
-        self.assertFalse(toggled == "other")
-
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[1],
-            periodic_params=np.array([True]),
-            permutations=False,
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
-
-    def test_autoregressive_flow_iterable_permutations_branch(self):
-        """Test Autoregressive flow iterable permutations branch."""
-        perms = [np.array([0, 1], dtype=np.int32)]
-        flow = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type="affine",
-            n_transformations=1,
-            hidden_units=[2],
-            permutations=perms,
-        )
-        self.assertEqual(flow.permutations, perms)
-
-    def test_autoregressive_flow_periodic_scale_preprocess(self):
-        """Test Autoregressive flow periodic scale preprocess."""
-        flow = tb.AutoregressiveFlow(
-            num_params=2,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            periodic_params=np.array([True, False]),
-            permutations=False,
-            range_max=2.0,
-        )
-        sample = tf.constant([[0.1, 0.2]], dtype=tf.float32)
-        self.assertEqual(flow.bijector.forward(sample).shape, sample.shape)
-
-    def test_autoregressive_flow_map_to_unitcube(self):
-        """Test Autoregressive flow map to unitcube."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[2],
-            map_to_unitcube=True,
-            permutations=False,
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
-
-    def test_autoregressive_flow_unexpected_permutation_type(self):
-        """Test Autoregressive flow unexpected permutation type."""
-        with self.assertRaises(UnboundLocalError):
-            tb.AutoregressiveFlow(
-                num_params=1,
-                transformation_type="affine",
-                n_transformations=1,
-                hidden_units=[1],
-                permutations=np.bool_(True),
-            )
-
-    def test_autoregressive_flow_range_without_adjustment(self):
-        """Test Autoregressive flow range without adjustment."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[1],
-            parameters_min=np.array([-1.0], dtype=np.float32),
-            parameters_max=np.array([1.0], dtype=np.float32),
-            range_max=5.0,
-            permutations=False,
-        )
-        self.assertEqual(float(flow.range_max), 5.0)
-
-    def test_autoregressive_flow_custom_kernel_initializer(self):
-        """Test Autoregressive flow custom kernel initializer."""
-        initializer = tf.keras.initializers.Constant(0.5)
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="affine",
-            n_transformations=1,
-            hidden_units=[2],
-            permutations=False,
-            kernel_initializer=initializer,
-        )
-        maf = flow.bijector.bijectors[0]
-        self.assertIs(maf._shift_and_log_scale_fn._kernel_initializer, initializer)
-
-    def test_autoregressive_flow_periodic_non_affine_branch(self):
-        """Test Autoregressive flow periodic non affine branch."""
-        class NonAffineStr(str):
-            """Non Affine Str test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.spline_calls = 0
-                return obj
-
-            def __eq__(self, other):
-                """Eq."""
-                if other == "spline":
-                    self.spline_calls += 1
-                    return self.spline_calls != 3
-                if other == "affine":
-                    return False
-                return super().__eq__(other)
-
-        toggled = NonAffineStr("spline")
-        self.assertFalse(toggled == "other")
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type=toggled,
-            n_transformations=1,
-            hidden_units=[1],
-            periodic_params=np.array([True]),
-            permutations=False,
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
-
-    def test_autoregressive_flow_map_to_unitcube_periodic(self):
-        """Test Autoregressive flow map to unitcube periodic."""
-        flow = tb.AutoregressiveFlow(
-            num_params=1,
-            transformation_type="spline",
-            n_transformations=1,
-            hidden_units=[1],
-            map_to_unitcube=True,
-            periodic_params=np.array([False]),
-            permutations=[np.array([0], dtype=np.int32)],
-        )
-        out = flow.bijector.forward(tf.constant([[0.0]], dtype=tf.float32))
-        self.assertEqual(out.shape, (1, 1))
-
-    def test_autoregressive_flow_inconsistent_transformation_branch(self):
-        """Test Autoregressive flow inconsistent transformation branch."""
-        class FlakySpline(str):
-            """Flaky Spline test suite."""
-            def __new__(cls, value):
-                """New."""
-                obj = super().__new__(cls, value)
-                obj.calls = 0
-                return obj
-
-            def __eq__(self, other):
-                """Eq."""
-                if other == "affine":
-                    return False
-                if other == "spline":
-                    self.calls += 1
-                    return self.calls <= 2  # later comparisons turn False
-                return super().__eq__(other)
-
-        flaky = FlakySpline("spline")
-        self.assertFalse(flaky == "other")
-        with self.assertRaises(UnboundLocalError):
-            tb.AutoregressiveFlow(
-                num_params=1,
-                transformation_type=flaky,
-                n_transformations=1,
-                hidden_units=[1],
-                permutations=False,
-            )
+    def test_parameters_and_reset(self):
+        """Test the parameters passthrough and reset_parameters."""
+        flow = _small_flow(2, transformation_type='spline', autoregressive_type='flex', scale_roto_shift=True)
+        parameters = list(flow.parameters())
+        self.assertEqual(len(parameters), len(list(flow.bijector.parameters())))
+        with torch.no_grad():
+            for parameter in parameters:
+                parameter.fill_(0.3)
+        flow.reset_parameters()
+        changed = [not torch.all(_p == 0.3) for _p in flow.parameters()]
+        self.assertTrue(all(changed))
 
 #########################################################################################################
 # Script entry point

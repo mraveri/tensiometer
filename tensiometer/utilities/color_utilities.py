@@ -101,6 +101,15 @@ def color_linear_interpolation(rgb_1, rgb_2, alpha):
     """
     This function performs a linear color interpolation in RGB space.
     alpha has to go from zero to one and is the coordinate.
+
+    :param rgb_1: first color, as a sequence of RGB components
+        (returned for ``alpha = 0``).
+    :param rgb_2: second color, as a sequence of RGB components
+        (returned for ``alpha = 1``).
+    :param alpha: interpolation coordinate between zero and one
+        (not clipped, values outside extrapolate).
+    :return: tuple with the interpolated components
+        ``rgb_1 + (rgb_2 - rgb_1) * alpha``.
     """
     _out_color = []
     for _a, _b in zip(rgb_1, rgb_2):

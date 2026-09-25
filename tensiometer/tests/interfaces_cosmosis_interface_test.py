@@ -198,7 +198,7 @@ class TestCosmosisInterface(unittest.TestCase):
             self.assertEqual(bf.logLike, 5.0)
             self.assertEqual(bf.names[0].name, "p1")
             min_path2 = os.path.join(tmpdir, "chain_pmaxlike2.txt")
-            write_chain(min_path2, ["# weigth post", "# sampler = max_like"], [[2.0, -3.0]])
+            write_chain(min_path2, ["# weight post", "# sampler = max_like"], [[2.0, -3.0]])
             bf2 = ci.get_maximum_likelihood(None, True, min_path2[:-4], None, None)
             self.assertEqual(bf2.weight, 2.0)
             wrong_path = os.path.join(tmpdir, "chain_wrong.txt")

@@ -717,6 +717,55 @@ class TestKdeBranchCoverage(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.mt.kde_parameter_shift_2D_fft(chain2d, prior_diff_chain=prior, param_names=["p0", "p1"])
 
+    def test_fft_2d_prior_integral_fallback(self):
+        """The 2D prior fallback integrates the density above the prior-weighted zero threshold."""
+        chain2d = make_chain_branch(dim=2)
+        prior2d = make_chain_branch(dim=2)
+        grid = np.array([0.0, 1.0, 2.0])
+
+        class FakeSpl2D:
+            """Spline returning ``value(x, y)`` on grids and zero at the samples."""
+            def __init__(self, value):
+                """Init."""
+                self.value = value
+
+            def __call__(self, xs, ys):
+                """Evaluate on the outer product grid, shape ``(len(xs), len(ys))``."""
+                return np.array([[self.value(xi, yj) for yj in ys] for xi in xs])
+
+            def ev(self, x, y):
+                """Evaluate at the samples; zero so that no sample is above threshold."""
+                return np.zeros_like(x, dtype=float)
+
+        class FakeDensity2D:
+            """Density on a 3x3 grid with ``P`` of shape ``(ny, nx)`` as in GetDist."""
+            def __init__(self, value):
+                """Init."""
+                self.x = grid
+                self.y = grid
+                self.P = np.array([[value(xi, yj) for xi in grid] for yj in grid])
+                self.spl = FakeSpl2D(value)
+
+            def _initSpline(self):  # pragma: no cover - trivial
+                """Init Spline."""
+                return None
+
+        density = FakeDensity2D(lambda x, y: 1.0)
+        prior_density = FakeDensity2D(lambda x, y: 2.0 if x == 2.0 else 1.0)
+        full_P = density.P.copy()
+        with patch.object(chain2d, "get2DDensity", return_value=density), \
+                patch.object(prior2d, "get2DDensity", return_value=prior_density):
+            P, low, upper = self.mt.kde_parameter_shift_2D_fft(
+                chain2d, prior_diff_chain=prior2d, feedback=0, nbins=8)
+        # the density/prior ratio is 0.5 < 1 on the x = 2 column, which is excluded:
+        masked_P = full_P.copy()
+        masked_P[:, 2] = 0.0
+        expected = self.mt.simps(self.mt.simps(masked_P, grid), grid) / self.mt.simps(self.mt.simps(full_P, grid), grid)
+        self.assertAlmostEqual(P, expected)
+        self.assertLess(P, 1.0)
+        self.assertIsNone(low)
+        self.assertIsNone(upper)
+
     def test_fft_param_validation_branches(self):
         """Test FFT parameter validation branches."""
         chain = make_chain_branch(dim=1)
