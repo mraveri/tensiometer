@@ -60,6 +60,8 @@ and install it locally with the shortcut::
 
   make install
 
+Alternatively, from the source directory, a conda/mamba environment with all dependencies and tensiometer installed can be created with ``mamba env create -f environment.yml`` (or ``conda env create -f environment.yml``) and activated with ``mamba activate tensiometer``.
+
 You can test that the code is working properly by using::
 
   make test

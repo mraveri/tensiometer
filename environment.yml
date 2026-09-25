@@ -1,0 +1,38 @@
+# Conda/mamba environment with the runtime, testing and documentation dependencies of tensiometer.
+# Create it from the repository root with:
+#   mamba env create -f environment.yml   (or: conda env create -f environment.yml)
+# PyTorch comes from conda-forge, which picks the CUDA build when an NVIDIA GPU is detected
+# and includes the Metal (MPS) backend on Apple Silicon.
+name: tensiometer
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  # core runtime:
+  - autograd
+  - getdist
+  - ipython
+  - joblib
+  - matplotlib
+  - mpi4py
+  - numba>=0.53.0
+  - numpy
+  - psutil
+  - pytorch>=2.3
+  - scipy
+  - tqdm
+  # documentation:
+  - sphinx
+  - sphinxcontrib-jquery
+  - sphinx-rtd-theme
+  # testing/coverage:
+  - coverage
+  - pytest
+  - pytest-cov
+  - pip
+  - pip:
+    # not packaged on conda-forge:
+    - pymanopt==0.2.5
+    # tensiometer itself, in editable mode:
+    - -e .
